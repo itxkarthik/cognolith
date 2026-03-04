@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import col, delete, func, select
 
-from backend.app import crud
+from app import crud
 from app.api.deps import CurrentUser, SessionDep, get_current_active_superuser
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
@@ -67,7 +67,7 @@ def update_user_me(*, session: SessionDep, user_in: UserUpdateMe, current_user: 
                 status_code=409, 
                 detail="User with this email already exists",
             )
-    user_data - user_in.model_dump(exclude_unset=True)
+    user_data = user_in.model_dump(exclude_unset=True)
     current_user.sqlmodel_update(user_data)
     session.add(current_user)
     session.commit()
@@ -123,8 +123,8 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
     return Message(message="User Deleted Successfully")
 
 @router.post(
-    path="/signup"
-    response_model=UserPublic
+    path="/signup",
+    response_model=UserPublic,
 )
 def register_user(session: SessionDep, user_in: UserRegister) -> Any:
     """
@@ -133,7 +133,7 @@ def register_user(session: SessionDep, user_in: UserRegister) -> Any:
     user = crud.get_user_by_email(session=session, email=user_in.email)
     if user:
         raise HTTPException(
-            status_code=400. 
+            status_code=400,
             detail="The user with this email already exists",
         )
     user_create = UserCreate.model_validate(user_in)
@@ -188,7 +188,7 @@ def update_user(*, session: SessionDep, user_id: int, user_in: UserUpdate) -> An
 
 @router.delete(path="/{user_id}", dependencies=[Depends(get_current_active_superuser)])
 def delete_user(
-    session: SessionDep, current_user: CurrentUser, user_id: uuid.UUID
+    session: SessionDep, current_user: CurrentUser, user_id: int
 ) -> Message:
     """
     Delete a user.
@@ -200,8 +200,7 @@ def delete_user(
         raise HTTPException(
             status_code=403, detail="Super users are not allowed to delete themselves"
         )
-    statement = delete(Item).where(col(Item.owner_id) == user_id)
-    session.exec(statement)  # type: ignore
+    # Cascade delete handles related records (documents, notes, etc.)
     session.delete(user)
     session.commit()
     return Message(message="User deleted successfully")

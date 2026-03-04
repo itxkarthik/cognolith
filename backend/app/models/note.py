@@ -17,10 +17,10 @@ class NoteFolders(TimestampMixin, SQLModel, table=True):
         UniqueConstraint("user_id", "name", "parent_folder_id", name="uix_note_folders_user_name_parent_folder_id"),        
     )
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False, index=True)
+    user_id: int | None = Field(foreign_key="users.id", nullable=False, index=True)
     name: str = Field(max_length=255)
     description: str | None = Field(default=None)
-    parent_folder_id: int | None = Field(default=None, foreign_key="note_folders.id", ondelete="CASCADE", index=True)
+    parent_folder_id: int | None = Field(default=None, foreign_key="note_folders.id", index=True)
     color: str | None = Field(default=None, max_length=20)
     icon: str | None = Field(default=None, max_length=50)
     emoji: str | None = Field(default=None, max_length=10)
@@ -51,8 +51,8 @@ class NoteTagRelations(SQLModel, table=True):
     __table_args__ = (
         PrimaryKeyConstraint("note_id", "tag_id"),
     )
-    note_id: int = Field(foreign_key="notes.id", ondelete="CASCADE", primary_key=True, index=True)
-    tag_id: int = Field(foreign_key="note_tags.id", ondelete="CASCADE", primary_key=True, index=True)
+    note_id: int = Field(foreign_key="notes.id", primary_key=True, index=True)
+    tag_id: int = Field(foreign_key="note_tags.id", primary_key=True, index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class Notes(TimestampMixin, SQLModel, table=True):
@@ -64,8 +64,8 @@ class Notes(TimestampMixin, SQLModel, table=True):
         Index("ix_notes_full_search", text("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, ''))"), postgresql_using="gin"),
     )
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
-    folder_id: int | None = Field(default=None, foreign_key="note_folders.id", ondelete="SET NULL", index=True)
+    user_id: int | None = Field(foreign_key="users.id", nullable=False)
+    folder_id: int | None = Field(default=None, foreign_key="note_folders.id", index=True)
     title: str = Field(nullable=False, max_length=500)
     content: str = Field(nullable=False)
     content_type: str = Field(default="markdown", max_length=20)
@@ -78,15 +78,15 @@ class Notes(TimestampMixin, SQLModel, table=True):
     is_pinned: bool = Field(default=False)
     color: str | None = Field(default=None, max_length=20)
     emoji: str | None = Field(default=None, max_length=10)
-    linked_document_id: int | None = Field(default=None, foreign_key="documents.id", ondelete="SET NULL", index=True)
-    linked_chat_session_id: int | None = Field(default=None, foreign_key="chat_sessions.id", ondelete="SET NULL", index=True)
-    parent_note_id: int | None = Field(default=None, foreign_key="notes.id", ondelete="SET NULL")
+    linked_document_id: int | None = Field(default=None, foreign_key="documents.id", index=True)
+    linked_chat_session_id: int | None = Field(default=None, foreign_key="chat_sessions.id", index=True)
+    parent_note_id: int | None = Field(default=None, foreign_key="notes.id")
     version: int = Field(default=1)
-    previous_version_id: int | None = Field(default=None, foreign_key="notes.id", ondelete="SET NULL")
+    previous_version_id: int | None = Field(default=None, foreign_key="notes.id")
     is_public: bool = Field(default=False)
     is_locked: bool = Field(default=False)
     is_deleted: bool = Field(default=False)
-    locked_by: int | None = Field(default=None, foreign_key="users.id", ondelete="SET NULL")
+    locked_by: int | None = Field(default=None, foreign_key="users.id")
     locked_at: datetime | None = Field(default=None)
     word_count: int | None = Field(default=None)
     char_count: int | None = Field(default=None)
@@ -135,7 +135,7 @@ class NoteTags(SQLModel, table=True):
         UniqueConstraint("user_id", "name", name="uix_note_tags_user_name"),
     )
     id: int = Field(primary_key=True, default=None)
-    user_id: int = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
+    user_id: int = Field(foreign_key="users.id", nullable=False)
     name: str = Field(nullable=False, max_length=100)
     color: str | None = Field(default=None, max_length=20)
     description: str | None = Field(default=None)
@@ -156,7 +156,7 @@ class NoteCategory(str, Enum):
 class NoteTemplates(TimestampMixin, SQLModel, table=True):
     __tablename__ = "note_templates"
     id: int | None = Field(primary_key=True, default=None)
-    user_id: int | None = Field(default=None, foreign_key="users.id", ondelete="CASCADE")
+    user_id: int | None = Field(default=None, foreign_key="users.id")
     name: str = Field(nullable=False, max_length=255)
     description: str | None = Field(default=None)
     category: NoteCategory = Field(default=None)
@@ -181,8 +181,8 @@ class NoteCollaborators(SQLModel, table=True):
         UniqueConstraint("note_id", "user_id", name="unique_note_collaborators"),
     )
     id: int | None = Field(primary_key=True, default=None)
-    note_id: int | None = Field(foreign_key="notes.id", ondelete="CASCADE", nullable=False)
-    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
+    note_id: int | None = Field(foreign_key="notes.id", nullable=False)
+    user_id: int | None = Field(foreign_key="users.id", nullable=False)
     permission: NoteCollaboratorsPermission = Field(default=NoteCollaboratorsPermission.view)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     accepted_at: datetime | None = Field(default=None)
@@ -204,8 +204,8 @@ class NoteLinks(SQLModel, table=True):
         UniqueConstraint("source_note_id", "target_note_id", name="unique_note_links"),
     )
     id: int | None = Field(primary_key=True, default=None)
-    source_note_id: int | None = Field(foreign_key="notes.id", ondelete="CASCADE", nullable=False)
-    target_note_id: int | None = Field(foreign_key="notes.id", ondelete="CASCADE", nullable=False)
+    source_note_id: int | None = Field(foreign_key="notes.id", nullable=False)
+    target_note_id: int | None = Field(foreign_key="notes.id", nullable=False)
     link_type: NoteLinkType = Field(default=NoteLinkType.related)
     description: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

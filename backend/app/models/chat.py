@@ -19,7 +19,7 @@ class ChatSession(TimestampMixin, SQLModel, table=True):
         Index("ix_chat_session_user_last_message", "user_id", desc("last_message_at")),
     )
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
+    user_id: int | None = Field(default=None, foreign_key="users.id", nullable=False)
     title: str | None = Field(default=None, max_length=255)
     description: str | None = Field(default=None)
     is_archived: bool = Field(default=False)
@@ -48,7 +48,7 @@ class ChatMessages(TimestampMixin, SQLModel, table=True):
         Index("ix_chat_messages_session_created", "session_id", desc("created_at")),
     )
     id: int | None = Field(default=None, primary_key=True)
-    session_id: int | None = Field(foreign_key="chat_sessions.id", ondelete="CASCADE", nullable=False)
+    session_id: int | None = Field(foreign_key="chat_sessions.id", nullable=False)
     role: ChatRole = Field(nullable=False, max_length=20)
     content: str = Field(nullable=False)
     sources: dict | None = Field(default=None, sa_column=Column(JSONB))

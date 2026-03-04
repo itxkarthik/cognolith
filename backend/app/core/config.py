@@ -24,7 +24,7 @@ def parse_cors(v: Any) -> list[str] | str:
 class Settings(BaseSettings):
     # Pydantic v2 configuration
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore"
@@ -99,9 +99,9 @@ class Settings(BaseSettings):
     def emails_enabled(self) -> bool:
         return bool(self.SMTP_HOST and self.EMAILS_FROM_EMAIL)
         
-    EMAIL_TEST_USER: EmailStr = "test@example.com"
-    FIRST_SUPERUSER: EmailStr
-    FIRST_SUPERUSER_PASSWORD: str
+    EMAIL_TEST_USER: str = "test@example.com"
+    FIRST_SUPERUSER: str = "admin@example.com"
+    FIRST_SUPERUSER_PASSWORD: str = "password"
     
     def _check_default_secret(self, var_name: str, value: str | None) -> None:
         if value == "changethis":

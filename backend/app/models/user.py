@@ -1,5 +1,5 @@
 from enum import Enum
-from pydantic import EmailStr
+from pydantic import field_validator
 from sqlmodel import CheckConstraint, Column, Index, SQLModel, Field, Relationship, desc
 from sqlalchemy.dialects.postgresql import JSONB
 from datetime import datetime
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 # Shared property
 class UserBase(SQLModel):
-    email: EmailStr = Field(unique=True, index=True, max_length=255)
+    email: str = Field(unique=True, index=True, max_length=255)
     is_active: bool = True
     is_superuser: bool = False
     full_name: str | None = Field(default=None, max_length=255)
@@ -23,18 +23,18 @@ class UserCreate(UserBase):
     password: str = Field(min_length=8, max_length=128)
     
 class UserRegister(SQLModel):
-    email: EmailStr = Field(max_length=255)
+    email: str = Field(max_length=255)
     password: str = Field(min_length=8, max_length=128)
     full_name: str | None = Field(default=None, max_length=255)
 
 # Update API properties | Optional
 class UserUpdate(UserBase):
-    emai: EmailStr | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
     password: str | None = Field(default=None, min_length=8, max_length=128)
     
 class UserUpdateMe(SQLModel):
     full_name: str | None = Field(default=None, max_length=255)
-    email: EmailStr | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
     
 class UpdatePassword(SQLModel):
     current_password: str = Field(min_length=8, max_length=128)
@@ -106,7 +106,7 @@ class UserSettings(TimestampMixin, SQLModel, table=True):
         CheckConstraint("temperature >= 0 AND temperature <= 1", name="chk_temperature"),
         CheckConstraint("max_tokens >= 100 AND max_tokens <= 4000", name="chk_max_tokens"),
     )
-    user_id: int | None = Field(primary_key=True, foreign_key="users.id", ondelete="CASCADE")
+    user_id: int | None = Field(primary_key=True, foreign_key="users.id")
     llm_provider: LlmProvider = Field(default=LlmProvider.ollama)
     llm_model: str = Field(default="tinyllama", max_length=100)
     embedding_model: str = Field(default="text-embedding-ada-002", max_length=100)
@@ -119,7 +119,7 @@ class UserSettings(TimestampMixin, SQLModel, table=True):
     theme: UserTheme = Field(default=UserTheme.light)
     language: str = Field(default="en", max_length=10)
     notes_view_mode: NotesViewMode = Field(default=NotesViewMode.grid)
-    default_note_folder_id: int | None = Field(default=None, foreign_key="note_folders.id", ondelete="SET NULL")
+    default_note_folder_id: int | None = Field(default=None, foreign_key="note_folders.id")
     email_notifications: bool = Field(default=True)
     processing_notifications: bool = Field(default=True)
     
@@ -152,7 +152,7 @@ class ActivityLogs(SQLModel, table=True):
     )
     
     id: int | None = Field(primary_key=True, default=None)
-    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
+    user_id: int | None = Field(foreign_key="users.id", nullable=False)
     action: ActivityAction = Field(nullable=False)
     entity_type: EntityType = Field(nullable=False, max_length=50)
     entity_id: int | None = Field(nullable=False)

@@ -25,7 +25,7 @@ class Document(TimestampMixin, SQLModel, table=True):
         Index("ix_document_full_text", text("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, ''))"), postgresql_using="gin"),
     )
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
+    user_id: int | None = Field(foreign_key="users.id", nullable=False)
     title: str = Field(nullable=False, max_length=255)
     file_name: str = Field(nullable=False, max_length=255)
     file_path: str = Field(nullable=False)
@@ -70,7 +70,7 @@ class DocumentChunks(TimestampMixin, SQLModel, table=True):
         UniqueConstraint("document_id", "chunk_index", name="uix_document_chunks"),
     )
     id: int | None = Field(default=None, primary_key=True, index=True)
-    document_id: int | None = Field(foreign_key="documents.id", ondelete="CASCADE", nullable=False)
+    document_id: int | None = Field(foreign_key="documents.id", nullable=False)
     chunk_index: int | None = Field(nullable=False)
     content: str = Field(nullable=False)
     content_hash: str | None = Field(default=None, max_length=255)
