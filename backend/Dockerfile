@@ -20,7 +20,7 @@ RUN pip install --upgrade pip && \
 COPY . .
 
 # Expose port
-EXPOSE 8000
+EXPOSE 3000
 
 # Default command
 CMD ["python", "run.py"]

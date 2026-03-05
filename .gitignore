@@ -52,3 +52,5 @@ __pycache__
 .vscode
 DOCKER_*
 docker-compose.override.yml
+task.md
+walkthrough.md

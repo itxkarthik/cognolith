@@ -27,7 +27,7 @@ services:
     container_name: pka-backend
     environment:
       HOST: 0.0.0.0
-      PORT: 8000
+      PORT: 3000
       DEBUG: ${DEBUG:-False}
       ENVIRONMENT: ${ENVIRONMENT:-local}
       
@@ -49,7 +49,7 @@ services:
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
-      - "8001:8000"
+      - "3000:3000"
     depends_on:
       db:
         condition: service_healthy
