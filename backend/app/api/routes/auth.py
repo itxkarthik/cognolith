@@ -1,22 +1,26 @@
 from datetime import timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from app.core import security
 from app.core.config import settings
 from app import crud
 from app.api.deps import CurrentUser, SessionDep, get_current_active_superuser
 from app.models.user import Message, Token, UserPublic
+from app.core.rate_limit import limiter
 
 router = APIRouter(tags=["login"])
 
 @router.post(path="/login/access-token")
+@limiter.limit("5/minute")
 def login_access_token(
+        request: Request,
         session: SessionDep, form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
     ) -> Token:
     """
-        OAuth2 token login, get an access token for future requests
+        OAuth2 token login, get an access token for future requests.
+        Rate limited to 5 attempts per minute per IP.
     """
     user = crud.authenticate(
         session=session, email=form_data.username, password=form_data.password
