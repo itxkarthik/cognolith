@@ -1,7 +1,8 @@
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from sqlmodel import Session, select
-from app.core.security import get_password_hash, verify_password
-from app.models.user import User, UserCreate, UserUpdate
+from app.core.security import get_password_hash, verify_password, hash_refresh_token
+from app.models.user import User, UserCreate, UserUpdate, RefreshToken, TokenBlacklist
 
 def create_user(*, session: Session, user_create: UserCreate) -> User:
     db_obj = User.model_validate(
@@ -47,4 +48,51 @@ def authenticate(*, session: Session, email: str, password: str) -> User | None:
         session.commit()
         session.refresh(db_user)
     return db_user
+
+# Refresh Token CRUD
+def create_refresh_token(
+    *, session: Session, user_id: int, raw_token: str, expires_delta: timedelta
+) -> RefreshToken:
+    db_token = RefreshToken(
+        user_id=user_id,
+        hashed_token=hash_refresh_token(raw_token),
+        expires_at=datetime.now(timezone.utc) + expires_delta,
+    )
+    session.add(db_token)
+    session.commit()
+    session.refresh(db_token)
+    return db_token
+
+def get_refresh_token_by_hash(*, session: Session, hashed_token: str) -> RefreshToken | None:
+    statement = select(RefreshToken).where(
+        RefreshToken.hashed_token == hashed_token,
+        RefreshToken.revoked == False,
+        RefreshToken.expires_at > datetime.now(timezone.utc),
+    )
+    return session.exec(statement).first()
+
+def revoke_refresh_token(*, session: Session, db_token: RefreshToken) -> None:
+    db_token.revoked = True
+    session.add(db_token)
+    session.commit()
+
+def revoke_all_user_refresh_tokens(*, session: Session, user_id: int) -> None:
+    statement = select(RefreshToken).where(
+        RefreshToken.user_id == user_id, RefreshToken.revoked == False
+    )
+    tokens = session.exec(statement).all()
+    for token in tokens:
+        token.revoked = True
+        session.add(token)
+    session.commit()
+
+# Token Blacklist CRUD for Access Token Revocation
+def blacklist_token(*, session: Session, jti: str, expires_at: datetime) -> None:
+    entry = TokenBlacklist(jti=jti, expires_at=expires_at)
+    session.add(entry)
+    session.commit()
+
+def is_token_blacklisted(*, session: Session, jti: str) -> bool:
+    statement = select(TokenBlacklist).where(TokenBlacklist.jti == jti)
+    return session.exec(statement).first() is not None
     

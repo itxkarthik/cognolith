@@ -2,7 +2,7 @@ from enum import Enum
 from pydantic import field_validator
 from sqlmodel import CheckConstraint, Column, Index, SQLModel, Field, Relationship, desc
 from sqlalchemy.dialects.postgresql import JSONB
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 from .chat import TimestampMixin
 
@@ -164,15 +164,44 @@ class ActivityLogs(SQLModel, table=True):
     # Relationships
     user: User = Relationship(back_populates="activity_logs")
     
+class RefreshToken(TimestampMixin, SQLModel, table=True):
+    __tablename__ = "refresh_tokens"
+    __table_args__ = (
+        Index("ix_refresh_tokens_user_id", "user_id"),
+        Index("ix_refresh_tokens_hashed_token", "hashed_token", unique=True),
+        Index("ix_refresh_tokens_expires_at", "expires_at"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", nullable=False)
+    hashed_token: str = Field(nullable=False, max_length=64)
+    expires_at: datetime = Field(nullable=False)
+    revoked: bool = Field(default=False)
+
+    user: User = Relationship()
+
+class TokenBlacklist(SQLModel, table=True):
+    __tablename__ = "token_blacklist"
+    __table_args__ = (
+        Index("ix_token_blacklist_jti", "jti", unique=True),
+        Index("ix_token_blacklist_expires_at", "expires_at"),
+    )
+    id: int | None = Field(default=None, primary_key=True)
+    jti: str = Field(nullable=False, max_length=36)
+    expires_at: datetime = Field(nullable=False)
+    blacklisted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
 class Message(SQLModel):
     message: str
-    
+
 class Token(SQLModel):
     access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
 
 class TokenPayload(SQLModel):
     sub: str | None = None
-    
+    jti: str | None = None
+
 class NewPassword(SQLModel):
     token: str
     new_password: str = Field(min_length=8, max_length=128)

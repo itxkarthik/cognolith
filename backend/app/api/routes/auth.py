@@ -1,16 +1,21 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
+from sqlmodel import Session
+
 from app.core import security
 from app.core.config import settings
 from app import crud
-from app.api.deps import CurrentUser, SessionDep, get_current_active_superuser
-from app.models.user import Message, Token, UserPublic
+from app.api.deps import CurrentUser, SessionDep, TokenDep, get_current_active_superuser
+from app.models.user import Message, Token, UserPublic, TokenPayload
 from app.core.rate_limit import limiter
 
 router = APIRouter(tags=["login"])
+
 
 @router.post(path="/login/access-token")
 @limiter.limit("5/minute")
@@ -29,12 +34,91 @@ def login_access_token(
         raise HTTPException(status_code=400, detail="Incorrect Email or Password")
     elif not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
-    access_token_expires: timedelta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    return Token(
-        access_token=security.create_access_token(
-            subject=user.id, expires_delta=access_token_expires
-        )
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        subject=user.id, expires_delta=access_token_expires
     )
+
+    # Issue refresh token
+    raw_refresh_token = security.generate_refresh_token()
+    crud.create_refresh_token(
+        session=session,
+        user_id=user.id,
+        raw_token=raw_refresh_token,
+        expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+
+    return Token(
+        access_token=access_token,
+        refresh_token=raw_refresh_token,
+    )
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post(path="/auth/refresh")
+def refresh_access_token(body: RefreshRequest, session: SessionDep) -> Token:
+    """
+    Exchange a valid refresh token for a new access + refresh token pair.
+    The old refresh token is revoked (rotation).
+    """
+    hashed = security.hash_refresh_token(body.refresh_token)
+    db_token = crud.get_refresh_token_by_hash(session=session, hashed_token=hashed)
+
+    if not db_token:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+
+    # Revoke old refresh token (single-use rotation)
+    crud.revoke_refresh_token(session=session, db_token=db_token)
+
+    # Issue new tokens
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = security.create_access_token(
+        subject=db_token.user_id, expires_delta=access_token_expires
+    )
+
+    raw_refresh_token = security.generate_refresh_token()
+    crud.create_refresh_token(
+        session=session,
+        user_id=db_token.user_id,
+        raw_token=raw_refresh_token,
+        expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+
+    return Token(
+        access_token=access_token,
+        refresh_token=raw_refresh_token,
+    )
+
+
+@router.post(path="/auth/logout")
+def logout(session: SessionDep, token: TokenDep, current_user: CurrentUser) -> Message:
+    """
+    Logout: blacklist the current access token and revoke all refresh tokens
+    for the user.
+    """
+    # Decode the current access token to get jti + expiry
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
+        token_data = TokenPayload(**payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid token")
+
+    # Blacklist the access token so it can't be reused
+    if token_data.jti:
+        expires_at = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+        crud.blacklist_token(session=session, jti=token_data.jti, expires_at=expires_at)
+
+    # Revoke all refresh tokens for this user
+    crud.revoke_all_user_refresh_tokens(session=session, user_id=current_user.id)
+
+    return Message(message="Successfully logged out")
+
 
 @router.post(path="/login/test-token", response_model=UserPublic)
 def test_token(current_user: CurrentUser) -> Any:
