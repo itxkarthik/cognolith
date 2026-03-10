@@ -11,7 +11,10 @@ if TYPE_CHECKING:
 
 class TimestampMixin(SQLModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
+    )
 
 class ChatSession(TimestampMixin, SQLModel, table=True):
     __tablename__ = "chat_sessions"

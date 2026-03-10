@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     MAX_REQUEST_BODY_SIZE: int = 1024 * 1024 * 15  # 15 MB (slightly larger than max file to allow form overhead)
     ALLOWED_EXTENSIONS: List[str] = [".pdf", ".md", ".docx", ".txt"]
     
+    # Database SSL
+    DATABASE_SSL_MODE: str = "prefer"  # disable, allow, prefer, require, verify-ca, verify-full
+
     # Rate Limiting
     RATE_LIMIT_WINDOW: int = 60  # seconds
     RATE_LIMIT_MAX_REQUESTS: int = 100
