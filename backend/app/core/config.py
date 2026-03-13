@@ -129,7 +129,7 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: List[str] = [".pdf", ".md", ".docx", ".txt"]
     
     # Database SSL
-    DATABASE_SSL_MODE: str = "prefer"  # disable, allow, prefer, require, verify-ca, verify-full
+    DATABASE_SSL_MODE: str = "prefer"  # disable, allow, prefer, require, verify-ca, verify-full (Need to change later, now for local)
 
     # Rate Limiting
     RATE_LIMIT_WINDOW: int = 60  # seconds
