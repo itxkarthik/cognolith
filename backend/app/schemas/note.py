@@ -40,6 +40,8 @@ class NoteCreate(BaseModel):
 	folder_id: int | None = None
 	content_type: str = Field(default="markdown", max_length=20)
 	keywords: list[str] = Field(default_factory=list)
+	tag_ids: list[int] = Field(default_factory=list)
+	linked_note_ids: list[int] = Field(default_factory=list)
 	is_favorite: bool = False
 	is_pinned: bool = False
 	linked_document_id: int | None = None
@@ -62,6 +64,8 @@ class NoteUpdate(BaseModel):
 	folder_id: int | None = None
 	content_type: str | None = Field(default=None, max_length=20)
 	keywords: list[str] | None = None
+	tag_ids: list[int] | None = None
+	linked_note_ids: list[int] | None = None
 	is_favorite: bool | None = None
 	is_archived: bool | None = None
 	is_pinned: bool | None = None
@@ -94,6 +98,8 @@ class NoteResponse(BaseModel):
 	content_type: str
 	summary: str | None = None
 	keywords: list[str]
+	tag_ids: list[int] = Field(default_factory=list)
+	linked_note_ids: list[int] = Field(default_factory=list)
 	version: int
 	is_favorite: bool
 	is_archived: bool
