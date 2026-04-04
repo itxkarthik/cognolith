@@ -2,7 +2,33 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.utils.sanitization import sanitize_plain_text
+from app.utils.sanitization import sanitize_html, sanitize_plain_text
+
+
+class FolderResponse(BaseModel):
+	model_config = ConfigDict(from_attributes=True)
+
+	id: int
+	user_id: int
+	name: str
+	description: str | None = None
+	parent_folder_id: int | None = None
+	color: str | None = None
+	icon: str | None = None
+	emoji: str | None = None
+	created_at: datetime
+	updated_at: datetime
+
+
+class TagResponse(BaseModel):
+	model_config = ConfigDict(from_attributes=True)
+
+	id: int
+	user_id: int
+	name: str
+	color: str | None = None
+	description: str | None = None
+	created_at: datetime
 
 
 class FolderCreate(BaseModel):
@@ -47,10 +73,15 @@ class NoteCreate(BaseModel):
 	linked_document_id: int | None = None
 	linked_chat_session_id: int | None = None
 
-	@field_validator("title", "content", mode="before")
+	@field_validator("title", mode="before")
 	@classmethod
-	def sanitize_required_text(cls, value: str) -> str:
+	def sanitize_required_title(cls, value: str) -> str:
 		return sanitize_plain_text(value)
+
+	@field_validator("content", mode="before")
+	@classmethod
+	def sanitize_required_content(cls, value: str) -> str:
+		return sanitize_html(value)
 
 	@field_validator("keywords", mode="before")
 	@classmethod
@@ -72,12 +103,19 @@ class NoteUpdate(BaseModel):
 	linked_document_id: int | None = None
 	linked_chat_session_id: int | None = None
 
-	@field_validator("title", "content", mode="before")
+	@field_validator("title", mode="before")
 	@classmethod
-	def sanitize_optional_text(cls, value: str | None) -> str | None:
+	def sanitize_optional_title(cls, value: str | None) -> str | None:
 		if value is None:
 			return value
 		return sanitize_plain_text(value)
+
+	@field_validator("content", mode="before")
+	@classmethod
+	def sanitize_optional_content(cls, value: str | None) -> str | None:
+		if value is None:
+			return value
+		return sanitize_html(value)
 
 	@field_validator("keywords", mode="before")
 	@classmethod

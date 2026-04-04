@@ -48,6 +48,36 @@ export interface TagCreate {
 	description?: string | null;
 }
 
+export interface NoteFolder {
+	id: number;
+	user_id: number;
+	name: string;
+	description?: string | null;
+	parent_folder_id?: number | null;
+	color?: string | null;
+	icon?: string | null;
+	emoji?: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface NoteTag {
+	id: number;
+	user_id: number;
+	name: string;
+	color?: string | null;
+	description?: string | null;
+	created_at: string;
+}
+
+export interface NoteTemplateData {
+	id: string;
+	name: string;
+	description: string;
+	content: string;
+	tags: string[];
+}
+
 export interface NoteCreate {
 	title: string;
 	content: string;

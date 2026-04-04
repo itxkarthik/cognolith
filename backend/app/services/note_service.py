@@ -9,6 +9,7 @@ from app.models.document import Document
 from app.models.note import NoteFolders, NoteLinks, Notes, NoteTags
 from app.models.user import User
 from app.schemas.note import FolderCreate, NoteCreate, NoteUpdate, TagCreate
+from app.utils.sanitization import strip_all_html
 from app.utils.text_processing import clean_text, create_content_preview
 
 
@@ -16,22 +17,23 @@ def create_note(*, session: Session, current_user: User, payload: NoteCreate) ->
 	_validate_folder_access(session=session, user_id=current_user.id, folder_id=payload.folder_id)
 	_validate_document_access(session=session, user_id=current_user.id, document_id=payload.linked_document_id)
 
-	clean_content = clean_text(payload.content)
+	clean_content = payload.content if payload.content_type == "html" else clean_text(payload.content)
+	preview_source = strip_all_html(clean_content) if payload.content_type == "html" else clean_content
 	note = Notes(
 		user_id=current_user.id,
 		folder_id=payload.folder_id,
 		title=payload.title,
 		content=clean_content,
 		content_type=payload.content_type,
-		content_preview=create_content_preview(clean_content, max_length=200),
+		content_preview=create_content_preview(preview_source, max_length=200),
 		keywords=payload.keywords,
 		is_favorite=payload.is_favorite,
 		is_pinned=payload.is_pinned,
 		linked_document_id=payload.linked_document_id,
 		linked_chat_session_id=payload.linked_chat_session_id,
-		word_count=len(clean_content.split()),
-		char_count=len(clean_content),
-		read_time_minutes=max(1, len(clean_content.split()) // 200) if clean_content else 1,
+		word_count=len(preview_source.split()),
+		char_count=len(preview_source),
+		read_time_minutes=max(1, len(preview_source.split()) // 200) if preview_source else 1,
 	)
 	session.add(note)
 	session.commit()
@@ -90,6 +92,27 @@ def list_notes(
 	return paged, total
 
 
+def list_folders(*, session: Session, current_user: User) -> list[NoteFolders]:
+	statement = (
+		select(NoteFolders)
+		.where(
+			NoteFolders.user_id == current_user.id,
+			NoteFolders.is_deleted == False,
+		)
+		.order_by(col(NoteFolders.sort_order).asc(), col(NoteFolders.name).asc())
+	)
+	return session.exec(statement).all()
+
+
+def list_tags(*, session: Session, current_user: User) -> list[NoteTags]:
+	statement = (
+		select(NoteTags)
+		.where(NoteTags.user_id == current_user.id)
+		.order_by(col(NoteTags.name).asc())
+	)
+	return session.exec(statement).all()
+
+
 def get_note_by_id(*, session: Session, current_user: User, note_id: int) -> Notes:
 	note = session.exec(
 		select(Notes).where(
@@ -118,12 +141,14 @@ def update_note(*, session: Session, current_user: User, note_id: int, payload: 
 		if field_name in {"tag_ids", "linked_note_ids"}:
 			continue
 		if field_name == "content" and value is not None:
-			cleaned = clean_text(value)
+			resolved_content_type = update_data.get("content_type", note.content_type)
+			cleaned = value if resolved_content_type == "html" else clean_text(value)
+			preview_source = strip_all_html(cleaned) if resolved_content_type == "html" else cleaned
 			note.content = cleaned
-			note.content_preview = create_content_preview(cleaned, max_length=200)
-			note.word_count = len(cleaned.split())
-			note.char_count = len(cleaned)
-			note.read_time_minutes = max(1, len(cleaned.split()) // 200) if cleaned else 1
+			note.content_preview = create_content_preview(preview_source, max_length=200)
+			note.word_count = len(preview_source.split())
+			note.char_count = len(preview_source)
+			note.read_time_minutes = max(1, len(preview_source.split()) // 200) if preview_source else 1
 			continue
 		setattr(note, field_name, value)
 

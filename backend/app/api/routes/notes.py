@@ -5,13 +5,24 @@ from fastapi import APIRouter, Query
 from app.api.deps import CurrentUser, SessionDep
 from app.models.note import Notes
 from app.models.user import Message
-from app.schemas.note import FolderCreate, NoteCreate, NoteList, NoteResponse, NoteUpdate, TagCreate
+from app.schemas.note import (
+	FolderCreate,
+	FolderResponse,
+	NoteCreate,
+	NoteList,
+	NoteResponse,
+	NoteUpdate,
+	TagCreate,
+	TagResponse,
+)
 from app.services.note_service import (
 	create_folder,
 	create_note,
 	create_tag,
 	get_note_by_id,
+	list_folders,
 	list_notes,
+	list_tags,
 	soft_delete_note,
 	update_note,
 )
@@ -72,6 +83,16 @@ def read_notes(
 	return NoteList(data=[_to_note_response(note) for note in notes], count=total)
 
 
+@router.get(path="/folders", response_model=list[FolderResponse])
+def read_folders(*, session: SessionDep, current_user: CurrentUser) -> Any:
+	return list_folders(session=session, current_user=current_user)
+
+
+@router.get(path="/tags", response_model=list[TagResponse])
+def read_tags(*, session: SessionDep, current_user: CurrentUser) -> Any:
+	return list_tags(session=session, current_user=current_user)
+
+
 @router.get(path="/{note_id}", response_model=NoteResponse)
 def read_note_by_id(*, session: SessionDep, current_user: CurrentUser, note_id: int) -> Any:
 	note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
@@ -90,31 +111,11 @@ def delete_note_endpoint(*, session: SessionDep, current_user: CurrentUser, note
 	return Message(message="Note deleted successfully")
 
 
-@router.post(path="/folders")
+@router.post(path="/folders", response_model=FolderResponse)
 def create_folder_endpoint(*, session: SessionDep, current_user: CurrentUser, body: FolderCreate) -> Any:
-	folder = create_folder(session=session, current_user=current_user, payload=body)
-	return {
-		"id": folder.id,
-		"user_id": folder.user_id,
-		"name": folder.name,
-		"description": folder.description,
-		"parent_folder_id": folder.parent_folder_id,
-		"color": folder.color,
-		"icon": folder.icon,
-		"emoji": folder.emoji,
-		"created_at": folder.created_at,
-		"updated_at": folder.updated_at,
-	}
+	return create_folder(session=session, current_user=current_user, payload=body)
 
 
-@router.post(path="/tags")
+@router.post(path="/tags", response_model=TagResponse)
 def create_tag_endpoint(*, session: SessionDep, current_user: CurrentUser, body: TagCreate) -> Any:
-	tag = create_tag(session=session, current_user=current_user, payload=body)
-	return {
-		"id": tag.id,
-		"user_id": tag.user_id,
-		"name": tag.name,
-		"color": tag.color,
-		"description": tag.description,
-		"created_at": tag.created_at,
-	}
+	return create_tag(session=session, current_user=current_user, payload=body)

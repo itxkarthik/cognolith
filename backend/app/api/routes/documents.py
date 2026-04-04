@@ -43,6 +43,7 @@ async def upload_document(
 	return document
 
 
+@router.get("", response_model=DocumentList, include_in_schema=False)
 @router.get("/", response_model=DocumentList)
 def read_documents(
 	*,
