@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 
 from fastapi import HTTPException
 from sqlmodel import Session, col, select
@@ -11,6 +12,9 @@ from app.models.note import Notes
 from app.models.user import User
 from app.schemas.chat import ChatCreate, ChatMessageCreate
 from app.utils.text_processing import create_content_preview
+
+
+logger = logging.getLogger(__name__)
 
 
 def create_chat_session(*, session: Session, current_user: User, payload: ChatCreate) -> ChatSession:
@@ -58,7 +62,15 @@ def send_message_and_get_response(
 	session.commit()
 	session.refresh(user_message)
 
-	rag_answer, rag_sources = _invoke_rag(session=session, current_user=current_user, query=payload.content)
+	try:
+		rag_answer, rag_sources = _invoke_rag(session=session, current_user=current_user, query=payload.content)
+	except Exception:
+		logger.exception("RAG pipeline failed for chat session %s", chat_session.id)
+		rag_answer = (
+			"I could not reach the retrieval services right now. "
+			"Please try again in a moment after the AI backend is available."
+		)
+		rag_sources = {"documents": [], "chunks": []}
 
 	assistant_message = ChatMessages(
 		session_id=chat_session.id,

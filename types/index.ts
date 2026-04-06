@@ -197,14 +197,36 @@ export interface ChatMessageCreate {
 	role?: ChatRole;
 }
 
+export interface ChatSourceDocument {
+	document_id: number;
+	title: string;
+	chunk_count: number;
+	max_score: number;
+}
+
+export interface ChatSourceChunk {
+	chunk_id: number;
+	document_id: number;
+	document_title: string;
+	chunk_index: number;
+	score: number;
+	preview: string;
+}
+
+export interface ChatSources {
+	documents: ChatSourceDocument[];
+	chunks: ChatSourceChunk[];
+}
+
 export interface ChatMessageResponse {
 	id: number;
 	session_id: number;
-	role: string;
+	role: ChatRole;
 	content: string;
 	model_used?: string | null;
 	tokens_used?: number | null;
 	response_time_ms?: number | null;
+	sources?: ChatSources | null;
 	created_at: string;
 	updated_at: string;
 }
@@ -220,6 +242,11 @@ export interface ChatResponse {
 	created_at: string;
 	updated_at: string;
 	messages: ChatMessageResponse[];
+}
+
+export interface ChatSessionList {
+	data: ChatResponse[];
+	count: number;
 }
 
 export interface SearchFilters {

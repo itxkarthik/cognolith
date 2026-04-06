@@ -11,6 +11,7 @@ from app.schemas.note import NoteResponse
 from app.services.chat_service import (
 	convert_chat_to_note,
 	create_chat_session,
+	get_chat_session_by_id,
 	list_chat_sessions,
 	send_message_and_get_response,
 )
@@ -37,6 +38,7 @@ def _to_chat_message_response(message: ChatMessages) -> ChatMessageResponse:
 		model_used=message.model_used,
 		tokens_used=message.tokens_used,
 		response_time_ms=message.response_time_ms,
+		sources=message.sources,
 		created_at=message.created_at,
 		updated_at=message.updated_at,
 	)
@@ -102,6 +104,16 @@ def list_chat_sessions_endpoint(
 		limit=limit,
 	)
 	return ChatSessionListResponse(data=[_to_chat_response(item) for item in sessions], count=count)
+
+
+@router.get(path="/sessions/{session_id}", response_model=ChatResponse)
+def get_chat_session_endpoint(*, session: SessionDep, current_user: CurrentUser, session_id: int) -> Any:
+	chat_session = get_chat_session_by_id(
+		session=session,
+		current_user=current_user,
+		chat_session_id=session_id,
+	)
+	return _to_chat_response(chat_session)
 
 
 @router.post(path="/sessions/{session_id}/messages", response_model=ChatMessageResponse)

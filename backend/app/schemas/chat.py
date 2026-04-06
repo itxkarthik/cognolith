@@ -28,6 +28,27 @@ class ChatMessageCreate(BaseModel):
 		return sanitize_plain_text(value)
 
 
+class ChatSourceDocument(BaseModel):
+	document_id: int
+	title: str
+	chunk_count: int
+	max_score: float
+
+
+class ChatSourceChunk(BaseModel):
+	chunk_id: int
+	document_id: int
+	document_title: str
+	chunk_index: int
+	score: float
+	preview: str
+
+
+class ChatSources(BaseModel):
+	documents: list[ChatSourceDocument] = Field(default_factory=list)
+	chunks: list[ChatSourceChunk] = Field(default_factory=list)
+
+
 class ChatMessageResponse(BaseModel):
 	model_config = ConfigDict(from_attributes=True)
 
@@ -38,6 +59,7 @@ class ChatMessageResponse(BaseModel):
 	model_used: str | None = None
 	tokens_used: int | None = None
 	response_time_ms: int | None = None
+	sources: ChatSources | None = None
 	created_at: datetime
 	updated_at: datetime
 

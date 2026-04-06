@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 from sqlalchemy import func
-from sqlmodel import col, select
+from sqlmodel import select
 
 from app.api.deps import CurrentUser, SessionDep
 from app.models.chat import ChatMessages, ChatSession
@@ -46,13 +46,14 @@ def unified_search(
 				func.coalesce(Document.content, ""),
 			),
 		)
+		doc_score = func.ts_rank(doc_vector, ts_query).label("score")
 		doc_statement = select(
 			Document.id,
 			Document.title,
 			Document.content,
 			Document.created_at,
 			Document.updated_at,
-			func.ts_rank(doc_vector, ts_query).label("score"),
+			doc_score,
 		).where(
 			Document.user_id == current_user.id,
 			Document.is_deleted == False,
@@ -62,7 +63,7 @@ def unified_search(
 			doc_statement = doc_statement.where(Document.created_at >= date_from)
 		if date_to is not None:
 			doc_statement = doc_statement.where(Document.created_at <= date_to)
-		doc_rows = session.exec(doc_statement.order_by(col("score").desc()).limit(100)).all()
+		doc_rows = session.exec(doc_statement.order_by(doc_score.desc()).limit(100)).all()
 		for row in doc_rows:
 			results.append(
 				SearchResultItem(
@@ -85,13 +86,14 @@ def unified_search(
 				func.coalesce(Notes.content, ""),
 			),
 		)
+		note_score = func.ts_rank(note_vector, ts_query).label("score")
 		note_statement = select(
 			Notes.id,
 			Notes.title,
 			Notes.content,
 			Notes.created_at,
 			Notes.updated_at,
-			func.ts_rank(note_vector, ts_query).label("score"),
+			note_score,
 		).where(
 			Notes.user_id == current_user.id,
 			Notes.is_deleted == False,
@@ -103,7 +105,7 @@ def unified_search(
 			note_statement = note_statement.where(Notes.created_at >= date_from)
 		if date_to is not None:
 			note_statement = note_statement.where(Notes.created_at <= date_to)
-		note_rows = session.exec(note_statement.order_by(col("score").desc()).limit(100)).all()
+		note_rows = session.exec(note_statement.order_by(note_score.desc()).limit(100)).all()
 		for row in note_rows:
 			results.append(
 				SearchResultItem(
@@ -119,13 +121,14 @@ def unified_search(
 
 	if "chat" in enabled_types:
 		chat_vector = func.to_tsvector("english", func.coalesce(ChatMessages.content, ""))
+		chat_score = func.ts_rank(chat_vector, ts_query).label("score")
 		chat_statement = select(
-			ChatMessages.id,
+			ChatSession.id.label("session_id"),
 			ChatSession.title,
 			ChatMessages.content,
 			ChatMessages.created_at,
 			ChatMessages.updated_at,
-			func.ts_rank(chat_vector, ts_query).label("score"),
+			chat_score,
 		).join(ChatSession, ChatSession.id == ChatMessages.session_id).where(
 			ChatSession.user_id == current_user.id,
 			chat_vector.op("@@")(ts_query),
@@ -134,11 +137,11 @@ def unified_search(
 			chat_statement = chat_statement.where(ChatMessages.created_at >= date_from)
 		if date_to is not None:
 			chat_statement = chat_statement.where(ChatMessages.created_at <= date_to)
-		chat_rows = session.exec(chat_statement.order_by(col("score").desc()).limit(100)).all()
+		chat_rows = session.exec(chat_statement.order_by(chat_score.desc()).limit(100)).all()
 		for row in chat_rows:
 			results.append(
 				SearchResultItem(
-					id=row.id,
+					id=row.session_id,
 					entity_type="chat",
 					title=row.title,
 					snippet=create_content_preview(row.content or "", max_length=180),
