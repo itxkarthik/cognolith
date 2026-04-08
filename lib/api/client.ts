@@ -2,6 +2,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
 
 import { apiConfig, tokenKeys } from "@/config/api";
 import { useAuthStore } from "@/store/authStore";
+import { isRetryableError, retryWithExponentialBackoff, DEFAULT_RETRY_CONFIG } from "@/lib/utils/retry";
 
 type RequestWithRetry = InternalAxiosRequestConfig & {
 	_retry?: boolean;
@@ -72,6 +73,7 @@ apiClient.interceptors.response.use(
 	async (error: AxiosError<{ detail?: string; message?: string }>) => {
 		const originalRequest = error.config as RequestWithRetry | undefined;
 
+		// Handle token refresh on 401
 		if (
 			error.response?.status === 401 &&
 			originalRequest &&
@@ -88,6 +90,32 @@ apiClient.interceptors.response.use(
 			} catch {
 				clearAuth();
 				return Promise.reject(new Error("Your session has expired."));
+			}
+		}
+
+		// Handle transient failures with retry
+		if (originalRequest && isRetryableError(error)) {
+			// Don't retry if already attempted
+			if (originalRequest._retry) {
+				return Promise.reject(error);
+			}
+
+			originalRequest._retry = true;
+
+			try {
+				// Retry the request with exponential backoff
+				return await retryWithExponentialBackoff(
+					() => apiClient(originalRequest),
+					{
+						maxRetries: DEFAULT_RETRY_CONFIG.maxRetries,
+						initialDelayMs: DEFAULT_RETRY_CONFIG.initialDelayMs,
+						maxDelayMs: DEFAULT_RETRY_CONFIG.maxDelayMs,
+						backoffMultiplier: DEFAULT_RETRY_CONFIG.backoffMultiplier,
+					}
+				);
+			} catch (retryError) {
+				// If all retries fail, return the original error
+				return Promise.reject(retryError);
 			}
 		}
 

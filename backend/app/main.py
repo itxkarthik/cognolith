@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -6,18 +7,44 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.config import settings
-from app.core.database import create_db_and_tables
+from app.core.database import create_db_and_tables_with_retry
 from app.core.middleware import SecurityHeadersMiddleware, RequestIDMiddleware, MaxRequestBodySizeMiddleware
 from app.api.main import api_router
 
 # Rate Limiter
 from app.core.rate_limit import limiter
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    create_db_and_tables()
+    """
+    FastAPI lifespan context manager for startup and shutdown events.
+    Handles database initialization with retry logic on startup.
+    """
+    # Startup
+    try:
+        logger.info("Starting application...")
+        
+        # Initialize database with retry logic
+        # This ensures the app can handle cases where the database
+        # is not immediately available (e.g., in Docker Compose)
+        await create_db_and_tables_with_retry(
+            max_retries=5,
+            initial_delay=1,
+        )
+        
+        logger.info("✓ Application startup complete")
+    except Exception as e:
+        logger.error(f"✗ Application startup failed: {e}")
+        raise
+    
     yield
+    
+    # Shutdown
+    logger.info("Shutting down application...")
+
 
 # FastAPI app
 app = FastAPI(
@@ -66,8 +93,13 @@ def read_root():
         "docs": "/docs"
     }
 
+
 @app.get("/health")
 def health_check():
+    """
+    Simple health check endpoint.
+    Returns 200 OK if the service is running.
+    """
     return {"status": "healthy"}
 
 
