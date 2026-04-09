@@ -56,7 +56,13 @@ docker-compose.override.yml
 task.md
 walkthrough.md
 
-chat.html
-dashboard*.html
 knowle*.html
 uploads
+
+ANALYSIS_INDEX.md
+BACK*.md
+COMPLETE*.md
+CONNECTIVITY*
+DOCUMENT_*.txt
+IMPLEMENTATION_*.md
+WEEK1_*
