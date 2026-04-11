@@ -1,6 +1,6 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
 
-import { apiConfig, tokenKeys } from "@/config/api";
+import { apiConfig, tokenKeys, getTimeoutForEndpoint } from "@/config/api";
 import { useAuthStore } from "@/store/authStore";
 import { isRetryableError, retryWithExponentialBackoff, DEFAULT_RETRY_CONFIG } from "@/lib/utils/retry";
 
@@ -43,6 +43,12 @@ const refreshClient = axios.create({
 });
 
 apiClient.interceptors.request.use((config) => {
+	// Apply endpoint-specific timeout based on method and URL
+	if (config.url && config.method) {
+		const timeout = getTimeoutForEndpoint(config.method, config.url);
+		config.timeout = timeout;
+	}
+
 	// Preserve trailing slashes for endpoints that need them
 	if (config.url) {
 		// For documents endpoints that match /documents or /documents/upload etc

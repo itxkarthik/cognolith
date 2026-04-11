@@ -67,7 +67,7 @@ services:
       
       # CORS
       FRONTEND_HOST: ${FRONTEND_HOST:-http://localhost:8080}
-      BACKEND_CORS_ORIGINS: '["http://localhost:8080","http://127.0.0.1:8080","http://localhost:3000","http://127.0.0.1:3000"]'
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-["http://localhost:8080","http://127.0.0.1:8080","http://localhost:3000","http://127.0.0.1:3000"]}
       
       # Security
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
@@ -76,6 +76,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
       # AI
+      # For local Ollama: Mac/Windows use host.docker.internal, Linux use host network
+      # Or set OLLAMA_BASE_URL=http://ollama:11434 if running ollama in Docker
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     ports:
       - "3000:3000"

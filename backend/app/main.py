@@ -1,14 +1,19 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Exception
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.config import settings
 from app.core.database import create_db_and_tables_with_retry
-from app.core.middleware import SecurityHeadersMiddleware, RequestIDMiddleware, MaxRequestBodySizeMiddleware
+from app.core.middleware import (
+    SecurityHeadersMiddleware,
+    RequestIDMiddleware,
+    MaxRequestBodySizeMiddleware,
+)
+from app.core.exceptions import global_exception_handler, AppException
 from app.api.main import api_router
 
 # Rate Limiter
@@ -26,7 +31,7 @@ async def lifespan(_: FastAPI):
     # Startup
     try:
         logger.info("Starting application...")
-        
+
         # Initialize database with retry logic
         # This ensures the app can handle cases where the database
         # is not immediately available (e.g., in Docker Compose)
@@ -34,14 +39,14 @@ async def lifespan(_: FastAPI):
             max_retries=5,
             initial_delay=1,
         )
-        
+
         logger.info("✓ Application startup complete")
     except Exception as e:
         logger.error(f"✗ Application startup failed: {e}")
         raise
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down application...")
 
@@ -58,6 +63,11 @@ app = FastAPI(
 # Attach limiter state so slowapi can access it inside route handlers
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Register global exception handler for all exceptions
+# This must be registered AFTER specific handlers (like RateLimitExceeded)
+app.add_exception_handler(AppException, global_exception_handler)
+app.add_exception_handler(Exception, global_exception_handler)
 
 # 1. Request ID — runs first so all downstream middleware/routes have access
 app.add_middleware(RequestIDMiddleware)
@@ -84,13 +94,14 @@ app.add_middleware(
     ],
 )
 
+
 # Public endpoints
 @app.get("/")
 def read_root():
     return {
         "message": "Welcome to Personal Knowledge Assistant API",
         "version": settings.VERSION,
-        "docs": "/docs"
+        "docs": "/docs",
     }
 
 

@@ -11,9 +11,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Personal Knowledge Assistant",
-  description: "Organize your notes, documents, and AI conversations in one place.",
-  metadataBase: new URL("http://localhost:8080"),
+	title: "Personal Knowledge Assistant",
+	description: "Organize your notes, documents, and AI conversations in one place.",
+	metadataBase: new URL(process.env.NEXT_PUBLIC_FRONTEND_URL || "http://localhost:8080"),
 };
 
 export default function RootLayout({

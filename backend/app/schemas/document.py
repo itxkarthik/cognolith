@@ -64,7 +64,7 @@ class DocumentResponse(BaseModel):
 	user_id: int
 	title: str
 	file_name: str
-	file_path: str
+	# file_path intentionally excluded - internal server path, not for client exposure
 	file_size: int
 	file_type: str
 	mime_type: str
