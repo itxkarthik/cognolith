@@ -1,13 +1,14 @@
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.config import settings
-from app.core.database import create_db_and_tables_with_retry
+from app.core.database import create_db_and_tables_with_retry, test_db_connection
 from app.core.middleware import (
     SecurityHeadersMiddleware,
     RequestIDMiddleware,
@@ -108,10 +109,47 @@ def read_root():
 @app.get("/health")
 def health_check():
     """
-    Simple health check endpoint.
-    Returns 200 OK if the service is running.
+    Backward-compatible health endpoint.
     """
-    return {"status": "healthy"}
+    return {"status": "healthy", "check": "liveness"}
+
+
+@app.get("/health/live")
+def health_live():
+    """Liveness probe: process is running and can serve requests."""
+    return {"status": "alive"}
+
+
+async def _check_ollama_connection() -> bool:
+    ollama_tags_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/tags"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(ollama_tags_url)
+            return response.status_code == 200
+    except Exception as exc:
+        logger.warning("Ollama readiness check failed: %s", exc)
+        return False
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness probe: verifies dependencies required to serve traffic."""
+    db_ready = await test_db_connection()
+    ollama_ready = await _check_ollama_connection()
+    require_ollama = settings.ENVIRONMENT == "production"
+    ready = db_ready and (ollama_ready or not require_ollama)
+
+    payload = {
+        "status": "ready" if ready else "not_ready",
+        "require_ollama": require_ollama,
+        "dependencies": {
+            "database": "up" if db_ready else "down",
+            "ollama": "up" if ollama_ready else "down",
+        },
+    }
+    if ready:
+        return payload
+    return JSONResponse(status_code=503, content=payload)
 
 
 # API router
