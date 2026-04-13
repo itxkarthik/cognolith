@@ -12,13 +12,19 @@ from app.models.user import (
         UserCreate, UserRegister, UserUpdateMe, UsersPublic,
         UserUpdate,
     )
+from app.schemas.error import StandardErrorResponse
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 @router.get(
     path="/", 
     dependencies=[Depends(get_current_active_superuser)],
-    response_model=UsersPublic
+    response_model=UsersPublic,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Admin privileges required"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
 )
 def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
     """
@@ -35,7 +41,13 @@ def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
 @router.post(
     path="/", 
     dependencies=[Depends(get_current_active_superuser)],
-    response_model=UserPublic
+    response_model=UserPublic,
+    responses={
+        400: {"model": StandardErrorResponse, "description": "User with this email already exists"},
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Admin privileges required"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
 )
 def create_user(*, session: SessionDep, user_in: UserCreate) -> Any:
     """
@@ -54,7 +66,13 @@ def create_user(*, session: SessionDep, user_in: UserCreate) -> Any:
 
 @router.patch(
     path="/me",
-    response_model=UserPublic
+    response_model=UserPublic,
+    responses={
+        400: {"model": StandardErrorResponse, "description": "Validation error"},
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        409: {"model": StandardErrorResponse, "description": "Email already in use"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
 )
 def update_user_me(*, session: SessionDep, user_in: UserUpdateMe, current_user: CurrentUser) -> Any:
     """
@@ -75,7 +93,13 @@ def update_user_me(*, session: SessionDep, user_in: UserUpdateMe, current_user: 
     return current_user
 
 @router.patch(
-    path="/me/password", response_model=Message
+    path="/me/password",
+    response_model=Message,
+    responses={
+        400: {"model": StandardErrorResponse, "description": "Invalid current password"},
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
 )
 def update_password_me(*, session: SessionDep, body: UpdatePassword, current_user: CurrentUser) -> Any:
     """
@@ -97,7 +121,11 @@ def update_password_me(*, session: SessionDep, body: UpdatePassword, current_use
 
 @router.get(
     path="/me",
-    response_model=UserPublic
+    response_model=UserPublic,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
 )
 def read_user_me(current_user: CurrentUser) -> Any:
     """
@@ -107,7 +135,12 @@ def read_user_me(current_user: CurrentUser) -> Any:
 
 @router.delete(
     path="/me",
-    response_model=Message
+    response_model=Message,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Superuser cannot delete self"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
 )
 def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
     """
@@ -125,6 +158,10 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
 @router.post(
     path="/signup",
     response_model=UserPublic,
+    responses={
+        400: {"model": StandardErrorResponse, "description": "User with this email already exists"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
 )
 def register_user(session: SessionDep, user_in: UserRegister) -> Any:
     """
@@ -140,7 +177,16 @@ def register_user(session: SessionDep, user_in: UserRegister) -> Any:
     user = crud.create_user(session=session, user_create=user_create)
     return user
 
-@router.get(path="/{user_id}", response_model=UserPublic)
+@router.get(
+    path="/{user_id}",
+    response_model=UserPublic,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Insufficient privileges"},
+        404: {"model": StandardErrorResponse, "description": "User not found"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
+)
 def read_user_by_id(user_id: int, session: SessionDep, current_user: CurrentUser) -> Any:
     """
     Get a specific user by id
@@ -164,6 +210,13 @@ def read_user_by_id(user_id: int, session: SessionDep, current_user: CurrentUser
     path="/{user_id}",
     dependencies=[Depends(get_current_active_superuser)],
     response_model=UserPublic,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Admin privileges required"},
+        404: {"model": StandardErrorResponse, "description": "User not found"},
+        409: {"model": StandardErrorResponse, "description": "Email already in use"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
 )
 def update_user(*, session: SessionDep, user_id: int, user_in: UserUpdate) -> Any:
     """
@@ -186,7 +239,16 @@ def update_user(*, session: SessionDep, user_id: int, user_in: UserUpdate) -> An
     return db_user
 
 
-@router.delete(path="/{user_id}", dependencies=[Depends(get_current_active_superuser)])
+@router.delete(
+    path="/{user_id}",
+    dependencies=[Depends(get_current_active_superuser)],
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Admin privileges or cannot delete self"},
+        404: {"model": StandardErrorResponse, "description": "User not found"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
+)
 def delete_user(
     session: SessionDep, current_user: CurrentUser, user_id: int
 ) -> Message:

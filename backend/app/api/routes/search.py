@@ -9,13 +9,22 @@ from app.api.deps import CurrentUser, SessionDep
 from app.models.chat import ChatMessages, ChatSession
 from app.models.document import Document
 from app.models.note import Notes
+from app.schemas.error import StandardErrorResponse
 from app.schemas.search import SearchResponse, SearchResultItem
 from app.utils.text_processing import create_content_preview
 
 router = APIRouter(prefix="/search", tags=["search"])
 
 
-@router.get(path="/", response_model=SearchResponse)
+@router.get(
+	path="/",
+	response_model=SearchResponse,
+	responses={
+		400: {"model": StandardErrorResponse, "description": "Invalid query parameters"},
+		401: {"model": StandardErrorResponse, "description": "Authentication required"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 def unified_search(
 	*,
 	session: SessionDep,

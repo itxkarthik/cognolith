@@ -3,10 +3,35 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { apiConfig, tokenKeys, getTimeoutForEndpoint } from "@/config/api";
 import { useAuthStore } from "@/store/authStore";
 import { isRetryableError, retryWithExponentialBackoff, DEFAULT_RETRY_CONFIG } from "@/lib/utils/retry";
+import type { ApiError } from "@/types";
 
 type RequestWithRetry = InternalAxiosRequestConfig & {
 	_retry?: boolean;
 };
+
+export class APIRequestError extends Error {
+	statusCode?: number;
+	errorCode?: string;
+	requestId?: string;
+	details?: ApiError["details"];
+
+	constructor(
+		message: string,
+		options?: {
+			statusCode?: number;
+			errorCode?: string;
+			requestId?: string;
+			details?: ApiError["details"];
+		}
+	) {
+		super(message);
+		this.name = "APIRequestError";
+		this.statusCode = options?.statusCode;
+		this.errorCode = options?.errorCode;
+		this.requestId = options?.requestId;
+		this.details = options?.details;
+	}
+}
 
 function readCookie(name: string): string | null {
 	if (typeof document === "undefined") {
@@ -76,7 +101,7 @@ apiClient.interceptors.request.use((config) => {
 
 apiClient.interceptors.response.use(
 	(response) => response,
-	async (error: AxiosError<{ detail?: string; message?: string }>) => {
+	async (error: AxiosError<ApiError>) => {
 		const originalRequest = error.config as RequestWithRetry | undefined;
 
 		// Handle token refresh on 401
@@ -125,12 +150,23 @@ apiClient.interceptors.response.use(
 			}
 		}
 
-		const message =
-			error.response?.data?.detail ??
-			error.response?.data?.message ??
+		const data = error.response?.data;
+		const baseMessage =
+			data?.message ??
+			data?.detail ??
 			error.message ??
 			"Something went wrong while contacting the server.";
+		const message = data?.request_id
+			? `${baseMessage} (Request ID: ${data.request_id})`
+			: baseMessage;
 
-		return Promise.reject(new Error(message));
+		return Promise.reject(
+			new APIRequestError(message, {
+				statusCode: error.response?.status,
+				errorCode: data?.error,
+				requestId: data?.request_id,
+				details: data?.details,
+			})
+		);
 	}
 );

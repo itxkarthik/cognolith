@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query
 from app.api.deps import CurrentUser, SessionDep
 from app.models.chat import ChatMessages, ChatSession
 from app.schemas.chat import ChatCreate, ChatMessageCreate, ChatMessageResponse, ChatResponse
+from app.schemas.error import StandardErrorResponse
 from app.schemas.note import NoteResponse
 from app.services.chat_service import (
 	convert_chat_to_note,
@@ -83,13 +84,29 @@ def _to_note_response(note: Any) -> NoteResponse:
 	)
 
 
-@router.post(path="/sessions", response_model=ChatResponse)
+@router.post(
+	path="/sessions",
+	response_model=ChatResponse,
+	responses={
+		400: {"model": StandardErrorResponse, "description": "Validation error"},
+		401: {"model": StandardErrorResponse, "description": "Authentication required"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 def create_chat_session_endpoint(*, session: SessionDep, current_user: CurrentUser, body: ChatCreate) -> Any:
 	chat_session = create_chat_session(session=session, current_user=current_user, payload=body)
 	return _to_chat_response(chat_session)
 
 
-@router.get(path="/sessions", response_model=ChatSessionListResponse)
+@router.get(
+	path="/sessions",
+	response_model=ChatSessionListResponse,
+	responses={
+		400: {"model": StandardErrorResponse, "description": "Invalid query parameters"},
+		401: {"model": StandardErrorResponse, "description": "Authentication required"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 def list_chat_sessions_endpoint(
 	*,
 	session: SessionDep,
@@ -106,7 +123,16 @@ def list_chat_sessions_endpoint(
 	return ChatSessionListResponse(data=[_to_chat_response(item) for item in sessions], count=count)
 
 
-@router.get(path="/sessions/{session_id}", response_model=ChatResponse)
+@router.get(
+	path="/sessions/{session_id}",
+	response_model=ChatResponse,
+	responses={
+		401: {"model": StandardErrorResponse, "description": "Authentication required"},
+		403: {"model": StandardErrorResponse, "description": "Access denied"},
+		404: {"model": StandardErrorResponse, "description": "Chat session not found"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 def get_chat_session_endpoint(*, session: SessionDep, current_user: CurrentUser, session_id: int) -> Any:
 	chat_session = get_chat_session_by_id(
 		session=session,
@@ -116,7 +142,18 @@ def get_chat_session_endpoint(*, session: SessionDep, current_user: CurrentUser,
 	return _to_chat_response(chat_session)
 
 
-@router.post(path="/sessions/{session_id}/messages", response_model=ChatMessageResponse)
+@router.post(
+	path="/sessions/{session_id}/messages",
+	response_model=ChatMessageResponse,
+	responses={
+		400: {"model": StandardErrorResponse, "description": "Validation error"},
+		401: {"model": StandardErrorResponse, "description": "Authentication required"},
+		403: {"model": StandardErrorResponse, "description": "Access denied"},
+		404: {"model": StandardErrorResponse, "description": "Chat session not found"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+		503: {"model": StandardErrorResponse, "description": "LLM service unavailable"},
+	},
+)
 def send_message_endpoint(
 	*,
 	session: SessionDep,
@@ -133,7 +170,17 @@ def send_message_endpoint(
 	return _to_chat_message_response(assistant_message)
 
 
-@router.post(path="/sessions/{session_id}/to-note", response_model=NoteResponse)
+@router.post(
+	path="/sessions/{session_id}/to-note",
+	response_model=NoteResponse,
+	responses={
+		400: {"model": StandardErrorResponse, "description": "Validation error"},
+		401: {"model": StandardErrorResponse, "description": "Authentication required"},
+		403: {"model": StandardErrorResponse, "description": "Access denied"},
+		404: {"model": StandardErrorResponse, "description": "Chat session not found"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 def convert_chat_to_note_endpoint(
 	*,
 	session: SessionDep,

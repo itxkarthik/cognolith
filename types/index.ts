@@ -1,6 +1,15 @@
 export interface ApiError {
+	status?: string;
+	error?: string;
 	detail?: string;
 	message?: string;
+	request_id?: string;
+	details?: Array<{
+		code: string;
+		message: string;
+		field?: string;
+		value?: unknown;
+	}>;
 }
 
 export interface MessageResponse {

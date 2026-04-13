@@ -13,6 +13,7 @@ from app import crud
 from app.api.deps import CurrentUser, SessionDep, TokenDep
 from app.models.user import Message, Token, UserPublic, TokenPayload
 from app.core.rate_limit import limiter
+from app.schemas.error import StandardErrorResponse
 
 router = APIRouter(tags=["login"])
 
@@ -56,14 +57,21 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(key=settings.CSRF_COOKIE_NAME, path="/")
 
 
-@router.post(path="/login/access-token")
+@router.post(
+	path="/login/access-token",
+	responses={
+		400: {"model": StandardErrorResponse, "description": "Invalid credentials or inactive user"},
+		429: {"model": StandardErrorResponse, "description": "Too many login attempts"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 @limiter.limit("5/minute")
 def login_access_token(
-        request: Request,
-    response: Response,
-    session: SessionDep,
-    form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
-    ) -> Token:
+	    request: Request,
+	    response: Response,
+	    session: SessionDep,
+	    form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
+	) -> Token:
     """
         OAuth2 token login, get an access token for future requests.
         Rate limited to 5 attempts per minute per IP.
@@ -101,7 +109,14 @@ class RefreshRequest(BaseModel):
     refresh_token: str | None = None
 
 
-@router.post(path="/auth/refresh")
+@router.post(
+	path="/auth/refresh",
+	responses={
+		400: {"model": StandardErrorResponse, "description": "Invalid token format"},
+		401: {"model": StandardErrorResponse, "description": "Invalid or expired refresh token"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 def refresh_access_token(
     request: Request,
     response: Response,
@@ -146,7 +161,15 @@ def refresh_access_token(
     )
 
 
-@router.post(path="/auth/logout")
+@router.post(
+	path="/auth/logout",
+	response_model=Message,
+	responses={
+		400: {"model": StandardErrorResponse, "description": "Invalid token"},
+		401: {"model": StandardErrorResponse, "description": "Authentication required"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 def logout(response: Response, session: SessionDep, token: TokenDep, current_user: CurrentUser) -> Message:
     """
     Logout: blacklist the current access token and revoke all refresh tokens
@@ -173,6 +196,13 @@ def logout(response: Response, session: SessionDep, token: TokenDep, current_use
     return Message(message="Successfully logged out")
 
 
-@router.post(path="/login/test-token", response_model=UserPublic)
+@router.post(
+	path="/login/test-token",
+	response_model=UserPublic,
+	responses={
+		401: {"model": StandardErrorResponse, "description": "Authentication required"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
 def test_token(current_user: CurrentUser) -> Any:
     return current_user
