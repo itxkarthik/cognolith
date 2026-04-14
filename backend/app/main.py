@@ -13,6 +13,7 @@ from app.core.middleware import (
     SecurityHeadersMiddleware,
     RequestIDMiddleware,
     MaxRequestBodySizeMiddleware,
+    RequestLoggingMiddleware,
 )
 from app.core.exceptions import global_exception_handler, AppException
 from app.api.main import api_router
@@ -74,13 +75,16 @@ app.add_exception_handler(Exception, global_exception_handler)
 # 1. Request ID — runs first so all downstream middleware/routes have access
 app.add_middleware(RequestIDMiddleware)
 
-# 2. Security Headers — added to every response
+# 2. Request Logging — logs all requests/responses with structured JSON format
+app.add_middleware(RequestLoggingMiddleware)
+
+# 3. Security Headers — added to every response
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 3. Max Request Body Size — reject oversized payloads early
+# 4. Max Request Body Size — reject oversized payloads early
 app.add_middleware(MaxRequestBodySizeMiddleware)
 
-# 4. CORS — locked down to specific methods and headers
+# 5. CORS — locked down to specific methods and headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.all_cors_origins,

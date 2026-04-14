@@ -4,6 +4,7 @@ import { Inter } from "next/font/google";
 import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
 import { OfflineIndicator } from "@/components/shared/OfflineIndicator";
 import { AuthBootstrap } from "@/components/auth/AuthBootstrap";
+import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,7 @@ export default function RootLayout({
       <body className={`${inter.variable} font-sans antialiased text-white`}>
         <AuthBootstrap />
         <OfflineIndicator />
+        <Toaster />
         <ErrorBoundary>{children}</ErrorBoundary>
       </body>
     </html>
