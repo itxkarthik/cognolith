@@ -4,6 +4,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.utils.sanitization import sanitize_plain_text
+from app.utils.validators import (
+    validate_no_xss,
+    validate_no_sql_injection,
+)
 
 
 class ChatCreate(BaseModel):
@@ -15,6 +19,8 @@ class ChatCreate(BaseModel):
 	def sanitize_strings(cls, value: str | None) -> str | None:
 		if value is None:
 			return value
+		validate_no_xss(value)
+		validate_no_sql_injection(value)
 		return sanitize_plain_text(value)
 
 
@@ -25,6 +31,8 @@ class ChatMessageCreate(BaseModel):
 	@field_validator("content", mode="before")
 	@classmethod
 	def sanitize_content(cls, value: str) -> str:
+		validate_no_xss(value)
+		validate_no_sql_injection(value)
 		return sanitize_plain_text(value)
 
 

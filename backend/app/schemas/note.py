@@ -3,6 +3,12 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.utils.sanitization import sanitize_html, sanitize_plain_text
+from app.utils.validators import (
+    validate_no_xss,
+    validate_no_sql_injection,
+    sanitize_html_content,
+    sanitize_plain_text as validator_sanitize_plain_text,
+)
 
 
 class FolderResponse(BaseModel):
@@ -44,6 +50,9 @@ class FolderCreate(BaseModel):
 	def sanitize_strings(cls, value: str | None) -> str | None:
 		if value is None:
 			return value
+		# Check for XSS patterns first
+		validate_no_xss(value)
+		# Then sanitize
 		return sanitize_plain_text(value)
 
 
@@ -57,6 +66,9 @@ class TagCreate(BaseModel):
 	def sanitize_strings(cls, value: str | None) -> str | None:
 		if value is None:
 			return value
+		# Check for XSS patterns first
+		validate_no_xss(value)
+		# Then sanitize
 		return sanitize_plain_text(value)
 
 
@@ -76,17 +88,28 @@ class NoteCreate(BaseModel):
 	@field_validator("title", mode="before")
 	@classmethod
 	def sanitize_required_title(cls, value: str) -> str:
+		# Check for XSS and SQL injection
+		validate_no_xss(value)
+		validate_no_sql_injection(value)
 		return sanitize_plain_text(value)
 
 	@field_validator("content", mode="before")
 	@classmethod
 	def sanitize_required_content(cls, value: str) -> str:
+		# For HTML content, check for XSS patterns first
+		validate_no_xss(value)
+		# Then sanitize HTML
 		return sanitize_html(value)
 
 	@field_validator("keywords", mode="before")
 	@classmethod
 	def sanitize_keywords(cls, value: list[str]) -> list[str]:
-		return [sanitize_plain_text(keyword) for keyword in value]
+		result = []
+		for keyword in value:
+			validate_no_xss(keyword)
+			validate_no_sql_injection(keyword)
+			result.append(sanitize_plain_text(keyword))
+		return result
 
 
 class NoteUpdate(BaseModel):
@@ -108,6 +131,8 @@ class NoteUpdate(BaseModel):
 	def sanitize_optional_title(cls, value: str | None) -> str | None:
 		if value is None:
 			return value
+		validate_no_xss(value)
+		validate_no_sql_injection(value)
 		return sanitize_plain_text(value)
 
 	@field_validator("content", mode="before")
@@ -115,6 +140,7 @@ class NoteUpdate(BaseModel):
 	def sanitize_optional_content(cls, value: str | None) -> str | None:
 		if value is None:
 			return value
+		validate_no_xss(value)
 		return sanitize_html(value)
 
 	@field_validator("keywords", mode="before")
@@ -122,7 +148,12 @@ class NoteUpdate(BaseModel):
 	def sanitize_keywords(cls, value: list[str] | None) -> list[str] | None:
 		if value is None:
 			return value
-		return [sanitize_plain_text(keyword) for keyword in value]
+		result = []
+		for keyword in value:
+			validate_no_xss(keyword)
+			validate_no_sql_injection(keyword)
+			result.append(sanitize_plain_text(keyword))
+		return result
 
 
 class NoteResponse(BaseModel):

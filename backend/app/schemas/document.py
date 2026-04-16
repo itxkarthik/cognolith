@@ -3,6 +3,10 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.utils.sanitization import sanitize_plain_text
+from app.utils.validators import (
+    validate_no_xss,
+    validate_no_sql_injection,
+)
 
 
 class DocumentCreate(BaseModel):
@@ -13,12 +17,19 @@ class DocumentCreate(BaseModel):
 	@field_validator("title", mode="before")
 	@classmethod
 	def sanitize_title(cls, value: str) -> str:
+		validate_no_xss(value)
+		validate_no_sql_injection(value)
 		return sanitize_plain_text(value)
 
 	@field_validator("tags", mode="before")
 	@classmethod
 	def sanitize_tags(cls, value: list[str]) -> list[str]:
-		return [sanitize_plain_text(tag) for tag in value]
+		result = []
+		for tag in value:
+			validate_no_xss(tag)
+			validate_no_sql_injection(tag)
+			result.append(sanitize_plain_text(tag))
+		return result
 
 
 class DocumentUpdate(BaseModel):
@@ -33,6 +44,8 @@ class DocumentUpdate(BaseModel):
 	def sanitize_title(cls, value: str | None) -> str | None:
 		if value is None:
 			return value
+		validate_no_xss(value)
+		validate_no_sql_injection(value)
 		return sanitize_plain_text(value)
 
 	@field_validator("summary", mode="before")
@@ -40,6 +53,7 @@ class DocumentUpdate(BaseModel):
 	def sanitize_summary(cls, value: str | None) -> str | None:
 		if value is None:
 			return value
+		validate_no_xss(value)
 		return sanitize_plain_text(value)
 
 	@field_validator("tags", mode="before")
@@ -47,14 +61,24 @@ class DocumentUpdate(BaseModel):
 	def sanitize_tags(cls, value: list[str] | None) -> list[str] | None:
 		if value is None:
 			return value
-		return [sanitize_plain_text(tag) for tag in value]
+		result = []
+		for tag in value:
+			validate_no_xss(tag)
+			validate_no_sql_injection(tag)
+			result.append(sanitize_plain_text(tag))
+		return result
 
 	@field_validator("keywords", mode="before")
 	@classmethod
 	def sanitize_keywords(cls, value: list[str] | None) -> list[str] | None:
 		if value is None:
 			return value
-		return [sanitize_plain_text(keyword) for keyword in value]
+		result = []
+		for keyword in value:
+			validate_no_xss(keyword)
+			validate_no_sql_injection(keyword)
+			result.append(sanitize_plain_text(keyword))
+		return result
 
 
 class DocumentResponse(BaseModel):

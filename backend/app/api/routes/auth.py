@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.core import security
 from app.core.config import settings
+from app.core.csrf import get_csrf_token
 from app import crud
 from app.api.deps import CurrentUser, SessionDep, TokenDep
 from app.models.user import Message, Token, UserPublic, TokenPayload
@@ -18,37 +19,57 @@ from app.schemas.error import StandardErrorResponse
 router = APIRouter(tags=["login"])
 
 
-def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
-    secure = settings.ENVIRONMENT != "local"
-    csrf_token = secrets.token_urlsafe(32)
+@router.get(
+	path="/csrf-token",
+	responses={
+		200: {"description": "CSRF token successfully generated"},
+		500: {"model": StandardErrorResponse, "description": "Internal server error"},
+	},
+)
+async def get_csrf_token_endpoint(request: Request) -> dict:
+	"""
+	Get a CSRF token for use in subsequent state-changing requests.
+	
+	This endpoint provides a CSRF token that must be included in the X-CSRF-Token
+	header for POST, PUT, PATCH, and DELETE requests.
+	
+	The token is set in a cookie and must also be sent back in the header for validation.
+	"""
+	return await get_csrf_token(request)
 
-    response.set_cookie(
-        key=settings.ACCESS_TOKEN_COOKIE_NAME,
-        value=access_token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/",
-    )
-    response.set_cookie(
-        key=settings.REFRESH_TOKEN_COOKIE_NAME,
-        value=refresh_token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        path="/",
-    )
-    response.set_cookie(
-        key=settings.CSRF_COOKIE_NAME,
-        value=csrf_token,
-        httponly=False,
-        secure=secure,
-        samesite="lax",
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        path="/",
-    )
+
+def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+	secure = settings.ENVIRONMENT != "local"
+	csrf_token = secrets.token_urlsafe(32)
+
+	response.set_cookie(
+		key=settings.ACCESS_TOKEN_COOKIE_NAME,
+		value=access_token,
+		httponly=True,
+		secure=secure,
+		samesite="lax",
+		max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+		path="/",
+	)
+	response.set_cookie(
+		key=settings.REFRESH_TOKEN_COOKIE_NAME,
+		value=refresh_token,
+		httponly=True,
+		secure=secure,
+		samesite="lax",
+		max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+		path="/",
+	)
+	response.set_cookie(
+		key=settings.CSRF_COOKIE_NAME,
+		value=csrf_token,
+		httponly=False,
+		secure=secure,
+		samesite="lax",
+		max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+		path="/",
+	)
+
 
 
 def _clear_auth_cookies(response: Response) -> None:

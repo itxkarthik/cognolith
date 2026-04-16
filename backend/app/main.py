@@ -15,6 +15,7 @@ from app.core.middleware import (
     MaxRequestBodySizeMiddleware,
     RequestLoggingMiddleware,
 )
+from app.core.csrf import CSRFMiddleware
 from app.core.exceptions import global_exception_handler, AppException
 from app.api.main import api_router
 
@@ -78,13 +79,16 @@ app.add_middleware(RequestIDMiddleware)
 # 2. Request Logging — logs all requests/responses with structured JSON format
 app.add_middleware(RequestLoggingMiddleware)
 
-# 3. Security Headers — added to every response
+# 3. CSRF Protection — validates CSRF tokens on state-changing requests
+app.add_middleware(CSRFMiddleware)
+
+# 4. Security Headers — added to every response
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 4. Max Request Body Size — reject oversized payloads early
+# 5. Max Request Body Size — reject oversized payloads early
 app.add_middleware(MaxRequestBodySizeMiddleware)
 
-# 5. CORS — locked down to specific methods and headers
+# 6. CORS — locked down to specific methods and headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.all_cors_origins,
