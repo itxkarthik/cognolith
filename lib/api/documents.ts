@@ -85,4 +85,3 @@ export async function deleteDocument(id: number): Promise<MessageResponse> {
 	const response = await apiClient.delete<MessageResponse>(`/documents/${id}`);
 	return response.data;
 }
-

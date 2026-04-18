@@ -10,11 +10,11 @@ Personal AI Knowledge Assistant is an open-source platform for building intellig
 <!-- [![Discord](https://img.shields.io/badge/Discord-Community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/)
 [![X](https://img.shields.io/badge/X-Follow-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/) -->
 
-Quickstart: [Self-Hosted Setup](#quickstart)  
-Cloud Version: Coming soon  
+Quickstart: [Self-Hosted Setup](#quickstart)
+Cloud Version: Coming soon
 <!-- Community: [Discord](https://discord.gg/) -->
 
-Contribute: Open issues and pull requests in this repository  
+Contribute: Open issues and pull requests in this repository
 
 <!-- ## Demo -->
 

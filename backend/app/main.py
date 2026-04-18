@@ -2,26 +2,27 @@ import logging
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from app.core.config import settings
-from app.core.database import create_db_and_tables_with_retry, test_db_connection
-from app.core.middleware import (
-    SecurityHeadersMiddleware,
-    RequestIDMiddleware,
-    MaxRequestBodySizeMiddleware,
-    RequestLoggingMiddleware,
-)
-from app.core.csrf import CSRFMiddleware
-from app.core.exceptions import global_exception_handler, AppException
+
 from app.api.main import api_router
+from app.api.routes.test import router as test_router
+from app.core.config import settings
+from app.core.csrf import CSRFMiddleware
+from app.core.database import create_db_and_tables_with_retry, test_db_connection
+from app.core.exceptions import AppException, global_exception_handler
+from app.core.middleware import (
+    MaxRequestBodySizeMiddleware,
+    RequestIDMiddleware,
+    RequestLoggingMiddleware,
+    SecurityHeadersMiddleware,
+)
 
 # Rate Limiter
 from app.core.rate_limit import limiter
-from app.api.routes.test import router as test_router
 
 logger = logging.getLogger(__name__)
 

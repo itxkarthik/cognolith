@@ -1,21 +1,24 @@
+from datetime import UTC, datetime
 from enum import Enum
-from sqlmodel import Column, Field, Index, SQLModel, Relationship
+from typing import TYPE_CHECKING
+
+from pydantic import ConfigDict
 from sqlalchemy import desc
 from sqlalchemy.dialects.postgresql import JSONB
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING
-from pydantic import ConfigDict
+from sqlmodel import Column, Field, Index, Relationship, SQLModel
 
 if TYPE_CHECKING:
-    from .user import User
     from .note import Notes
+    from .user import User
+
 
 class TimestampMixin(SQLModel):
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-        sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
+        default_factory=lambda: datetime.now(UTC),
+        sa_column_kwargs={"onupdate": lambda: datetime.now(UTC)},
     )
+
 
 class ChatSession(TimestampMixin, SQLModel, table=True):
     __tablename__ = "chat_sessions"
@@ -32,25 +35,28 @@ class ChatSession(TimestampMixin, SQLModel, table=True):
 
     # Relationships
     user: "User" = Relationship(back_populates="chat_sessions")
-    messages: list["ChatMessages"] = Relationship(back_populates="session", sa_relationship_kwargs={
+    messages: list["ChatMessages"] = Relationship(
+        back_populates="session",
+        sa_relationship_kwargs={
             "cascade": "all, delete-orphan",
-            "order_by": "ChatMessages.created_at"
-        })
+            "order_by": "ChatMessages.created_at",
+        },
+    )
     linked_notes: list["Notes"] = Relationship(
         back_populates="linked_chat_session",
-        sa_relationship_kwargs={"foreign_keys": "[Notes.linked_chat_session_id]"}
+        sa_relationship_kwargs={"foreign_keys": "[Notes.linked_chat_session_id]"},
     )
 
+
 class ChatRole(str, Enum):
-    user ="user"
+    user = "user"
     assistant = "assistant"
     system = "system"
 
+
 class ChatMessages(TimestampMixin, SQLModel, table=True):
     __tablename__ = "chat_messages"
-    __table_args__ = (
-        Index("ix_chat_messages_session_created", "session_id", desc("created_at")),
-    )
+    __table_args__ = (Index("ix_chat_messages_session_created", "session_id", desc("created_at")),)
     model_config = ConfigDict(protected_namespaces=())
     id: int | None = Field(default=None, primary_key=True)
     session_id: int | None = Field(foreign_key="chat_sessions.id", nullable=False)

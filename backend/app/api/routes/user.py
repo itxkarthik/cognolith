@@ -1,23 +1,29 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import col, delete, func, select
+from fastapi import APIRouter, Depends, HTTPException
+from sqlmodel import func, select
 
 from app import crud
 from app.api.deps import CurrentUser, SessionDep, get_current_active_superuser
-from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
 from app.models.user import (
-        Message, UpdatePassword, User, UserPublic,
-        UserCreate, UserRegister, UserUpdateMe, UsersPublic,
-        UserUpdate,
-    )
+    Message,
+    UpdatePassword,
+    User,
+    UserCreate,
+    UserPublic,
+    UserRegister,
+    UsersPublic,
+    UserUpdate,
+    UserUpdateMe,
+)
 from app.schemas.error import StandardErrorResponse
 
 router = APIRouter(prefix="/users", tags=["users"])
 
+
 @router.get(
-    path="/", 
+    path="/",
     dependencies=[Depends(get_current_active_superuser)],
     response_model=UsersPublic,
     responses={
@@ -38,8 +44,9 @@ def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
 
     return UsersPublic(data=users, count=count)
 
+
 @router.post(
-    path="/", 
+    path="/",
     dependencies=[Depends(get_current_active_superuser)],
     response_model=UserPublic,
     responses={
@@ -51,7 +58,7 @@ def read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:
 )
 def create_user(*, session: SessionDep, user_in: UserCreate) -> Any:
     """
-        Create new user
+    Create new user
     """
     user = crud.get_user_by_email(session=session, email=user_in.email)
     if user:
@@ -63,6 +70,7 @@ def create_user(*, session: SessionDep, user_in: UserCreate) -> Any:
     user = crud.create_user(session=session, user_create=user_in)
 
     return user
+
 
 @router.patch(
     path="/me",
@@ -82,7 +90,7 @@ def update_user_me(*, session: SessionDep, user_in: UserUpdateMe, current_user: 
         existing_user = crud.get_user_by_email(session=session, email=user_in.email)
         if existing_user and existing_user.id != current_user.id:
             raise HTTPException(
-                status_code=409, 
+                status_code=409,
                 detail="User with this email already exists",
             )
     user_data = user_in.model_dump(exclude_unset=True)
@@ -91,6 +99,7 @@ def update_user_me(*, session: SessionDep, user_in: UserUpdateMe, current_user: 
     session.commit()
     session.refresh(current_user)
     return current_user
+
 
 @router.patch(
     path="/me/password",
@@ -101,7 +110,9 @@ def update_user_me(*, session: SessionDep, user_in: UserUpdateMe, current_user: 
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
-def update_password_me(*, session: SessionDep, body: UpdatePassword, current_user: CurrentUser) -> Any:
+def update_password_me(
+    *, session: SessionDep, body: UpdatePassword, current_user: CurrentUser
+) -> Any:
     """
     Update current user password
     """
@@ -110,7 +121,7 @@ def update_password_me(*, session: SessionDep, body: UpdatePassword, current_use
         raise HTTPException(status_code=400, detail="Incorrect Password")
     if body.current_password == body.new_password:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail="New password cannot be same as old password",
         )
     hashed_password = get_password_hash(body.new_password)
@@ -118,6 +129,7 @@ def update_password_me(*, session: SessionDep, body: UpdatePassword, current_use
     session.add(current_user)
     session.commit()
     return Message(message="Password updated successfully")
+
 
 @router.get(
     path="/me",
@@ -132,6 +144,7 @@ def read_user_me(current_user: CurrentUser) -> Any:
     Get current user.
     """
     return current_user
+
 
 @router.delete(
     path="/me",
@@ -155,6 +168,7 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
     session.commit()
     return Message(message="User Deleted Successfully")
 
+
 @router.post(
     path="/signup",
     response_model=UserPublic,
@@ -176,6 +190,7 @@ def register_user(session: SessionDep, user_in: UserRegister) -> Any:
     user_create = UserCreate.model_validate(user_in)
     user = crud.create_user(session=session, user_create=user_create)
     return user
+
 
 @router.get(
     path="/{user_id}",
@@ -206,6 +221,7 @@ def read_user_by_id(user_id: int, session: SessionDep, current_user: CurrentUser
         )
     return user
 
+
 @router.patch(
     path="/{user_id}",
     dependencies=[Depends(get_current_active_superuser)],
@@ -231,9 +247,7 @@ def update_user(*, session: SessionDep, user_id: int, user_in: UserUpdate) -> An
     if user_in.email:
         existing_user = crud.get_user_by_email(session=session, email=user_in.email)
         if existing_user and existing_user.id != user_id:
-            raise HTTPException(
-                status_code=409, detail="User with this email already exists"
-            )
+            raise HTTPException(status_code=409, detail="User with this email already exists")
 
     db_user = crud.update_user(session=session, db_user=db_user, user_in=user_in)
     return db_user
@@ -244,14 +258,15 @@ def update_user(*, session: SessionDep, user_id: int, user_in: UserUpdate) -> An
     dependencies=[Depends(get_current_active_superuser)],
     responses={
         401: {"model": StandardErrorResponse, "description": "Authentication required"},
-        403: {"model": StandardErrorResponse, "description": "Admin privileges or cannot delete self"},
+        403: {
+            "model": StandardErrorResponse,
+            "description": "Admin privileges or cannot delete self",
+        },
         404: {"model": StandardErrorResponse, "description": "User not found"},
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
-def delete_user(
-    session: SessionDep, current_user: CurrentUser, user_id: int
-) -> Message:
+def delete_user(session: SessionDep, current_user: CurrentUser, user_id: int) -> Message:
     """
     Delete a user.
     """

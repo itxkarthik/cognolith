@@ -13,22 +13,19 @@ import pytest
 from sqlmodel import Session, select
 
 from app.ai.vectorstore import PgVectorStore
-from app.models.document import DocumentChunks
-from app.models.note import Notes, NoteTags, NoteTagRelations
+from app.models.chat import ChatSession
+from app.models.document import Document, DocumentChunks
+from app.models.note import Notes, NoteTags
 from app.models.user import User
 from app.services.chat_service import list_chat_sessions
 from app.services.document_service import list_documents
-from app.services.note_service import list_notes, assign_tags_to_note
-from app.models.chat import ChatSession
-from app.models.document import Document
+from app.services.note_service import list_notes
 
 
 class TestNoteListingPerformance:
     """Test note listing with efficient tag loading."""
 
-    def test_list_notes_with_tags_eager_loading(
-        self, session: Session, test_user: User
-    ) -> None:
+    def test_list_notes_with_tags_eager_loading(self, session: Session, test_user: User) -> None:
         """
         Verify that list_notes uses joinedload for tags.
 
@@ -65,9 +62,7 @@ class TestNoteListingPerformance:
             assert note.tags is not None
             assert len(note.tags) > 0
 
-    def test_list_notes_filter_by_tag_id(
-        self, session: Session, test_user: User
-    ) -> None:
+    def test_list_notes_filter_by_tag_id(self, session: Session, test_user: User) -> None:
         """
         Verify tag filtering works correctly with eager loading.
         """
@@ -88,17 +83,13 @@ class TestNoteListingPerformance:
         session.commit()
 
         # Filter by tag_id
-        notes, total = list_notes(
-            session=session, current_user=test_user, tag_id=tag.id, limit=10
-        )
+        notes, total = list_notes(session=session, current_user=test_user, tag_id=tag.id, limit=10)
 
         assert len(notes) == 3
         assert total == 3
         assert all(tag in note.tags for note in notes)
 
-    def test_list_notes_pagination_efficiency(
-        self, session: Session, test_user: User
-    ) -> None:
+    def test_list_notes_pagination_efficiency(self, session: Session, test_user: User) -> None:
         """
         Verify pagination uses database LIMIT/OFFSET instead of in-memory slicing.
 
@@ -115,16 +106,12 @@ class TestNoteListingPerformance:
         session.commit()
 
         # Get first page
-        page1, total1 = list_notes(
-            session=session, current_user=test_user, skip=0, limit=10
-        )
+        page1, total1 = list_notes(session=session, current_user=test_user, skip=0, limit=10)
         assert len(page1) == 10
         assert total1 == 50
 
         # Get second page
-        page2, total2 = list_notes(
-            session=session, current_user=test_user, skip=10, limit=10
-        )
+        page2, total2 = list_notes(session=session, current_user=test_user, skip=10, limit=10)
         assert len(page2) == 10
         assert total2 == 50
 
@@ -134,9 +121,7 @@ class TestNoteListingPerformance:
         assert len(page1_ids & page2_ids) == 0  # No overlap
 
         # Get last partial page
-        page5, _ = list_notes(
-            session=session, current_user=test_user, skip=40, limit=10
-        )
+        page5, _ = list_notes(session=session, current_user=test_user, skip=40, limit=10)
         assert len(page5) == 10
 
     def test_list_notes_combined_filters_with_pagination(
@@ -177,9 +162,7 @@ class TestNoteListingPerformance:
 class TestPaginationPerformance:
     """Test pagination efficiency in document and chat session listing."""
 
-    def test_document_listing_database_pagination(
-        self, session: Session, test_user: User
-    ) -> None:
+    def test_document_listing_database_pagination(self, session: Session, test_user: User) -> None:
         """
         Verify document listing uses database LIMIT/OFFSET.
         """
@@ -198,16 +181,12 @@ class TestPaginationPerformance:
         session.commit()
 
         # Get first page
-        docs1, total = list_documents(
-            session=session, current_user=test_user, skip=0, limit=20
-        )
+        docs1, total = list_documents(session=session, current_user=test_user, skip=0, limit=20)
         assert len(docs1) == 20
         assert total == 100
 
         # Get second page
-        docs2, _ = list_documents(
-            session=session, current_user=test_user, skip=20, limit=20
-        )
+        docs2, _ = list_documents(session=session, current_user=test_user, skip=20, limit=20)
         assert len(docs2) == 20
 
         # Verify no overlap
@@ -224,9 +203,7 @@ class TestPaginationPerformance:
         # Create documents with different content
         for i in range(50):
             is_searchable = i < 30
-            content = (
-                "Important research data" if is_searchable else "Unrelated content"
-            )
+            content = "Important research data" if is_searchable else "Unrelated content"
             doc = Document(
                 user_id=test_user.id,
                 title=f"Document {i:02d}",
@@ -309,21 +286,15 @@ class TestPaginationPerformance:
         session.commit()
 
         # Get full pages
-        page1, total = list_chat_sessions(
-            session=session, current_user=test_user, skip=0, limit=10
-        )
+        page1, total = list_chat_sessions(session=session, current_user=test_user, skip=0, limit=10)
         assert len(page1) == 10
         assert total == 25
 
-        page2, _ = list_chat_sessions(
-            session=session, current_user=test_user, skip=10, limit=10
-        )
+        page2, _ = list_chat_sessions(session=session, current_user=test_user, skip=10, limit=10)
         assert len(page2) == 10
 
         # Get partial last page
-        page3, _ = list_chat_sessions(
-            session=session, current_user=test_user, skip=20, limit=10
-        )
+        page3, _ = list_chat_sessions(session=session, current_user=test_user, skip=20, limit=10)
         assert len(page3) == 5
 
 
@@ -365,10 +336,7 @@ class TestBulkEmbeddingInsert:
             session.refresh(chunk)
 
         # Create embeddings (mock vectors)
-        embeddings = [
-            [0.1 * j for j in range(10)]  # 10-dimensional vectors
-            for _ in range(5)
-        ]
+        embeddings = [[0.1 * j for j in range(10)] for _ in range(5)]  # 10-dimensional vectors
 
         # Store using bulk insert
         vector_store = PgVectorStore(session=session)
@@ -437,9 +405,7 @@ class TestBulkEmbeddingInsert:
         from sqlalchemy import text
 
         result = session.exec(
-            text(
-                "SELECT COUNT(*) as count FROM chunk_embeddings WHERE chunk_id = :chunk_id"
-            ),
+            text("SELECT COUNT(*) as count FROM chunk_embeddings WHERE chunk_id = :chunk_id"),
             params={"chunk_id": chunk.id},
         ).first()
         assert result[0] == 1  # Only one record
@@ -454,9 +420,7 @@ class TestBulkEmbeddingInsert:
         chunks = [DocumentChunks(document_id=1, chunk_index=0, content="Test")]
         embeddings = [[0.1, 0.2], [0.3, 0.4]]  # 2 embeddings, 1 chunk
 
-        with pytest.raises(
-            ValueError, match="Chunk count does not match embedding count"
-        ):
+        with pytest.raises(ValueError, match="Chunk count does not match embedding count"):
             vector_store.store_document_chunk_embeddings(
                 chunks=chunks,
                 embeddings=embeddings,
@@ -476,9 +440,7 @@ class TestBulkEmbeddingInsert:
                 model="test",
             )
 
-    def test_bulk_embedding_insert_dimension_consistency(
-        self, session: Session
-    ) -> None:
+    def test_bulk_embedding_insert_dimension_consistency(self, session: Session) -> None:
         """
         Verify bulk insert enforces consistent embedding dimensions.
         """
@@ -512,9 +474,7 @@ class TestBulkEmbeddingInsert:
         ]
 
         vector_store = PgVectorStore(session=session)
-        with pytest.raises(
-            ValueError, match="All embedding vectors must use the same dimensions"
-        ):
+        with pytest.raises(ValueError, match="All embedding vectors must use the same dimensions"):
             vector_store.store_document_chunk_embeddings(
                 chunks=[chunk1, chunk2],
                 embeddings=embeddings,
@@ -526,9 +486,7 @@ class TestBulkEmbeddingInsert:
 class TestChatSessionPerformance:
     """Test chat session message loading efficiency (Phase 4a)."""
 
-    def test_chat_session_messages_eager_loading(
-        self, session: Session, test_user: User
-    ) -> None:
+    def test_chat_session_messages_eager_loading(self, session: Session, test_user: User) -> None:
         """
         Verify that list_chat_sessions uses joinedload for messages.
 
@@ -558,9 +516,7 @@ class TestChatSessionPerformance:
         session.commit()
 
         # List sessions - should have messages eagerly loaded
-        sessions, total = list_chat_sessions(
-            session=session, current_user=test_user, limit=10
-        )
+        sessions, total = list_chat_sessions(session=session, current_user=test_user, limit=10)
 
         assert len(sessions) == 1
         assert total == 1
@@ -580,8 +536,9 @@ class TestChatSessionPerformance:
         - Without eager load: 1 + 10 = 11 queries
         - With eager load: 1 query (JOIN across all)
         """
-        from app.models.chat import ChatMessages, ChatSession
         from datetime import datetime, timedelta
+
+        from app.models.chat import ChatMessages, ChatSession
 
         # Create 10 chat sessions
         base_time = datetime.now()
@@ -674,9 +631,7 @@ class TestChatSessionPerformance:
         page2_ids = {s.id for s in page2}
         assert len(page1_ids & page2_ids) == 0
 
-    def test_chat_session_empty_messages(
-        self, session: Session, test_user: User
-    ) -> None:
+    def test_chat_session_empty_messages(self, session: Session, test_user: User) -> None:
         """
         Verify that chat sessions without messages work correctly with eager loading.
         """
@@ -692,9 +647,7 @@ class TestChatSessionPerformance:
         session.commit()
 
         # List sessions
-        sessions, total = list_chat_sessions(
-            session=session, current_user=test_user, limit=10
-        )
+        sessions, total = list_chat_sessions(session=session, current_user=test_user, limit=10)
 
         assert len(sessions) == 5
         assert total == 5
@@ -703,9 +656,7 @@ class TestChatSessionPerformance:
         for chat_sess in sessions:
             assert len(chat_sess.messages) == 0
 
-    def test_chat_session_mixed_messages(
-        self, session: Session, test_user: User
-    ) -> None:
+    def test_chat_session_mixed_messages(self, session: Session, test_user: User) -> None:
         """
         Test eager loading with mixed scenarios (some sessions with messages, some without).
         """
@@ -783,9 +734,7 @@ class TestChatSessionPerformance:
         session.commit()
 
         # Retrieve and verify
-        sessions, _ = list_chat_sessions(
-            session=session, current_user=test_user, limit=10
-        )
+        sessions, _ = list_chat_sessions(session=session, current_user=test_user, limit=10)
         retrieved_session = sessions[0]
 
         assert len(retrieved_session.messages) == 4

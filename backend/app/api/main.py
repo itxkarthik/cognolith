@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+
 from app.api.routes import auth, chat, documents, notes, search, user
 
 api_router = APIRouter()

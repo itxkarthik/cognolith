@@ -16,20 +16,20 @@ Key Security Scenarios:
 - Token replay attack prevention
 """
 
-import pytest
-from datetime import datetime, timedelta, timezone
-from fastapi.testclient import TestClient
-from sqlmodel import Session, select, delete
-import jwt
+from datetime import UTC, datetime, timedelta
 
-from app.main import app
+import jwt
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session, delete, select
+
+from app import crud
+from app.core import security
 from app.core.config import settings
 from app.core.database import engine
-from app.models.user import User, RefreshToken, TokenBlacklist, UserCreate
+from app.main import app
+from app.models.user import RefreshToken, TokenBlacklist, User, UserCreate
 from app.services import auth_service
-from app.core import security
-from app import crud
-
 
 client = TestClient(app)
 
@@ -50,9 +50,7 @@ def db_session():
 def test_user(db_session: Session) -> User:
     """Create a test user."""
     user_create = UserCreate(
-        email="tokentest@example.com",
-        password="testpassword123",
-        full_name="Token Test User"
+        email="tokentest@example.com", password="testpassword123", full_name="Token Test User"
     )
     return crud.create_user(session=db_session, user_create=user_create)
 
@@ -76,9 +74,7 @@ class TestTokenCreation:
 
         # Decode without verification to check claims
         decoded = jwt.decode(
-            token_pair.access_token,
-            settings.SECRET_KEY,
-            algorithms=[security.ALGORITHM]
+            token_pair.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
         )
 
         assert "exp" in decoded
@@ -87,10 +83,10 @@ class TestTokenCreation:
         assert decoded["sub"] == str(test_user.id)
 
         # Verify exp is 30 minutes in future
-        exp_datetime = datetime.fromtimestamp(decoded["exp"], tz=timezone.utc)
-        now = datetime.now(timezone.utc)
+        exp_datetime = datetime.fromtimestamp(decoded["exp"], tz=UTC)
+        now = datetime.now(UTC)
         time_until_exp = (exp_datetime - now).total_seconds()
-        
+
         # Should be approximately 30 minutes (allow 5 second drift)
         assert 1795 < time_until_exp < 1805
 
@@ -99,9 +95,7 @@ class TestTokenCreation:
         token_pair = auth_service.create_token_pair(session=db_session, user=test_user)
 
         decoded = jwt.decode(
-            token_pair.access_token,
-            settings.SECRET_KEY,
-            algorithms=[security.ALGORITHM]
+            token_pair.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
         )
 
         assert "jti" in decoded
@@ -126,7 +120,7 @@ class TestTokenCreation:
         hashed = security.hash_refresh_token(token_pair.refresh_token)
         db_token = crud.get_refresh_token_by_hash(session=db_session, hashed_token=hashed)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         time_until_exp = (db_token.expires_at - now).total_seconds()
 
         # Should be approximately 7 days (allow 5 min drift)
@@ -143,8 +137,12 @@ class TestTokenCreation:
         assert token_pair1.refresh_token != token_pair2.refresh_token
 
         # But should be for same user
-        decoded1 = jwt.decode(token_pair1.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
-        decoded2 = jwt.decode(token_pair2.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
+        decoded1 = jwt.decode(
+            token_pair1.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
+        decoded2 = jwt.decode(
+            token_pair2.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
         assert decoded1["sub"] == decoded2["sub"] == str(test_user.id)
 
 
@@ -157,9 +155,7 @@ class TestTokenRefresh:
 
         # Exchange refresh token for new pair
         new_pair = auth_service.refresh_access_token_from_refresh(
-            session=db_session,
-            user_id=test_user.id,
-            refresh_token=initial_pair.refresh_token
+            session=db_session, user_id=test_user.id, refresh_token=initial_pair.refresh_token
         )
 
         assert new_pair.access_token != initial_pair.access_token
@@ -172,9 +168,7 @@ class TestTokenRefresh:
 
         # First refresh should succeed
         new_pair1 = auth_service.refresh_access_token_from_refresh(
-            session=db_session,
-            user_id=test_user.id,
-            refresh_token=refresh_token
+            session=db_session, user_id=test_user.id, refresh_token=refresh_token
         )
         assert new_pair1 is not None
 
@@ -183,7 +177,7 @@ class TestTokenRefresh:
             auth_service.refresh_access_token_from_refresh(
                 session=db_session,
                 user_id=test_user.id,
-                refresh_token=refresh_token  # Same token, already revoked
+                refresh_token=refresh_token,  # Same token, already revoked
             )
 
     def test_refresh_revokes_old_token(self, db_session: Session, test_user: User):
@@ -192,21 +186,17 @@ class TestTokenRefresh:
 
         # Refresh the token
         auth_service.refresh_access_token_from_refresh(
-            session=db_session,
-            user_id=test_user.id,
-            refresh_token=initial_pair.refresh_token
+            session=db_session, user_id=test_user.id, refresh_token=initial_pair.refresh_token
         )
 
         # Old token should be revoked in database
         hashed_old = security.hash_refresh_token(initial_pair.refresh_token)
-        
+
         # Query with revoked=True to find it
         from sqlmodel import and_
+
         statement = select(RefreshToken).where(
-            and_(
-                RefreshToken.hashed_token == hashed_old,
-                RefreshToken.revoked == True
-            )
+            and_(RefreshToken.hashed_token == hashed_old, RefreshToken.revoked == True)
         )
         old_token = db_session.exec(statement).first()
         assert old_token is not None
@@ -216,21 +206,20 @@ class TestTokenRefresh:
         """Invalid refresh token should fail gracefully."""
         with pytest.raises(ValueError, match="Invalid or expired refresh token"):
             auth_service.refresh_access_token_from_refresh(
-                session=db_session,
-                user_id=test_user.id,
-                refresh_token="invalid_token_xyz"
+                session=db_session, user_id=test_user.id, refresh_token="invalid_token_xyz"
             )
 
     def test_refresh_expired_token_fails(self, db_session: Session, test_user: User):
         """Expired refresh token should fail."""
         # Create a token manually with past expiration
         from app.core.security import hash_refresh_token
+
         raw_token = security.generate_refresh_token()
         expired_token = RefreshToken(
             user_id=test_user.id,
             hashed_token=hash_refresh_token(raw_token),
-            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
-            revoked=False
+            expires_at=datetime.now(UTC) - timedelta(days=1),
+            revoked=False,
         )
         db_session.add(expired_token)
         db_session.commit()
@@ -238,9 +227,7 @@ class TestTokenRefresh:
         # Should fail because token is expired
         with pytest.raises(ValueError, match="Invalid or expired refresh token"):
             auth_service.refresh_access_token_from_refresh(
-                session=db_session,
-                user_id=test_user.id,
-                refresh_token=raw_token
+                session=db_session, user_id=test_user.id, refresh_token=raw_token
             )
 
 
@@ -252,20 +239,14 @@ class TestTokenRevocation:
         token_pair = auth_service.create_token_pair(session=db_session, user=test_user)
 
         decoded = jwt.decode(
-            token_pair.access_token,
-            settings.SECRET_KEY,
-            algorithms=[security.ALGORITHM]
+            token_pair.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
         )
         jti = decoded["jti"]
         exp = decoded["exp"]
 
         # Revoke the token
-        expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
-        auth_service.revoke_access_token(
-            session=db_session,
-            jti=jti,
-            expires_at=expires_at
-        )
+        expires_at = datetime.fromtimestamp(exp, tz=UTC)
+        auth_service.revoke_access_token(session=db_session, jti=jti, expires_at=expires_at)
 
         # Check blacklist
         assert auth_service.is_access_token_blacklisted(session=db_session, jti=jti)
@@ -275,9 +256,7 @@ class TestTokenRevocation:
         token_pair = auth_service.create_token_pair(session=db_session, user=test_user)
 
         decoded = jwt.decode(
-            token_pair.access_token,
-            settings.SECRET_KEY,
-            algorithms=[security.ALGORITHM]
+            token_pair.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
         )
         jti = decoded["jti"]
 
@@ -285,17 +264,15 @@ class TestTokenRevocation:
         assert not auth_service.is_access_token_blacklisted(session=db_session, jti=jti)
 
         # Revoke it
-        expires_at = datetime.fromtimestamp(decoded["exp"], tz=timezone.utc)
-        auth_service.revoke_access_token(
-            session=db_session,
-            jti=jti,
-            expires_at=expires_at
-        )
+        expires_at = datetime.fromtimestamp(decoded["exp"], tz=UTC)
+        auth_service.revoke_access_token(session=db_session, jti=jti, expires_at=expires_at)
 
         # After revocation, should be blacklisted
         assert auth_service.is_access_token_blacklisted(session=db_session, jti=jti)
 
-    def test_revoke_all_user_tokens_revokes_refresh_tokens(self, db_session: Session, test_user: User):
+    def test_revoke_all_user_tokens_revokes_refresh_tokens(
+        self, db_session: Session, test_user: User
+    ):
         """Revoking all tokens should revoke all refresh tokens."""
         # Create multiple token pairs
         token_pair1 = auth_service.create_token_pair(session=db_session, user=test_user)
@@ -309,11 +286,9 @@ class TestTokenRevocation:
         hashed2 = security.hash_refresh_token(token_pair2.refresh_token)
 
         from sqlmodel import and_
+
         statement = select(RefreshToken).where(
-            and_(
-                RefreshToken.user_id == test_user.id,
-                RefreshToken.revoked == True
-            )
+            and_(RefreshToken.user_id == test_user.id, RefreshToken.revoked == True)
         )
         revoked_tokens = db_session.exec(statement).all()
         assert len(revoked_tokens) >= 2
@@ -327,13 +302,11 @@ class TestTokenExpiration:
         token_pair = auth_service.create_token_pair(session=db_session, user=test_user)
 
         decoded = jwt.decode(
-            token_pair.access_token,
-            settings.SECRET_KEY,
-            algorithms=[security.ALGORITHM]
+            token_pair.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
         )
 
-        exp_datetime = datetime.fromtimestamp(decoded["exp"], tz=timezone.utc)
-        now = datetime.now(timezone.utc)
+        exp_datetime = datetime.fromtimestamp(decoded["exp"], tz=UTC)
+        now = datetime.now(UTC)
         ttl_seconds = (exp_datetime - now).total_seconds()
 
         # Should be 30 minutes (1800 seconds), allow 5 second drift
@@ -346,7 +319,7 @@ class TestTokenExpiration:
         hashed = security.hash_refresh_token(token_pair.refresh_token)
         db_token = crud.get_refresh_token_by_hash(session=db_session, hashed_token=hashed)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ttl_seconds = (db_token.expires_at - now).total_seconds()
 
         # Should be 7 days (604800 seconds), allow 5 min drift
@@ -359,14 +332,13 @@ class TestTokenExpiration:
         old_token = RefreshToken(
             user_id=test_user.id,
             hashed_token=security.hash_refresh_token("old_token"),
-            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
-            revoked=True
+            expires_at=datetime.now(UTC) - timedelta(days=1),
+            revoked=True,
         )
         db_session.add(old_token)
 
         old_blacklist = TokenBlacklist(
-            jti="old-jti",
-            expires_at=datetime.now(timezone.utc) - timedelta(days=1)
+            jti="old-jti", expires_at=datetime.now(UTC) - timedelta(days=1)
         )
         db_session.add(old_blacklist)
         db_session.commit()
@@ -395,9 +367,7 @@ class TestTokenValidation:
         token_pair = auth_service.create_token_pair(session=db_session, user=test_user)
 
         decoded = jwt.decode(
-            token_pair.access_token,
-            settings.SECRET_KEY,
-            algorithms=[security.ALGORITHM]
+            token_pair.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
         )
 
         # Should not be blacklisted
@@ -409,40 +379,30 @@ class TestTokenValidation:
         # Create a token with wrong secret
         wrong_secret = "wrong_secret_key"
         fake_token = jwt.encode(
-            {"sub": str(test_user.id), "exp": datetime.now(timezone.utc) + timedelta(minutes=30)},
+            {"sub": str(test_user.id), "exp": datetime.now(UTC) + timedelta(minutes=30)},
             wrong_secret,
-            algorithm=security.ALGORITHM
+            algorithm=security.ALGORITHM,
         )
 
         # Should fail verification
         with pytest.raises(jwt.InvalidSignatureError):
-            jwt.decode(
-                fake_token,
-                settings.SECRET_KEY,
-                algorithms=[security.ALGORITHM]
-            )
+            jwt.decode(fake_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
 
     def test_expired_token_fails_verification(self, db_session: Session, test_user: User):
         """Expired token should fail verification."""
         # Create an expired token
         expired_payload = {
             "sub": str(test_user.id),
-            "exp": datetime.now(timezone.utc) - timedelta(hours=1),  # Past expiration
-            "jti": "test-jti"
+            "exp": datetime.now(UTC) - timedelta(hours=1),  # Past expiration
+            "jti": "test-jti",
         }
         expired_token = jwt.encode(
-            expired_payload,
-            settings.SECRET_KEY,
-            algorithm=security.ALGORITHM
+            expired_payload, settings.SECRET_KEY, algorithm=security.ALGORITHM
         )
 
         # Should fail verification
         with pytest.raises(jwt.ExpiredSignatureError):
-            jwt.decode(
-                expired_token,
-                settings.SECRET_KEY,
-                algorithms=[security.ALGORITHM]
-            )
+            jwt.decode(expired_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
 
 
 class TestTokenIntegration:
@@ -452,7 +412,9 @@ class TestTokenIntegration:
         """Test complete token lifecycle: login → refresh → logout."""
         # 1. Login creates token pair
         token_pair1 = auth_service.create_token_pair(session=db_session, user=test_user)
-        decoded1 = jwt.decode(token_pair1.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
+        decoded1 = jwt.decode(
+            token_pair1.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
         jti1 = decoded1["jti"]
 
         # 2. Token should be valid
@@ -460,23 +422,19 @@ class TestTokenIntegration:
 
         # 3. Refresh token to get new pair
         token_pair2 = auth_service.refresh_access_token_from_refresh(
-            session=db_session,
-            user_id=test_user.id,
-            refresh_token=token_pair1.refresh_token
+            session=db_session, user_id=test_user.id, refresh_token=token_pair1.refresh_token
         )
-        decoded2 = jwt.decode(token_pair2.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
+        decoded2 = jwt.decode(
+            token_pair2.access_token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
         jti2 = decoded2["jti"]
 
         # Old token still valid (not blacklisted yet)
         assert not auth_service.is_access_token_blacklisted(session=db_session, jti=jti1)
 
         # 4. Logout revokes all tokens
-        expires_at = datetime.fromtimestamp(decoded2["exp"], tz=timezone.utc)
-        auth_service.revoke_access_token(
-            session=db_session,
-            jti=jti2,
-            expires_at=expires_at
-        )
+        expires_at = datetime.fromtimestamp(decoded2["exp"], tz=UTC)
+        auth_service.revoke_access_token(session=db_session, jti=jti2, expires_at=expires_at)
         auth_service.revoke_all_user_tokens(session=db_session, user_id=test_user.id)
 
         # New token should be blacklisted after logout
@@ -489,9 +447,7 @@ class TestTokenIntegration:
 
         # First use succeeds
         new_pair1 = auth_service.refresh_access_token_from_refresh(
-            session=db_session,
-            user_id=test_user.id,
-            refresh_token=refresh_token
+            session=db_session, user_id=test_user.id, refresh_token=refresh_token
         )
         assert new_pair1 is not None
 
@@ -500,7 +456,7 @@ class TestTokenIntegration:
             auth_service.refresh_access_token_from_refresh(
                 session=db_session,
                 user_id=test_user.id,
-                refresh_token=refresh_token  # Same token - should fail
+                refresh_token=refresh_token,  # Same token - should fail
             )
 
 

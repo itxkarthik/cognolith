@@ -56,7 +56,7 @@ services:
       PORT: 3000
       DEBUG: ${DEBUG:-False}
       ENVIRONMENT: ${ENVIRONMENT:-local}
-      
+
       # Database
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -64,14 +64,14 @@ services:
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-knowledge_assistant}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-knowledge_assistant}
-      
+
       # CORS
       FRONTEND_HOST: ${FRONTEND_HOST:-http://localhost:8080}
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-["http://localhost:8080","http://127.0.0.1:8080","http://localhost:3000","http://127.0.0.1:3000"]}
-      
+
       # Security
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
-      
+
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 

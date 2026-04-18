@@ -1,8 +1,9 @@
 import logging
+
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from app.core.config import settings
 
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +49,12 @@ def get_storage_uri() -> str:
             )
             return "memory://"
 
-    logger.debug(
-        "Using in-memory rate limiting (not suitable for multi-worker deployments)"
-    )
+    logger.debug("Using in-memory rate limiting (not suitable for multi-worker deployments)")
     return "memory://"
 
 
 limiter = Limiter(
     key_func=get_remote_address,
-    default_limits=[
-        f"{settings.RATE_LIMIT_MAX_REQUESTS}/{settings.RATE_LIMIT_WINDOW}seconds"
-    ],
+    default_limits=[f"{settings.RATE_LIMIT_MAX_REQUESTS}/{settings.RATE_LIMIT_WINDOW}seconds"],
     storage_uri=get_storage_uri(),
 )

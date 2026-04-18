@@ -1,16 +1,20 @@
+from datetime import UTC, datetime
 from enum import Enum
-from pydantic import field_validator
-from sqlmodel import CheckConstraint, Column, Index, SQLModel, Field, Relationship, desc
-from sqlalchemy.dialects.postgresql import JSONB
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
-from .chat import TimestampMixin
+
+from pydantic import field_validator
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlmodel import CheckConstraint, Column, Field, Index, Relationship, SQLModel, desc
+
 from app.utils.sanitization import sanitize_plain_text
 
+from .chat import TimestampMixin
+
 if TYPE_CHECKING:
-    from .note import Notes, NoteFolders, NoteTags, NoteTemplates, NoteCollaborators
-    from .document import Document
     from .chat import ChatSession
+    from .document import Document
+    from .note import NoteCollaborators, NoteFolders, Notes, NoteTags, NoteTemplates
+
 
 # Shared property
 class UserBase(SQLModel):
@@ -31,10 +35,12 @@ class UserBase(SQLModel):
     def sanitize_email(cls, v: str) -> str:
         return sanitize_plain_text(v)
 
+
 # Creation API properties
 class UserCreate(UserBase):
     password: str = Field(min_length=8, max_length=128)
-    
+
+
 class UserRegister(SQLModel):
     email: str = Field(max_length=255)
     password: str = Field(min_length=8, max_length=128)
@@ -52,11 +58,13 @@ class UserRegister(SQLModel):
     def sanitize_email(cls, v: str) -> str:
         return sanitize_plain_text(v)
 
+
 # Update API properties | Optional
 class UserUpdate(UserBase):
     email: str | None = Field(default=None, max_length=255)
     password: str | None = Field(default=None, min_length=8, max_length=128)
-    
+
+
 class UserUpdateMe(SQLModel):
     full_name: str | None = Field(default=None, max_length=255)
     email: str | None = Field(default=None, max_length=255)
@@ -74,17 +82,19 @@ class UserUpdateMe(SQLModel):
         if v is None:
             return v
         return sanitize_plain_text(v)
-    
+
+
 class UpdatePassword(SQLModel):
     current_password: str = Field(min_length=8, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
-    
+
+
 # Table User
 class User(TimestampMixin, UserBase, SQLModel, table=True):
     __tablename__ = "users"
     __table_args__ = (
         Index("ix_user_email", "email", unique=True),
-        Index("ix_users_created_at", "created_at")
+        Index("ix_users_created_at", "created_at"),
     )
     id: int | None = Field(default=None, primary_key=True)
     hashed_password: str = Field(nullable=False, max_length=255)
@@ -93,14 +103,12 @@ class User(TimestampMixin, UserBase, SQLModel, table=True):
     is_verified: bool = Field(default=False)
     is_deleted: bool = Field(default=False)
     last_login_at: datetime | None = Field(default=None)
-    
+
     # Relationships
     settings: "UserSettings" = Relationship(
-        back_populates="user", 
-        sa_relationship_kwargs={
-        "uselist": False,
-        "cascade": "all, delete-orphan"
-    })
+        back_populates="user",
+        sa_relationship_kwargs={"uselist": False, "cascade": "all, delete-orphan"},
+    )
     notes: list["Notes"] = Relationship(
         back_populates="user",
         sa_relationship_kwargs={"foreign_keys": "[Notes.user_id]"},
@@ -113,22 +121,27 @@ class User(TimestampMixin, UserBase, SQLModel, table=True):
     activity_logs: list["ActivityLogs"] = Relationship(back_populates="user")
     note_collaborations: list["NoteCollaborators"] = Relationship(back_populates="user")
 
+
 class UserPublic(UserBase):
     id: int
     created_at: datetime | None = None
-    
+
+
 class UsersPublic(SQLModel):
     data: list[UserPublic]
     count: int
+
 
 class UserTheme(str, Enum):
     light = "light"
     dark = "dark"
     auto = "auto"
 
+
 class NotesViewMode(str, Enum):
     grid = "grid"
     list = "list"
+
 
 class LlmProvider(str, Enum):
     openai = "openai"
@@ -138,13 +151,17 @@ class LlmProvider(str, Enum):
     huggingface = "huggingface"
     custom = "custom"
 
+
 class UserSettings(TimestampMixin, SQLModel, table=True):
     __tablename__ = "user_settings"
     __table_args__ = (
         CheckConstraint("chunk_size >= 100 AND chunk_size <= 4000", name="chk_chunk_size"),
         CheckConstraint("chunk_overlap >= 0 AND chunk_overlap <= 1000", name="chk_chunk_overlap"),
         CheckConstraint("top_k_results >= 1 AND top_k_results <= 20", name="chk_top_k_results"),
-        CheckConstraint("similarity_threshold >= 0 AND similarity_threshold <= 1", name="chk_similarity_threshold"),        
+        CheckConstraint(
+            "similarity_threshold >= 0 AND similarity_threshold <= 1",
+            name="chk_similarity_threshold",
+        ),
         CheckConstraint("temperature >= 0 AND temperature <= 1", name="chk_temperature"),
         CheckConstraint("max_tokens >= 100 AND max_tokens <= 4000", name="chk_max_tokens"),
     )
@@ -164,20 +181,20 @@ class UserSettings(TimestampMixin, SQLModel, table=True):
     default_note_folder_id: int | None = Field(default=None, foreign_key="note_folders.id")
     email_notifications: bool = Field(default=True)
     processing_notifications: bool = Field(default=True)
-    
+
     # Relationships
     user: User = Relationship(back_populates="settings")
     default_folder: Optional["NoteFolders"] = Relationship(
         back_populates="user_settings",
-        sa_relationship_kwargs={
-            "foreign_keys": "[UserSettings.default_note_folder_id]"
-        }
+        sa_relationship_kwargs={"foreign_keys": "[UserSettings.default_note_folder_id]"},
     )
+
 
 class EntityType(str, Enum):
     note = "note"
     document = "document"
     chat = "chat"
+
 
 class ActivityAction(str, Enum):
     created = "created"
@@ -186,13 +203,14 @@ class ActivityAction(str, Enum):
     viewed = "viewed"
     shared = "shared"
 
+
 class ActivityLogs(SQLModel, table=True):
     __tablename__ = "activitylogs"
     __table_args__ = (
         Index("ix_activity_logs_user_created", "user_id", desc("created_at")),
-        Index("ix_activity_logs_entity", "entity_type", "entity_id")
+        Index("ix_activity_logs_entity", "entity_type", "entity_id"),
     )
-    
+
     id: int | None = Field(primary_key=True, default=None)
     user_id: int | None = Field(foreign_key="users.id", nullable=False)
     action: ActivityAction = Field(nullable=False)
@@ -202,10 +220,11 @@ class ActivityLogs(SQLModel, table=True):
     ip_address: str | None = Field(default=None)  # Store as string for INET type
     user_agent: str | None = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.now)
-    
+
     # Relationships
     user: User = Relationship(back_populates="activity_logs")
-    
+
+
 class RefreshToken(TimestampMixin, SQLModel, table=True):
     __tablename__ = "refresh_tokens"
     __table_args__ = (
@@ -221,6 +240,7 @@ class RefreshToken(TimestampMixin, SQLModel, table=True):
 
     user: User = Relationship()
 
+
 class TokenBlacklist(SQLModel, table=True):
     __tablename__ = "token_blacklist"
     __table_args__ = (
@@ -230,19 +250,23 @@ class TokenBlacklist(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     jti: str = Field(nullable=False, max_length=36)
     expires_at: datetime = Field(nullable=False)
-    blacklisted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    blacklisted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
 
 class Message(SQLModel):
     message: str
+
 
 class Token(SQLModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
 
+
 class TokenPayload(SQLModel):
     sub: str | None = None
     jti: str | None = None
+
 
 class NewPassword(SQLModel):
     token: str

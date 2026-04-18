@@ -2,12 +2,12 @@
  * Tests for the retry utility with exponential backoff
  */
 
-import { 
-  retryWithExponentialBackoff, 
-  calculateDelay, 
+import {
+  retryWithExponentialBackoff,
+  calculateDelay,
   isRetryableStatus,
   isRetryableError,
-  DEFAULT_RETRY_CONFIG 
+  DEFAULT_RETRY_CONFIG
 } from "../retry";
 
 describe("Retry Utility", () => {

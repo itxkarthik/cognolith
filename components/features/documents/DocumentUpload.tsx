@@ -151,4 +151,3 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
 		</form>
 	);
 }
-

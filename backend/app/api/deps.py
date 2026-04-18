@@ -1,6 +1,7 @@
-from collections.abc import Generator
 import secrets
+from collections.abc import Generator
 from typing import Annotated
+
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -11,21 +12,25 @@ from sqlmodel import Session, select
 from app.core import security
 from app.core.config import settings
 from app.core.database import engine
-from app.models.user import User, TokenPayload, TokenBlacklist
+from app.models.user import TokenBlacklist, TokenPayload, User
 
 reusable_oauth2 = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/login/access-token",
     auto_error=False,
 )
 
+
 def get_db() -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
 
+
 SessionDep = Annotated[Session, Depends(get_db)]
 
 
-def get_auth_token(request: Request, bearer_token: Annotated[str | None, Depends(reusable_oauth2)]) -> str:
+def get_auth_token(
+    request: Request, bearer_token: Annotated[str | None, Depends(reusable_oauth2)]
+) -> str:
     if bearer_token:
         request.state.auth_via_cookie = False
         return bearer_token
@@ -71,14 +76,11 @@ def get_current_user(request: Request, session: SessionDep, token: TokenDep) -> 
         _validate_csrf(request)
 
     try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[security.ALGORITHM]
-        )
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
         token_data = TokenPayload(**payload)
     except (InvalidTokenError, ValidationError):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Could not validate credentials"
+            status_code=status.HTTP_403_FORBIDDEN, detail="Could not validate credentials"
         )
     # Check if the token has been blacklisted (logout / revocation)
     if token_data.jti:
@@ -87,8 +89,7 @@ def get_current_user(request: Request, session: SessionDep, token: TokenDep) -> 
         ).first()
         if blacklisted:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has been revoked"
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
             )
     user = session.get(User, token_data.sub)
     if not user:
@@ -97,12 +98,11 @@ def get_current_user(request: Request, session: SessionDep, token: TokenDep) -> 
         raise HTTPException(status_code=400, detail="Inactive User")
     return user
 
+
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
 
 def get_current_active_superuser(current_user: CurrentUser) -> User:
     if not current_user.is_superuser:
-        raise HTTPException(
-            status_code=403,
-            detail="The user doesn't have enough privileges"
-        )
+        raise HTTPException(status_code=403, detail="The user doesn't have enough privileges")
     return current_user

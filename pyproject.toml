@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-knowledge-assistant"
+version = "0.1.0"
+description = "A personal knowledge assistant with FastAPI backend"
+python-requires = ">=3.12"
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | alembic
+  | migrations
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+py_version = 312
+skip_gitignore = true
+src_paths = ["backend", "app"]
+skip = ["alembic", "migrations", ".venv"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "W", "I", "N", "UP"]
+ignore = ["E501"]  # Line too long (handled by Black)
+exclude = [
+    "alembic",
+    "migrations",
+    ".venv",
+    "node_modules",
+    ".next",
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]  # Imported but unused
+"tests/*.py" = ["F401", "F811"]  # Allow test fixtures

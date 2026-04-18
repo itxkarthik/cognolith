@@ -16,19 +16,12 @@ from app.models.user import User
 from app.schemas.document import DocumentUpdate
 from app.utils.file_processing import extract_text_from_file
 from app.utils.file_validation import validate_upload_file
-from app.utils.text_processing import (
-    clean_text,
-    create_content_preview,
-    split_text_into_chunks,
-)
-
+from app.utils.text_processing import clean_text, create_content_preview, split_text_into_chunks
 
 logger = logging.getLogger(__name__)
 
 
-def _mark_document_failed(
-    *, session: Session, document_id: int | None, reason: str
-) -> None:
+def _mark_document_failed(*, session: Session, document_id: int | None, reason: str) -> None:
     try:
         session.rollback()
     except Exception:
@@ -227,9 +220,7 @@ def list_documents(
     return data, total
 
 
-def get_document_by_id(
-    *, session: Session, current_user: User, document_id: int
-) -> Document:
+def get_document_by_id(*, session: Session, current_user: User, document_id: int) -> Document:
     document = session.exec(
         select(Document).where(
             Document.id == document_id,
@@ -259,9 +250,7 @@ def update_document_metadata(
     return document
 
 
-def soft_delete_document(
-    *, session: Session, current_user: User, document_id: int
-) -> None:
+def soft_delete_document(*, session: Session, current_user: User, document_id: int) -> None:
     document = get_document_by_id(
         session=session, current_user=current_user, document_id=document_id
     )

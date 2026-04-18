@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import HTTPException
-from sqlmodel import Session, col, or_, select
 from sqlalchemy.orm import joinedload
+from sqlmodel import Session, col, or_, select
 
 from app.models.document import Document
 from app.models.note import NoteFolders, NoteLinks, Notes, NoteTags
@@ -15,22 +15,16 @@ from app.utils.text_processing import clean_text, create_content_preview
 
 
 def create_note(*, session: Session, current_user: User, payload: NoteCreate) -> Notes:
-    _validate_folder_access(
-        session=session, user_id=current_user.id, folder_id=payload.folder_id
-    )
+    _validate_folder_access(session=session, user_id=current_user.id, folder_id=payload.folder_id)
     _validate_document_access(
         session=session, user_id=current_user.id, document_id=payload.linked_document_id
     )
 
     clean_content = (
-        payload.content
-        if payload.content_type == "html"
-        else clean_text(payload.content)
+        payload.content if payload.content_type == "html" else clean_text(payload.content)
     )
     preview_source = (
-        strip_all_html(clean_content)
-        if payload.content_type == "html"
-        else clean_content
+        strip_all_html(clean_content) if payload.content_type == "html" else clean_content
     )
     note = Notes(
         user_id=current_user.id,
@@ -46,9 +40,7 @@ def create_note(*, session: Session, current_user: User, payload: NoteCreate) ->
         linked_chat_session_id=payload.linked_chat_session_id,
         word_count=len(preview_source.split()),
         char_count=len(preview_source),
-        read_time_minutes=max(1, len(preview_source.split()) // 200)
-        if preview_source
-        else 1,
+        read_time_minutes=max(1, len(preview_source.split()) // 200) if preview_source else 1,
     )
     session.add(note)
     session.commit()
@@ -90,9 +82,7 @@ def list_notes(
     - Uses joinedload to eagerly fetch tags (prevents N+1 queries)
     - Applies LIMIT/OFFSET at database level instead of in-memory pagination
     """
-    statement = select(Notes).where(
-        Notes.user_id == current_user.id, Notes.is_deleted == False
-    )
+    statement = select(Notes).where(Notes.user_id == current_user.id, Notes.is_deleted == False)
 
     # Eagerly load tags to prevent N+1 query issue when filtering by tag_id
     statement = statement.options(joinedload(Notes.tags))
@@ -132,9 +122,7 @@ def list_notes(
     # Filter by tag_id in Python (unavoidable - complex filtering logic)
     if tag_id is not None:
         all_notes_for_count = [
-            note
-            for note in all_notes_for_count
-            if any(tag.id == tag_id for tag in note.tags)
+            note for note in all_notes_for_count if any(tag.id == tag_id for tag in note.tags)
         ]
 
     total = len(all_notes_for_count)
@@ -210,13 +198,9 @@ def update_note(
         if field_name == "content" and value is not None:
             resolved_content_type = update_data.get("content_type", note.content_type)
             cleaned = value if resolved_content_type == "html" else clean_text(value)
-            preview_source = (
-                strip_all_html(cleaned) if resolved_content_type == "html" else cleaned
-            )
+            preview_source = strip_all_html(cleaned) if resolved_content_type == "html" else cleaned
             note.content = cleaned
-            note.content_preview = create_content_preview(
-                preview_source, max_length=200
-            )
+            note.content_preview = create_content_preview(preview_source, max_length=200)
             note.word_count = len(preview_source.split())
             note.char_count = len(preview_source)
             note.read_time_minutes = (
@@ -260,9 +244,7 @@ def soft_delete_note(*, session: Session, current_user: User, note_id: int) -> N
     session.commit()
 
 
-def create_folder(
-    *, session: Session, current_user: User, payload: FolderCreate
-) -> NoteFolders:
+def create_folder(*, session: Session, current_user: User, payload: FolderCreate) -> NoteFolders:
     _validate_folder_access(
         session=session, user_id=current_user.id, folder_id=payload.parent_folder_id
     )
@@ -299,9 +281,7 @@ def delete_folder(*, session: Session, current_user: User, folder_id: int) -> No
 def move_note_to_folder(
     *, session: Session, current_user: User, note_id: int, folder_id: int | None
 ) -> Notes:
-    _validate_folder_access(
-        session=session, user_id=current_user.id, folder_id=folder_id
-    )
+    _validate_folder_access(session=session, user_id=current_user.id, folder_id=folder_id)
     note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
     note.folder_id = folder_id
     session.add(note)
@@ -377,9 +357,7 @@ def link_notes(
     source_note_id: int,
     target_note_ids: list[int],
 ) -> None:
-    source_note = get_note_by_id(
-        session=session, current_user=current_user, note_id=source_note_id
-    )
+    source_note = get_note_by_id(session=session, current_user=current_user, note_id=source_note_id)
     for target_note_id in set(target_note_ids):
         if source_note_id == target_note_id:
             continue
@@ -394,9 +372,7 @@ def link_notes(
         ).first()
         if existing:
             continue
-        session.add(
-            NoteLinks(source_note_id=source_note.id, target_note_id=target_note.id)
-        )
+        session.add(NoteLinks(source_note_id=source_note.id, target_note_id=target_note.id))
     session.commit()
 
 
@@ -407,9 +383,7 @@ def sync_note_links(
     source_note_id: int,
     target_note_ids: list[int],
 ) -> None:
-    source_note = get_note_by_id(
-        session=session, current_user=current_user, note_id=source_note_id
-    )
+    source_note = get_note_by_id(session=session, current_user=current_user, note_id=source_note_id)
     valid_target_ids = set(target_note_ids) - {source_note.id}
 
     for target_id in valid_target_ids:
@@ -424,13 +398,9 @@ def sync_note_links(
             session.delete(link)
 
     for target_id in valid_target_ids:
-        already_exists = any(
-            link.target_note_id == target_id for link in existing_links
-        )
+        already_exists = any(link.target_note_id == target_id for link in existing_links)
         if not already_exists:
-            session.add(
-                NoteLinks(source_note_id=source_note.id, target_note_id=target_id)
-            )
+            session.add(NoteLinks(source_note_id=source_note.id, target_note_id=target_id))
 
     session.commit()
 
@@ -438,9 +408,7 @@ def sync_note_links(
 def link_note_to_document(
     *, session: Session, current_user: User, note_id: int, document_id: int | None
 ) -> Notes:
-    _validate_document_access(
-        session=session, user_id=current_user.id, document_id=document_id
-    )
+    _validate_document_access(session=session, user_id=current_user.id, document_id=document_id)
     note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
     note.linked_document_id = document_id
     session.add(note)
@@ -449,9 +417,7 @@ def link_note_to_document(
     return note
 
 
-def _validate_folder_access(
-    *, session: Session, user_id: int, folder_id: int | None
-) -> None:
+def _validate_folder_access(*, session: Session, user_id: int, folder_id: int | None) -> None:
     if folder_id is None:
         return
     folder = session.exec(
@@ -465,9 +431,7 @@ def _validate_folder_access(
         raise HTTPException(status_code=404, detail="Folder not found")
 
 
-def _validate_document_access(
-    *, session: Session, user_id: int, document_id: int | None
-) -> None:
+def _validate_document_access(*, session: Session, user_id: int, document_id: int | None) -> None:
     if document_id is None:
         return
     document = session.exec(

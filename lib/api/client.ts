@@ -72,14 +72,14 @@ apiClient.interceptors.request.use((config) => {
 	// Queue requests if offline (for POST, PUT, PATCH)
 	const isOnline = typeof navigator !== "undefined" && navigator.onLine;
 	const method = (config.method ?? "get").toUpperCase();
-	
+
 	if (!isOnline && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
 		// Queue the request for later
 		requestQueue.add(method, config.url || "", {
 			data: config.data,
 			params: config.params,
 		});
-		
+
 		return Promise.reject(
 			new APIRequestError("Request queued - you are currently offline", {
 				statusCode: 0,

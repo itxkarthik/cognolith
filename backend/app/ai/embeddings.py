@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
-import httpx
 from sqlmodel import Session
 
 from app.ai.http_client import get_embedding_client
 from app.core.config import settings
 from app.models.user import UserSettings
-
 
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 
@@ -27,15 +25,11 @@ def resolve_embedding_model(
 
 
 class OllamaEmbeddingClient:
-    def __init__(
-        self, *, base_url: str | None = None, timeout_seconds: float = 120.0
-    ) -> None:
+    def __init__(self, *, base_url: str | None = None, timeout_seconds: float = 120.0) -> None:
         self.base_url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
         self.timeout_seconds = timeout_seconds
 
-    async def embed_texts(
-        self, *, texts: Sequence[str], model: str
-    ) -> list[list[float]]:
+    async def embed_texts(self, *, texts: Sequence[str], model: str) -> list[list[float]]:
         if not texts:
             return []
 
@@ -60,9 +54,7 @@ class OllamaEmbeddingClient:
         normalized: list[list[float]] = []
         for item in embeddings:
             if not isinstance(item, list):
-                raise ValueError(
-                    "Invalid Ollama embed response: embedding item must be a list"
-                )
+                raise ValueError("Invalid Ollama embed response: embedding item must be a list")
             normalized.append([float(value) for value in item])
 
         if len(normalized) != len(texts):
@@ -79,9 +71,7 @@ async def generate_embeddings(
     model: str | None = None,
     base_url: str | None = None,
 ) -> tuple[list[list[float]], str]:
-    resolved_model = resolve_embedding_model(
-        session=session, user_id=user_id, override_model=model
-    )
+    resolved_model = resolve_embedding_model(session=session, user_id=user_id, override_model=model)
     client = OllamaEmbeddingClient(base_url=base_url)
     vectors = await client.embed_texts(texts=texts, model=resolved_model)
     return vectors, resolved_model

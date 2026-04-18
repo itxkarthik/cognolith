@@ -8,9 +8,6 @@ from __future__ import annotations
 
 import httpx
 
-from app.core.config import settings
-
-
 # Singleton clients with connection pooling
 _llm_client: httpx.AsyncClient | None = None
 _embedding_client: httpx.AsyncClient | None = None
@@ -34,7 +31,7 @@ async def get_llm_client(timeout: float = 180.0) -> httpx.AsyncClient:
                 max_connections=10,
                 max_keepalive_connections=5,
                 keepalive_expiry=30.0,
-            )
+            ),
         )
     return _llm_client
 
@@ -57,7 +54,7 @@ async def get_embedding_client(timeout: float = 120.0) -> httpx.AsyncClient:
                 max_connections=10,
                 max_keepalive_connections=5,
                 keepalive_expiry=30.0,
-            )
+            ),
         )
     return _embedding_client
 

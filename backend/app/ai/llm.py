@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Protocol, Sequence
+from typing import Any, Protocol
 
 from sqlmodel import Session
 
 from app.ai.http_client import get_llm_client
 from app.core.config import settings
 from app.models.user import UserSettings
-
 
 ChatMessage = dict[str, str]
 
@@ -30,7 +30,8 @@ class BaseLLMProvider(Protocol):
         model: str,
         temperature: float,
         max_tokens: int,
-    ) -> str: ...
+    ) -> str:
+        ...
 
     async def stream(
         self,
@@ -39,13 +40,12 @@ class BaseLLMProvider(Protocol):
         model: str,
         temperature: float,
         max_tokens: int,
-    ) -> AsyncIterator[str]: ...
+    ) -> AsyncIterator[str]:
+        ...
 
 
 class OllamaLLMProvider:
-    def __init__(
-        self, *, base_url: str | None = None, timeout_seconds: float = 180.0
-    ) -> None:
+    def __init__(self, *, base_url: str | None = None, timeout_seconds: float = 180.0) -> None:
         self.base_url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
         self.timeout_seconds = timeout_seconds
 
@@ -141,12 +141,8 @@ def resolve_llm_config(
 ) -> LLMConfig:
     user_settings = session.get(UserSettings, user_id)
 
-    resolved_provider = provider or (
-        str(user_settings.llm_provider) if user_settings else "ollama"
-    )
-    resolved_model = model or (
-        user_settings.llm_model if user_settings else "tinyllama"
-    )
+    resolved_provider = provider or (str(user_settings.llm_provider) if user_settings else "ollama")
+    resolved_model = model or (user_settings.llm_model if user_settings else "tinyllama")
     temperature = user_settings.temperature if user_settings else 0.7
     max_tokens = user_settings.max_tokens if user_settings else 1000
 
@@ -164,9 +160,7 @@ def resolve_llm_config(
 
 
 class LLMService:
-    def __init__(
-        self, *, session: Session, user_id: int, base_url: str | None = None
-    ) -> None:
+    def __init__(self, *, session: Session, user_id: int, base_url: str | None = None) -> None:
         self.session = session
         self.user_id = user_id
         self.provider: BaseLLMProvider = OllamaLLMProvider(base_url=base_url)

@@ -1,18 +1,11 @@
-from typing_extensions import Optional, Self
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import (
-    AnyUrl,
-    BeforeValidator,
-    EmailStr,
-    PostgresDsn,
-    computed_field,
-    model_validator,
-)
-from typing import List, Annotated, Any, Literal
 import os
 import secrets
 import warnings
 from pathlib import Path
+from typing import Annotated, Any, Literal, Optional, Self
+
+from pydantic import AnyUrl, BeforeValidator, EmailStr, PostgresDsn, computed_field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def parse_cors(v: Any) -> list[str] | str:
@@ -47,9 +40,7 @@ class Settings(BaseSettings):
 
     # CORS Info
     FRONTEND_HOST: str = "http://localhost:8080"
-    BACKEND_CORS_ORIGINS: Annotated[
-        list[AnyUrl] | str, BeforeValidator(parse_cors)
-    ] = []
+    BACKEND_CORS_ORIGINS: Annotated[list[AnyUrl] | str, BeforeValidator(parse_cors)] = []
 
     @computed_field
     @property
@@ -156,15 +147,11 @@ class Settings(BaseSettings):
         # Enforce strong passwords in production
         if self.ENVIRONMENT == "production":
             self._check_default_secret("POSTGRES_PASSWORD", self.POSTGRES_PASSWORD)
-            self._check_default_secret(
-                "FIRST_SUPERUSER_PASSWORD", self.FIRST_SUPERUSER_PASSWORD
-            )
+            self._check_default_secret("FIRST_SUPERUSER_PASSWORD", self.FIRST_SUPERUSER_PASSWORD)
         else:
             # Warn in local/staging
             self._check_default_secret("POSTGRES_PASSWORD", self.POSTGRES_PASSWORD)
-            self._check_default_secret(
-                "FIRST_SUPERUSER_PASSWORD", self.FIRST_SUPERUSER_PASSWORD
-            )
+            self._check_default_secret("FIRST_SUPERUSER_PASSWORD", self.FIRST_SUPERUSER_PASSWORD)
         return self
 
     # File Storage
@@ -173,7 +160,7 @@ class Settings(BaseSettings):
     MAX_REQUEST_BODY_SIZE: int = (
         1024 * 1024 * 15
     )  # 15 MB (slightly larger than max file to allow form overhead)
-    ALLOWED_EXTENSIONS: List[str] = [".pdf", ".md", ".docx", ".txt"]
+    ALLOWED_EXTENSIONS: list[str] = [".pdf", ".md", ".docx", ".txt"]
 
     # Database SSL
     # SSL modes: disable, allow, prefer, require, verify-ca, verify-full
@@ -184,10 +171,7 @@ class Settings(BaseSettings):
     def _enforce_ssl_in_production(self) -> Self:
         """Enforce SSL for database connections in production environments."""
         insecure_modes = {"disable", "allow", "prefer"}
-        if (
-            self.ENVIRONMENT == "production"
-            and self.DATABASE_SSL_MODE in insecure_modes
-        ):
+        if self.ENVIRONMENT == "production" and self.DATABASE_SSL_MODE in insecure_modes:
             raise ValueError(
                 f"DATABASE_SSL_MODE must be 'require', 'verify-ca', or 'verify-full' in production. "
                 f"Current value: '{self.DATABASE_SSL_MODE}'. "

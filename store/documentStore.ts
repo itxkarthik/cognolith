@@ -132,4 +132,3 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 		set({ error: null });
 	},
 }));
-

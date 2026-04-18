@@ -25,14 +25,14 @@ export function useNetworkStatus(
       });
       const isConnected = response.ok;
       setStatus({ isOnline: isConnected, isChecking: false });
-      
+
       if (isConnected) {
         const { succeeded, failed } = await processOfflineQueue();
         if (succeeded > 0 || failed > 0) {
           if (onOnline) onOnline();
         }
       }
-      
+
       return isConnected;
     } catch {
       setStatus({ isOnline: false, isChecking: false });

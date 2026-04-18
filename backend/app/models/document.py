@@ -1,13 +1,16 @@
-from sqlmodel import Index, SQLModel, Field, Column, Relationship, UniqueConstraint
-from enum import Enum
-from sqlalchemy import ARRAY, String, text
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING
+
+from sqlalchemy import ARRAY, String, text
+from sqlmodel import Column, Field, Index, Relationship, SQLModel, UniqueConstraint
+
 from .chat import TimestampMixin
 
 if TYPE_CHECKING:
-    from .user import User
     from .note import Notes
+    from .user import User
+
 
 class DocumentStatus(str, Enum):
     processing = "processing"
@@ -15,14 +18,25 @@ class DocumentStatus(str, Enum):
     failed = "failed"
     deleted = "deleted"
 
+
 class Document(TimestampMixin, SQLModel, table=True):
     __tablename__ = "documents"
     __table_args__ = (
         Index("ix_document_user_created", "user_id", "created_at"),
         Index("ix_documents_user_status", "user_id", "status"),
-        Index("ix_document_search", text("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))"), postgresql_using="gin"),
+        Index(
+            "ix_document_search",
+            text("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))"),
+            postgresql_using="gin",
+        ),
         Index("ix_document_tags", "tags", postgresql_using="gin"),
-        Index("ix_document_full_text", text("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, ''))"), postgresql_using="gin"),
+        Index(
+            "ix_document_full_text",
+            text(
+                "to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, ''))"
+            ),
+            postgresql_using="gin",
+        ),
     )
     id: int | None = Field(default=None, primary_key=True)
     user_id: int | None = Field(foreign_key="users.id", nullable=False)
@@ -47,26 +61,30 @@ class Document(TimestampMixin, SQLModel, table=True):
     page_count: int | None = Field(default=None)
     chunk_count: int = Field(default=0)
     last_accessed_at: datetime = Field(default_factory=datetime.now)
-    
+
     # Relationships
     user: "User" = Relationship(back_populates="documents")
     chunks: list["DocumentChunks"] = Relationship(
         back_populates="document",
         sa_relationship_kwargs={
             "cascade": "all, delete-orphan",
-            "order_by": "DocumentChunks.chunk_index"
-        }
+            "order_by": "DocumentChunks.chunk_index",
+        },
     )
     linked_notes: list["Notes"] = Relationship(
         back_populates="linked_document",
-        sa_relationship_kwargs={"foreign_keys": "[Notes.linked_document_id]"}
+        sa_relationship_kwargs={"foreign_keys": "[Notes.linked_document_id]"},
     )
 
 
 class DocumentChunks(TimestampMixin, SQLModel, table=True):
     __tablename__ = "document_chunks"
     __table_args__ = (
-        Index("ix_document_chunks_content_search", text("to_tsvector('english', content)"), postgresql_using='gin'),
+        Index(
+            "ix_document_chunks_content_search",
+            text("to_tsvector('english', content)"),
+            postgresql_using="gin",
+        ),
         UniqueConstraint("document_id", "chunk_index", name="uix_document_chunks"),
     )
     id: int | None = Field(default=None, primary_key=True, index=True)
@@ -79,6 +97,6 @@ class DocumentChunks(TimestampMixin, SQLModel, table=True):
     char_count: int | None = Field(default=None)
     page_number: int | None = Field(default=None)
     section_title: str | None = Field(default=None, max_length=255)
-    
+
     # Relationships
     document: Document = Relationship(back_populates="chunks")

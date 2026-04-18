@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from sqlalchemy import text
 from sqlmodel import Session
@@ -132,9 +132,7 @@ class PgVectorStore:
         # Validate all chunks and embeddings before bulk insert
         for chunk, embedding in zip(chunks, embeddings):
             if chunk.id is None or chunk.document_id is None:
-                raise ValueError(
-                    "Chunk must have persisted IDs before storing embeddings"
-                )
+                raise ValueError("Chunk must have persisted IDs before storing embeddings")
             if len(embedding) != dimensions:
                 raise ValueError("All embedding vectors must use the same dimensions")
 

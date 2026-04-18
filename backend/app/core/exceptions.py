@@ -4,6 +4,7 @@ from typing import Optional
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+
 from app.schemas.error import ErrorCode, ErrorDetail, StandardErrorResponse
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class AppException(Exception):
     """Base exception for the application."""
-    
+
     def __init__(
         self,
         message: str,
@@ -28,11 +29,11 @@ class AppException(Exception):
 
 class ValidationException(AppException):
     """Raised when request validation fails."""
-    
+
     def __init__(
-        self, 
+        self,
         message: str = "Request validation failed",
-        details: Optional[list[ErrorDetail]] = None
+        details: Optional[list[ErrorDetail]] = None,
     ):
         super().__init__(
             message=message,
@@ -44,7 +45,7 @@ class ValidationException(AppException):
 
 class AuthenticationException(AppException):
     """Raised when authentication fails."""
-    
+
     def __init__(self, message: str = "Authentication failed"):
         super().__init__(
             message=message,
@@ -55,7 +56,7 @@ class AuthenticationException(AppException):
 
 class AuthorizationException(AppException):
     """Raised when user lacks required permissions."""
-    
+
     def __init__(self, message: str = "Insufficient permissions"):
         super().__init__(
             message=message,
@@ -66,7 +67,7 @@ class AuthorizationException(AppException):
 
 class ResourceNotFoundException(AppException):
     """Raised when requested resource is not found."""
-    
+
     def __init__(self, message: str = "Resource not found"):
         super().__init__(
             message=message,
@@ -77,7 +78,7 @@ class ResourceNotFoundException(AppException):
 
 class ConflictException(AppException):
     """Raised when request conflicts with existing data."""
-    
+
     def __init__(self, message: str = "Resource conflict"):
         super().__init__(
             message=message,
@@ -88,7 +89,7 @@ class ConflictException(AppException):
 
 class RateLimitedException(AppException):
     """Raised when rate limit is exceeded."""
-    
+
     def __init__(self, message: str = "Rate limit exceeded"):
         super().__init__(
             message=message,
@@ -99,7 +100,7 @@ class RateLimitedException(AppException):
 
 class ExternalServiceException(AppException):
     """Raised when external service (LLM, embeddings, etc.) fails."""
-    
+
     def __init__(self, message: str = "External service error"):
         super().__init__(
             message=message,
@@ -112,17 +113,17 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     """
     Global exception handler for FastAPI.
     Converts all exceptions into standardized error responses.
-    
+
     Args:
         request: The FastAPI request
         exc: The exception that was raised
-    
+
     Returns:
         JSONResponse with standardized error format
     """
     # Get request ID from request state (set by RequestIDMiddleware)
     request_id = getattr(request.state, "request_id", None)
-    
+
     # Handle AppException
     if isinstance(exc, AppException):
         error_response = StandardErrorResponse(
@@ -132,17 +133,17 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
             request_id=request_id,
             details=exc.details if exc.details else None,
         )
-        
+
         logger.warning(
             f"App exception: {exc.error_code.value} - {exc.message}",
-            extra={"request_id": request_id}
+            extra={"request_id": request_id},
         )
-        
+
         return JSONResponse(
             status_code=exc.status_code,
             content=error_response.model_dump(exclude_none=True),
         )
-    
+
     # Handle SQLAlchemy errors
     if isinstance(exc, SQLAlchemyError):
         error_response = StandardErrorResponse(
@@ -151,18 +152,18 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
             message="Database operation failed",
             request_id=request_id,
         )
-        
+
         logger.error(
             f"Database error: {str(exc)}",
             extra={"request_id": request_id},
             exc_info=True,
         )
-        
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=error_response.model_dump(exclude_none=True),
         )
-    
+
     # Handle all other exceptions as internal server errors
     error_response = StandardErrorResponse(
         status="error",
@@ -170,13 +171,13 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
         message="An unexpected error occurred. Please try again later.",
         request_id=request_id,
     )
-    
+
     logger.error(
         f"Unhandled exception: {type(exc).__name__} - {str(exc)}",
         extra={"request_id": request_id},
         exc_info=True,
     )
-    
+
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=error_response.model_dump(exclude_none=True),

@@ -1,5 +1,6 @@
 import magic
 from fastapi import HTTPException, UploadFile
+
 from app.core.config import settings
 
 # Map file extensions to expected MIME types (magic bytes)
@@ -49,8 +50,7 @@ async def validate_upload_file(file: UploadFile) -> None:
     if allowed_mimes and detected_mime not in allowed_mimes:
         raise HTTPException(
             status_code=400,
-            detail=f"File content does not match extension '{ext}'. "
-                   f"Detected: {detected_mime}",
+            detail=f"File content does not match extension '{ext}'. " f"Detected: {detected_mime}",
         )
 
 

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
 import logging
+from datetime import datetime
 
 from fastapi import HTTPException
-from sqlmodel import Session, col, select
 from sqlalchemy.orm import joinedload
+from sqlmodel import Session, col, select
 
 from app.ai.rag import run_rag_pipeline
 from app.models.chat import ChatMessages, ChatSession
@@ -13,7 +13,6 @@ from app.models.note import Notes
 from app.models.user import User
 from app.schemas.chat import ChatCreate, ChatMessageCreate
 from app.utils.text_processing import create_content_preview
-
 
 logger = logging.getLogger(__name__)
 
@@ -133,15 +132,11 @@ def convert_chat_to_note(
         .order_by(col(ChatMessages.created_at).asc())
     ).all()
     if not messages:
-        raise HTTPException(
-            status_code=400, detail="Cannot convert empty chat session to note"
-        )
+        raise HTTPException(status_code=400, detail="Cannot convert empty chat session to note")
 
     if folder_id is not None:
         folder_exists = session.exec(
-            select(Notes).where(
-                Notes.user_id == current_user.id, Notes.folder_id == folder_id
-            )
+            select(Notes).where(Notes.user_id == current_user.id, Notes.folder_id == folder_id)
         ).first()
         if folder_exists is None:
             from app.models.note import NoteFolders
@@ -156,9 +151,7 @@ def convert_chat_to_note(
             if not folder:
                 raise HTTPException(status_code=404, detail="Folder not found")
 
-    content_lines = [
-        f"### {message.role.title()}\n{message.content}" for message in messages
-    ]
+    content_lines = [f"### {message.role.title()}\n{message.content}" for message in messages]
     note_content = "\n\n".join(content_lines)
     note_title = title or chat_session.title or f"Chat Session {chat_session.id}"
 
@@ -194,9 +187,7 @@ def get_chat_session_by_id(
     return chat_session
 
 
-def _invoke_rag(
-    *, session: Session, current_user: User, query: str
-) -> tuple[str, dict]:
+def _invoke_rag(*, session: Session, current_user: User, query: str) -> tuple[str, dict]:
     if current_user.id is None:
         raise HTTPException(status_code=400, detail="Invalid user context")
 

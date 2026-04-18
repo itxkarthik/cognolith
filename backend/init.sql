@@ -12,18 +12,18 @@ CREATE TABLE IF NOT EXISTS users (
     full_name TEXT NOT NULL,
     hashed_password VARCHAR(255) NOT NULL,
     avatar_url TEXT,
-    
+
     -- Status
     is_active BOOLEAN DEFAULT TRUE,
     is_verified BOOLEAN DEFAULT FALSE,
     is_superuser BOOLEAN DEFAULT FALSE,
     is_deleted BOOLEAN DEFAULT FALSE,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
     last_login_at TIMESTAMP,
-    
+
     -- Constraints
     CONSTRAINT email_format CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 );
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
+
     -- File information
     title VARCHAR(255) NOT NULL,
     file_name VARCHAR(255) NOT NULL,
@@ -40,28 +40,28 @@ CREATE TABLE IF NOT EXISTS documents (
     file_size BIGINT NOT NULL,
     file_type VARCHAR(255) NOT NULL,
     mime_type VARCHAR(255) NOT NULL,
-    
+
     -- Content
     content TEXT,
     content_preview TEXT, -- First 500 chars for quick display
-    
+
     -- AI-generated metadata
     summary TEXT,
     keywords TEXT[],
     tags TEXT[],
     language VARCHAR(10) DEFAULT 'en',
-    
+
     -- Processing Status
     status VARCHAR(50) DEFAULT 'processing' CHECK (status IN ('processing', 'completed', 'failed', 'deleted')),
     processing_started_at TIMESTAMP,
     processing_completed_at TIMESTAMP,
     processing_error TEXT,
-    
+
     -- Statistics
     word_count INTEGER,
     page_count INTEGER,
     chunk_count INTEGER DEFAULT 0,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
@@ -72,24 +72,24 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE TABLE IF NOT EXISTS document_chunks (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    
+
     -- chunk information
     chunk_index INTEGER NOT NULL,
     content TEXT NOT NULL,
     content_hash VARCHAR(255), -- FOR DEDUPLICATION
-    
+
     -- vector information
     vector_id TEXT NOT NULL,
-    
+
     -- metadata
     token_count INTEGER,
     char_count INTEGER,
     page_number INTEGER,
     section_title VARCHAR(255),
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
-    
+
     -- Constraints
     UNIQUE(document_id, chunk_index)
 );
@@ -98,12 +98,12 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 CREATE TABLE IF NOT EXISTS note_folders (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
+
     -- FOLDER information
     name VARCHAR(255) NOT NULL,
     description TEXT,
     parent_folder_id UUID REFERENCES note_folders(id) ON DELETE CASCADE,
-    
+
     -- Appearance
     color VARCHAR(20),
     icon VARCHAR(50),
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS note_folders (
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
-    
+
     -- Constraints
     UNIQUE(user_id, name, parent_folder_id)
 );
@@ -127,15 +127,15 @@ CREATE TABLE IF NOT EXISTS note_folders (
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
+
     -- Session information
     title VARCHAR(255),
     description TEXT,
-    
+
     -- Settings
     is_archived BOOLEAN DEFAULT FALSE,
     is_pinned BOOLEAN DEFAULT FALSE,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
@@ -147,45 +147,45 @@ CREATE TABLE IF NOT EXISTS notes (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     folder_id UUID REFERENCES note_folders(id) ON DELETE SET NULL,
-    
+
     -- Content
     title VARCHAR(500) NOT NULL,
     content TEXT NOT NULL,
     content_type VARCHAR(20) DEFAULT 'markdown' CHECK (content_type IN ('markdown', 'html', 'plain', 'rich_text')),
     content_preview TEXT, -- First 200 chars
-    
+
     -- AI-generated metadata
     summary TEXT,
     keywords TEXT[],
     ai_generated BOOLEAN DEFAULT FALSE,
-    
+
     -- Organization
     is_favorite BOOLEAN DEFAULT FALSE,
     is_archived BOOLEAN DEFAULT FALSE,
     is_pinned BOOLEAN DEFAULT FALSE,
     color VARCHAR(20),
     emoji VARCHAR(10),
-    
+
     -- Linking (bi-directional)
     linked_document_id UUID REFERENCES documents(id) ON DELETE SET NULL,
     linked_chat_session_id UUID REFERENCES chat_sessions(id) ON DELETE SET NULL,
     parent_note_id UUID REFERENCES notes(id) ON DELETE SET NULL, -- For note heirarchy
-    
+
     -- Versioning
     version INTEGER DEFAULT 1,
     previous_version_id UUID REFERENCES notes(id) ON DELETE SET NULL,
-    
+
     -- Collaboration
     is_public BOOLEAN DEFAULT FALSE,
     is_locked BOOLEAN DEFAULT FALSE, -- Prevent Editing
     locked_by UUID REFERENCES users(id) ON DELETE SET NULL,
     locked_at TIMESTAMP,
-    
+
     -- Statistics
     word_count INTEGER,
     char_count INTEGER,
     read_time_minutes INTEGER, -- Estimated reading time in minutes
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
@@ -197,15 +197,15 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE TABLE IF NOT EXISTS note_tags (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
+
     -- Tag information
     name VARCHAR(100) NOT NULL,
     color VARCHAR(20),
     description TEXT,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
-    
+
     -- Constraints
     UNIQUE(user_id, name)
 );
@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS note_tag_relations (
     note_id UUID NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
     tag_id UUID NOT NULL REFERENCES note_tags(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT NOW(),
-    
+
     PRIMARY KEY (note_id, tag_id)
 );
 
@@ -223,21 +223,21 @@ CREATE TABLE IF NOT EXISTS note_tag_relations (
 CREATE TABLE IF NOT EXISTS note_templates (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE, -- NULL for system templates
-    
+
     -- Template information
     name VARCHAR(255) NOT NULL,
     description TEXT,
     category VARCHAR(100), -- 'meeting', 'study', 'research', etc.
     content TEXT NOT NULL,
     content_type VARCHAR(20) DEFAULT 'markdown',
-    
+
     -- Settings
     is_public BOOLEAN DEFAULT FALSE,
     is_system BOOLEAN DEFAULT FALSE, -- System-provided templates
-    
+
     -- Statistics
     usage_count INTEGER DEFAULT 0,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
@@ -247,21 +247,21 @@ CREATE TABLE IF NOT EXISTS note_templates (
 CREATE TABLE IF NOT EXISTS chat_messages (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     session_id UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    
+
     -- Message content
     role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
     content TEXT NOT NULL,
-    
+
     -- AI response metadata
     sources JSONB, -- Array of source documents with scores
     model_used VARCHAR(100),
     tokens_used INTEGER,
     response_time_ms INTEGER,
-    
+
     -- Feedback
     rating INTEGER CHECK (rating >= 1 AND rating <= 5),
     feedback TEXT,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW()
 );
@@ -269,32 +269,32 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 -- USER SETTINGS TABLE
 CREATE TABLE IF NOT EXISTS user_settings (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    
+
     -- LLM Settings
     llm_provider VARCHAR(50) DEFAULT 'openai' CHECK (llm_provider IN ('openai', 'ollama')),
     llm_model VARCHAR(100) DEFAULT 'gpt-3.5-turbo',
     embedding_model VARCHAR(100) DEFAULT 'text-embedding-ada-002',
-    
+
     -- RAG Settings
     chunk_size INTEGER DEFAULT 1000 CHECK (chunk_size >= 100 AND chunk_size <= 4000),
     chunk_overlap INTEGER DEFAULT 200 CHECK (chunk_overlap >= 0 AND chunk_overlap <= 1000),
     top_k_results INTEGER DEFAULT 5 CHECK (top_k_results >= 1 AND top_k_results <= 20),
     similarity_threshold FLOAT DEFAULT 0.7 CHECK (similarity_threshold >= 0 AND similarity_threshold <= 1),
-    
+
     -- LLM Parameters
     temperature FLOAT DEFAULT 0.7 CHECK (temperature >= 0 AND temperature <= 1),
     max_tokens INTEGER DEFAULT 1000 CHECK (max_tokens >= 100 AND max_tokens <= 4000),
-    
+
     -- UI Preferences
     theme VARCHAR(20) DEFAULT 'light' CHECK (theme IN ('light', 'dark', 'auto')),
     language VARCHAR(10) DEFAULT 'en',
     notes_view_mode VARCHAR(20) DEFAULT 'grid' CHECK (notes_view_mode IN ('grid', 'list')),
     default_note_folder_id UUID REFERENCES note_folders(id) ON DELETE SET NULL,
-    
+
     -- Notification Preferences
     email_notifications BOOLEAN DEFAULT TRUE,
     processing_notifications BOOLEAN DEFAULT TRUE,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
@@ -305,14 +305,14 @@ CREATE TABLE IF NOT EXISTS note_collaborators (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     note_id UUID NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
+
     -- Permissions
     permission VARCHAR(20) DEFAULT 'view' CHECK (permission IN ('view', 'comment', 'edit', 'admin')),
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
     accepted_at TIMESTAMP,
-    
+
     -- Constraints
     UNIQUE(note_id, user_id)
 );
@@ -322,14 +322,14 @@ CREATE TABLE IF NOT EXISTS note_links (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     source_note_id UUID NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
     target_note_id UUID NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-    
+
     -- Link metadata
     link_type VARCHAR(50) DEFAULT 'related' CHECK (link_type IN ('related', 'reference', 'parent', 'child')),
     description TEXT,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW(),
-    
+
     -- Constraints
     UNIQUE(source_note_id, target_note_id),
     CHECK (source_note_id != target_note_id)
@@ -339,17 +339,17 @@ CREATE TABLE IF NOT EXISTS note_links (
 CREATE TABLE IF NOT EXISTS activity_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
+
     -- Activity information
     action VARCHAR(50) NOT NULL, -- 'created', 'updated', 'deleted', 'viewed', 'shared'
     entity_type VARCHAR(50) NOT NULL, -- 'document', 'note', 'chat'
     entity_id UUID NOT NULL,
-    
+
     -- Details
     details JSONB,
     ip_address INET,
     user_agent TEXT,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT NOW()
 );
@@ -405,11 +405,11 @@ CREATE INDEX IF NOT EXISTS idx_activity_logs_entity ON activity_logs(entity_type
 
 -- FULL-TEXT SEARCH INDICES (GIN)
 -- Combined search across documents
-CREATE INDEX IF NOT EXISTS idx_documents_full_text ON documents 
+CREATE INDEX IF NOT EXISTS idx_documents_full_text ON documents
 USING gin(to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, '')));
 
 -- Combined search across notes
-CREATE INDEX IF NOT EXISTS idx_notes_full_text ON notes 
+CREATE INDEX IF NOT EXISTS idx_notes_full_text ON notes
 USING gin(to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, '')));
 
 -- Function to update updated_at timestamp
@@ -439,7 +439,7 @@ CREATE TRIGGER update_chat_sessions_updated_at BEFORE UPDATE ON chat_sessions
 
 CREATE TRIGGER update_user_settings_updated_at BEFORE UPDATE ON user_settings
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    
+
 -- Function to update last_edited_at for notes
 CREATE OR REPLACE FUNCTION update_note_last_edited()
 RETURNS TRIGGER AS $$
@@ -458,8 +458,8 @@ CREATE TRIGGER update_note_last_edited BEFORE UPDATE ON notes
 CREATE OR REPLACE FUNCTION update_chat_session_last_message()
 RETURNS TRIGGER AS $$
 BEGIN
-    UPDATE chat_sessions 
-    SET last_message_at = NOW() 
+    UPDATE chat_sessions
+    SET last_message_at = NOW()
     WHERE id = NEW.session_id;
     RETURN NEW;
 END;
@@ -467,7 +467,7 @@ $$ language 'plpgsql';
 
 CREATE TRIGGER update_chat_last_message AFTER INSERT ON chat_messages
     FOR EACH ROW EXECUTE FUNCTION update_chat_session_last_message();
-    
+
 -- Function to calculate word count
 CREATE OR REPLACE FUNCTION calculate_word_count()
 RETURNS TRIGGER AS $$
@@ -488,8 +488,8 @@ CREATE TRIGGER calculate_note_word_count BEFORE INSERT OR UPDATE ON notes
 CREATE OR REPLACE FUNCTION increment_template_usage()
 RETURNS TRIGGER AS $$
 BEGIN
-    UPDATE note_templates 
-    SET usage_count = usage_count + 1 
+    UPDATE note_templates
+    SET usage_count = usage_count + 1
     WHERE id = NEW.parent_version_id;
     RETURN NEW;
 END;
@@ -498,7 +498,7 @@ $$ language 'plpgsql';
 -- VIEWS FOR COMMON QUERIES
 -- View: Notes with tag names
 CREATE OR REPLACE VIEW notes_with_tags AS
-SELECT 
+SELECT
     n.*,
     array_agg(t.name) FILTER (WHERE t.name IS NOT NULL) as tag_names,
     array_agg(t.color) FILTER (WHERE t.color IS NOT NULL) as tag_colors
@@ -509,7 +509,7 @@ GROUP BY n.id;
 
 -- View: Documents with statistics
 CREATE OR REPLACE VIEW documents_with_stats AS
-SELECT 
+SELECT
     d.*,
     COUNT(dc.id) as total_chunks,
     u.email as owner_email,
@@ -521,7 +521,7 @@ GROUP BY d.id, u.email, u.full_name;
 
 -- View: Folder hierarchy with note counts
 CREATE OR REPLACE VIEW folders_with_counts AS
-SELECT 
+SELECT
     f.*,
     COUNT(n.id) as note_count,
     COUNT(cf.id) as subfolder_count
@@ -532,7 +532,7 @@ GROUP BY f.id;
 
 -- View: Recent activity
 CREATE OR REPLACE VIEW recent_activity AS
-SELECT 
+SELECT
     'document' as type,
     id,
     user_id,
@@ -540,7 +540,7 @@ SELECT
     created_at as activity_time
 FROM documents
 UNION ALL
-SELECT 
+SELECT
     'note' as type,
     id,
     user_id,
@@ -548,7 +548,7 @@ SELECT
     created_at as activity_time
 FROM notes
 UNION ALL
-SELECT 
+SELECT
     'chat' as type,
     id,
     user_id,
@@ -571,7 +571,7 @@ BEGIN
         'recent_documents', (SELECT COUNT(*) FROM documents WHERE user_id = p_user_id AND created_at > NOW() - INTERVAL '7 days'),
         'recent_notes', (SELECT COUNT(*) FROM notes WHERE user_id = p_user_id AND created_at > NOW() - INTERVAL '7 days')
     ) INTO result;
-    
+
     RETURN result;
 END;
 $$ LANGUAGE plpgsql;
@@ -593,7 +593,7 @@ RETURNS TABLE (
 BEGIN
     RETURN QUERY
     (
-        SELECT 
+        SELECT
             'document'::TEXT as type,
             d.id,
             d.title,
@@ -603,10 +603,10 @@ BEGIN
         FROM documents d
         WHERE d.user_id = p_user_id
         AND to_tsvector('english', d.title || ' ' || COALESCE(d.content, '')) @@ plainto_tsquery('english', p_query)
-        
+
         UNION ALL
-        
-        SELECT 
+
+        SELECT
             'note'::TEXT as type,
             n.id,
             n.title,
@@ -617,7 +617,7 @@ BEGIN
         WHERE n.user_id = p_user_id
         AND n.is_archived = FALSE
         AND to_tsvector('english', n.title || ' ' || n.content) @@ plainto_tsquery('english', p_query)
-        
+
         ORDER BY relevance DESC
         LIMIT p_limit
     );
