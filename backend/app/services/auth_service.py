@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple
 
 from sqlmodel import Session
 
@@ -178,17 +178,13 @@ def cleanup_expired_tokens(session: Session) -> int:
 
     # Delete expired refresh tokens
     refresh_stmt = delete(RefreshToken).where(RefreshToken.expires_at < now)
-    refresh_result = session.execute(refresh_stmt)  # type: ignore
-    refresh_deleted = (
-        cast(int, refresh_result.rowcount) if hasattr(refresh_result, "rowcount") else 0
-    )
+    refresh_result = session.exec(refresh_stmt)
+    refresh_deleted = refresh_result.rowcount if hasattr(refresh_result, "rowcount") else 0
 
     # Delete expired blacklisted tokens
     blacklist_stmt = delete(TokenBlacklist).where(TokenBlacklist.expires_at < now)
-    blacklist_result = session.exec(blacklist_stmt)  # type: ignore
-    blacklist_deleted = (
-        cast(int, blacklist_result.rowcount) if hasattr(blacklist_result, "rowcount") else 0
-    )
+    blacklist_result = session.exec(blacklist_stmt)
+    blacklist_deleted = blacklist_result.rowcount if hasattr(blacklist_result, "rowcount") else 0
 
     session.commit()
 

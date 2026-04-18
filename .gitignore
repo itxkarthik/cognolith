@@ -70,3 +70,4 @@ SECURITY_*
 PROJECT_*
 TIMEOUT_*
 EXCEPTION_*
+.ruff_cache
