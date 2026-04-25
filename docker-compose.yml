@@ -3,7 +3,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: Dockerfile.frontend
+      dockerfile: frontend/Dockerfile
       args:
         NEXT_PUBLIC_API_URL: /api/v1
     container_name: pka-frontend
