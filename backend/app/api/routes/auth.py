@@ -3,10 +3,6 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
-
 from app import crud  # type: ignore[attr-defined]
 from app.api.deps import CurrentUser, SessionDep, TokenDep
 from app.core import security
@@ -16,6 +12,9 @@ from app.core.rate_limit import limiter
 from app.models.user import Message, Token, TokenPayload, UserPublic
 from app.schemas.error import StandardErrorResponse
 from app.services import auth_service
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 
 router = APIRouter(tags=["login"])
 
@@ -27,7 +26,7 @@ router = APIRouter(tags=["login"])
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
-async def get_csrf_token_endpoint(request: Request[Any]) -> dict[str, Any]:
+async def get_csrf_token_endpoint(request: Request) -> dict[str, Any]:
     """
     Get a CSRF token for use in subsequent state-changing requests.
 
@@ -91,7 +90,7 @@ def _clear_auth_cookies(response: Response) -> None:
 )
 @limiter.limit("5/minute")  # type: ignore[misc]
 def login_access_token(
-    request: Request[Any],
+    request: Request,
     response: Response,
     session: SessionDep,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
@@ -131,7 +130,7 @@ class RefreshRequest(BaseModel):
     },
 )
 def refresh_access_token(
-    request: Request[Any],
+    request: Request,
     response: Response,
     body: RefreshRequest,
     session: SessionDep,

@@ -2,17 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import HTTPException
-from sqlalchemy import func
-from sqlalchemy.orm import joinedload
-from sqlmodel import Session, col, or_, select
-
 from app.models.document import Document
 from app.models.note import NoteFolders, NoteLinks, Notes, NoteTags
 from app.models.user import User
 from app.schemas.note import FolderCreate, NoteCreate, NoteUpdate, TagCreate
 from app.utils.sanitization import strip_all_html
 from app.utils.text_processing import clean_text, create_content_preview
+from fastapi import HTTPException
+from sqlalchemy import func
+from sqlalchemy.orm import joinedload
+from sqlmodel import Session, col, or_, select
 
 
 def create_note(*, session: Session, current_user: User, payload: NoteCreate) -> Notes:
@@ -85,7 +84,7 @@ def list_notes(
     - Applies LIMIT/OFFSET at database level for pagination
     """
     # Build base statement with filters
-    base_where = [Notes.user_id == current_user.id, Notes.is_deleted == False]
+    base_where = [Notes.user_id == current_user.id, Notes.is_deleted is not True]
 
     if folder_id is not None:
         base_where.append(Notes.folder_id == folder_id)
@@ -109,7 +108,7 @@ def list_notes(
     statement = statement.order_by(col(Notes.updated_at).desc())
     statement = statement.limit(limit).offset(skip)
 
-    notes = session.exec(statement).all()
+    notes = session.exec(statement).unique().all()
 
     # Filter by tag_id in Python if specified (unavoidable - complex filtering logic)
     if tag_id is not None:
@@ -129,7 +128,7 @@ def list_folders(*, session: Session, current_user: User) -> list[NoteFolders]:
         select(NoteFolders)
         .where(
             NoteFolders.user_id == current_user.id,
-            NoteFolders.is_deleted == False,
+            NoteFolders.is_deleted is not True,
         )
         .order_by(col(NoteFolders.sort_order).asc(), col(NoteFolders.name).asc())
     )
@@ -146,15 +145,19 @@ def list_tags(*, session: Session, current_user: User) -> list[NoteTags]:
 
 
 def get_note_by_id(*, session: Session, current_user: User, note_id: int) -> Notes:
-    note = session.exec(
-        select(Notes)
-        .where(
-            Notes.id == note_id,
-            Notes.user_id == current_user.id,
-            Notes.is_deleted == False,
+    note = (
+        session.exec(
+            select(Notes)
+            .where(
+                Notes.id == note_id,
+                Notes.user_id == current_user.id,
+                Notes.is_deleted is not True,
+            )
+            .options(joinedload(Notes.tags))
         )
-        .options(joinedload(Notes.tags))
-    ).first()
+        .unique()
+        .first()
+    )
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     return note
@@ -255,7 +258,7 @@ def delete_folder(*, session: Session, current_user: User, folder_id: int) -> No
         select(NoteFolders).where(
             NoteFolders.id == folder_id,
             NoteFolders.user_id == current_user.id,
-            NoteFolders.is_deleted == False,
+            NoteFolders.is_deleted is not True,
         )
     ).first()
     if not folder:
@@ -411,7 +414,7 @@ def _validate_folder_access(*, session: Session, user_id: int, folder_id: int | 
         select(NoteFolders).where(
             NoteFolders.id == folder_id,
             NoteFolders.user_id == user_id,
-            NoteFolders.is_deleted == False,
+            NoteFolders.is_deleted is not True,
         )
     ).first()
     if not folder:
@@ -425,7 +428,7 @@ def _validate_document_access(*, session: Session, user_id: int, document_id: in
         select(Document).where(
             Document.id == document_id,
             Document.user_id == user_id,
-            Document.is_deleted == False,
+            Document.is_deleted is not True,
         )
     ).first()
     if not document:

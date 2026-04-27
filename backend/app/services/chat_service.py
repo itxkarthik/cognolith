@@ -3,17 +3,16 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from fastapi import HTTPException
-from sqlalchemy import func
-from sqlalchemy.orm import joinedload
-from sqlmodel import Session, col, select
-
 from app.ai.rag import run_rag_pipeline
 from app.models.chat import ChatMessages, ChatSession
 from app.models.note import Notes
 from app.models.user import User
 from app.schemas.chat import ChatCreate, ChatMessageCreate
 from app.utils.text_processing import create_content_preview
+from fastapi import HTTPException
+from sqlalchemy import func
+from sqlalchemy.orm import joinedload
+from sqlmodel import Session, col, select
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +28,18 @@ def create_chat_session(
     session.add(chat_session)
     session.commit()
     session.refresh(chat_session)
+
+    # Re-fetch with eager-loaded messages to avoid lazy loading issues
+    chat_session = (
+        session.exec(
+            select(ChatSession)
+            .where(ChatSession.id == chat_session.id)
+            .options(joinedload(ChatSession.messages))
+        )
+        .unique()
+        .first()
+    )
+
     return chat_session
 
 
@@ -150,7 +161,7 @@ def convert_chat_to_note(
                 select(NoteFolders).where(
                     NoteFolders.id == folder_id,
                     NoteFolders.user_id == current_user.id,
-                    NoteFolders.is_deleted == False,
+                    NoteFolders.is_deleted is not True,
                 )
             ).first()
             if not folder:
@@ -181,14 +192,18 @@ def convert_chat_to_note(
 def get_chat_session_by_id(
     *, session: Session, current_user: User, chat_session_id: int
 ) -> ChatSession:
-    chat_session = session.exec(
-        select(ChatSession)
-        .where(
-            ChatSession.id == chat_session_id,
-            ChatSession.user_id == current_user.id,
+    chat_session = (
+        session.exec(
+            select(ChatSession)
+            .where(
+                ChatSession.id == chat_session_id,
+                ChatSession.user_id == current_user.id,
+            )
+            .options(joinedload(ChatSession.messages))
         )
-        .options(joinedload(ChatSession.messages))
-    ).first()
+        .unique()
+        .first()
+    )
     if not chat_session:
         raise HTTPException(status_code=404, detail="Chat session not found")
     return chat_session

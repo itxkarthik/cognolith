@@ -6,11 +6,11 @@ WORKDIR /app
 RUN corepack enable
 
 # Install dependencies first for better layer caching
-COPY package.json pnpm-lock.yaml ./
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
-# Copy source and build
-COPY . .
+# Copy frontend source
+COPY frontend/ ./
 
 # Browser-side API base URL baked into the frontend build
 ARG NEXT_PUBLIC_API_URL=http://127.0.0.1:3000/api/v1
