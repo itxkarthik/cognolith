@@ -20,9 +20,6 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
-from fastapi.testclient import TestClient
-from sqlmodel import Session, delete, select
-
 from app import crud
 from app.core import security
 from app.core.config import settings
@@ -30,6 +27,8 @@ from app.core.database import engine
 from app.main import app
 from app.models.user import RefreshToken, TokenBlacklist, User, UserCreate
 from app.services import auth_service
+from fastapi.testclient import TestClient
+from sqlmodel import Session, delete, select
 
 client = TestClient(app)
 
@@ -196,7 +195,7 @@ class TestTokenRefresh:
         from sqlmodel import and_
 
         statement = select(RefreshToken).where(
-            and_(RefreshToken.hashed_token == hashed_old, RefreshToken.revoked == True)
+            and_(RefreshToken.hashed_token == hashed_old, RefreshToken.revoked is True)
         )
         old_token = db_session.exec(statement).first()
         assert old_token is not None
@@ -275,20 +274,17 @@ class TestTokenRevocation:
     ):
         """Revoking all tokens should revoke all refresh tokens."""
         # Create multiple token pairs
-        token_pair1 = auth_service.create_token_pair(session=db_session, user=test_user)
-        token_pair2 = auth_service.create_token_pair(session=db_session, user=test_user)
+        auth_service.create_token_pair(session=db_session, user=test_user)
+        auth_service.create_token_pair(session=db_session, user=test_user)
 
         # Revoke all user tokens
         auth_service.revoke_all_user_tokens(session=db_session, user_id=test_user.id)
 
         # All refresh tokens should be revoked
-        hashed1 = security.hash_refresh_token(token_pair1.refresh_token)
-        hashed2 = security.hash_refresh_token(token_pair2.refresh_token)
-
         from sqlmodel import and_
 
         statement = select(RefreshToken).where(
-            and_(RefreshToken.user_id == test_user.id, RefreshToken.revoked == True)
+            and_(RefreshToken.user_id == test_user.id, RefreshToken.revoked is True)
         )
         revoked_tokens = db_session.exec(statement).all()
         assert len(revoked_tokens) >= 2

@@ -3,22 +3,21 @@ Unit tests for global exception handling and standardized error responses.
 """
 
 import pytest
-from fastapi.testclient import TestClient
-
 from app.core.exceptions import (
-    AppException,
-    AuthenticationException,
-    AuthorizationException,
-    ConflictException,
+    AppError,
+    AuthenticationError,
+    AuthorizationError,
+    ConflictError,
     ErrorCode,
     ErrorDetail,
-    ExternalServiceException,
-    RateLimitedException,
-    ResourceNotFoundException,
+    ExternalServiceError,
+    RateLimitedError,
+    ResourceNotFoundError,
     StandardErrorResponse,
-    ValidationException,
+    ValidationError,
     global_exception_handler,
 )
+from fastapi.testclient import TestClient
 
 
 class TestErrorCodes:
@@ -43,20 +42,18 @@ class TestErrorCodes:
         assert ErrorCode.EXTERNAL_SERVICE_ERROR.value == "external_service_error"
 
 
-class TestAppException:
-    """Test base AppException class."""
+class TestAppError:
+    """Test base AppError class."""
 
-    def test_app_exception_creation(self):
-        exc = AppException(
-            message="Test error", error_code=ErrorCode.UNKNOWN_ERROR, status_code=500
-        )
+    def test_app_error_creation(self):
+        exc = AppError(message="Test error", error_code=ErrorCode.UNKNOWN_ERROR, status_code=500)
         assert exc.message == "Test error"
         assert exc.error_code == ErrorCode.UNKNOWN_ERROR
         assert exc.status_code == 500
 
-    def test_app_exception_with_details(self):
+    def test_app_error_with_details(self):
         detail = ErrorDetail(code="test_code", message="Test detail", field="test_field")
-        exc = AppException(
+        exc = AppError(
             message="Test error",
             error_code=ErrorCode.VALIDATION_ERROR,
             status_code=422,
@@ -66,17 +63,17 @@ class TestAppException:
         assert exc.details[0].field == "test_field"
 
 
-class TestValidationException:
-    """Test ValidationException class."""
+class TestValidationError:
+    """Test ValidationError class."""
 
     def test_validation_exception_defaults(self):
-        exc = ValidationException()
+        exc = ValidationError()
         assert exc.message == "Request validation failed"
         assert exc.error_code == ErrorCode.VALIDATION_ERROR
         assert exc.status_code == 422
 
     def test_validation_exception_custom_message(self):
-        exc = ValidationException(message="Custom validation error")
+        exc = ValidationError(message="Custom validation error")
         assert exc.message == "Custom validation error"
 
     def test_validation_exception_with_details(self):
@@ -86,79 +83,79 @@ class TestValidationException:
             field="email",
             value="not-an-email",
         )
-        exc = ValidationException(message="Email validation failed", details=[detail])
+        exc = ValidationError(message="Email validation failed", details=[detail])
         assert exc.details[0].field == "email"
 
 
-class TestAuthenticationException:
-    """Test AuthenticationException class."""
+class TestAuthenticationError:
+    """Test AuthenticationError class."""
 
     def test_authentication_exception_defaults(self):
-        exc = AuthenticationException()
+        exc = AuthenticationError()
         assert exc.message == "Authentication failed"
         assert exc.error_code == ErrorCode.AUTHENTICATION_ERROR
         assert exc.status_code == 401
 
     def test_authentication_exception_custom_message(self):
-        exc = AuthenticationException("Invalid credentials")
+        exc = AuthenticationError("Invalid credentials")
         assert exc.message == "Invalid credentials"
 
 
-class TestAuthorizationException:
-    """Test AuthorizationException class."""
+class TestAuthorizationError:
+    """Test AuthorizationError class."""
 
     def test_authorization_exception_defaults(self):
-        exc = AuthorizationException()
+        exc = AuthorizationError()
         assert exc.message == "Insufficient permissions"
         assert exc.error_code == ErrorCode.AUTHORIZATION_ERROR
         assert exc.status_code == 403
 
 
-class TestResourceNotFoundException:
-    """Test ResourceNotFoundException class."""
+class TestResourceNotFoundError:
+    """Test ResourceNotFoundError class."""
 
     def test_not_found_exception_defaults(self):
-        exc = ResourceNotFoundException()
+        exc = ResourceNotFoundError()
         assert exc.message == "Resource not found"
         assert exc.error_code == ErrorCode.NOT_FOUND
         assert exc.status_code == 404
 
     def test_not_found_exception_custom_message(self):
-        exc = ResourceNotFoundException("Document with ID 123 not found")
+        exc = ResourceNotFoundError("Document with ID 123 not found")
         assert exc.message == "Document with ID 123 not found"
 
 
-class TestConflictException:
-    """Test ConflictException class."""
+class TestConflictError:
+    """Test ConflictError class."""
 
     def test_conflict_exception_defaults(self):
-        exc = ConflictException()
+        exc = ConflictError()
         assert exc.message == "Resource conflict"
         assert exc.error_code == ErrorCode.CONFLICT
         assert exc.status_code == 409
 
 
-class TestRateLimitedException:
-    """Test RateLimitedException class."""
+class TestRateLimitedError:
+    """Test RateLimitedError class."""
 
     def test_rate_limited_exception_defaults(self):
-        exc = RateLimitedException()
+        exc = RateLimitedError()
         assert exc.message == "Rate limit exceeded"
         assert exc.error_code == ErrorCode.RATE_LIMITED
         assert exc.status_code == 429
 
 
-class TestExternalServiceException:
-    """Test ExternalServiceException class."""
+class TestExternalServiceError:
+    """Test ExternalServiceError class."""
 
     def test_external_service_exception_defaults(self):
-        exc = ExternalServiceException()
+        exc = ExternalServiceError()
         assert exc.message == "External service error"
         assert exc.error_code == ErrorCode.EXTERNAL_SERVICE_ERROR
         assert exc.status_code == 503
 
     def test_external_service_exception_custom_message(self):
-        exc = ExternalServiceException("LLM service unavailable")
+        exc = ExternalServiceError("LLM service unavailable")
         assert exc.message == "LLM service unavailable"
 
 
@@ -208,9 +205,8 @@ class TestExceptionHandler:
     @pytest.fixture
     def app(self):
         """Create a test FastAPI app."""
-        from fastapi import FastAPI
-
         from app.core.middleware import RequestIDMiddleware
+        from fastapi import FastAPI
 
         test_app = FastAPI()
         test_app.add_middleware(RequestIDMiddleware)
@@ -218,7 +214,7 @@ class TestExceptionHandler:
 
         @test_app.get("/validation-error")
         async def validation_error_endpoint():
-            raise ValidationException(
+            raise ValidationError(
                 message="Invalid request",
                 details=[
                     ErrorDetail(code="email_invalid", message="Email is invalid", field="email")
@@ -227,11 +223,11 @@ class TestExceptionHandler:
 
         @test_app.get("/auth-error")
         async def auth_error_endpoint():
-            raise AuthenticationException("Invalid token")
+            raise AuthenticationError("Invalid token")
 
         @test_app.get("/not-found")
         async def not_found_endpoint():
-            raise ResourceNotFoundException("User not found")
+            raise ResourceNotFoundError("User not found")
 
         @test_app.get("/generic-error")
         async def generic_error_endpoint():

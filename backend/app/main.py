@@ -2,19 +2,13 @@ import logging
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-
 from app.api.main import api_router
 from app.api.routes.test import router as test_router
 from app.core.cache_middleware import ETagAndCacheMiddleware
 from app.core.config import settings
 from app.core.csrf import CSRFMiddleware
 from app.core.database import create_db_and_tables_with_retry, test_db_connection
-from app.core.exceptions import AppException, global_exception_handler
+from app.core.exceptions import AppError, global_exception_handler
 from app.core.middleware import (
     MaxRequestBodySizeMiddleware,
     RequestIDMiddleware,
@@ -24,6 +18,11 @@ from app.core.middleware import (
 
 # Rate Limiter
 from app.core.rate_limit import limiter
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +71,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Register global exception handler for all exceptions
 # This must be registered AFTER specific handlers (like RateLimitExceeded)
-app.add_exception_handler(AppException, global_exception_handler)
+app.add_exception_handler(AppError, global_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
 # 1. Request ID — runs first so all downstream middleware/routes have access

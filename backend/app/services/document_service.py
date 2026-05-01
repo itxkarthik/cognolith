@@ -5,10 +5,6 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import HTTPException, UploadFile
-from sqlalchemy import func
-from sqlmodel import Session, col, or_, select
-
 from app.ai.embeddings import generate_embeddings
 from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
@@ -18,6 +14,9 @@ from app.schemas.document import DocumentUpdate
 from app.utils.file_processing import extract_text_from_file
 from app.utils.file_validation import validate_upload_file
 from app.utils.text_processing import clean_text, create_content_preview, split_text_into_chunks
+from fastapi import HTTPException, UploadFile
+from sqlalchemy import func
+from sqlmodel import Session, col, or_, select
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +186,7 @@ def list_documents(
     """
     base_where = [
         Document.user_id == current_user.id,
-        Document.is_deleted == False,
+        Document.is_deleted is False,
     ]
 
     if search:
@@ -216,7 +215,7 @@ def get_document_by_id(*, session: Session, current_user: User, document_id: int
         select(Document).where(
             Document.id == document_id,
             Document.user_id == current_user.id,
-            Document.is_deleted == False,
+            Document.is_deleted is False,
         )
     ).first()
     if not document:

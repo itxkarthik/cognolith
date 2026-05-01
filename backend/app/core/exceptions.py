@@ -1,16 +1,14 @@
 import logging
-from typing import Optional
 
+from app.schemas.error import ErrorCode, ErrorDetail, StandardErrorResponse
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.schemas.error import ErrorCode, ErrorDetail, StandardErrorResponse
-
 logger = logging.getLogger(__name__)
 
 
-class AppException(Exception):
+class AppError(Exception):
     """Base exception for the application."""
 
     def __init__(
@@ -18,7 +16,7 @@ class AppException(Exception):
         message: str,
         error_code: ErrorCode = ErrorCode.UNKNOWN_ERROR,
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
-        details: Optional[list[ErrorDetail]] = None,
+        details: list[ErrorDetail] | None = None,
     ):
         self.message = message
         self.error_code = error_code
@@ -27,13 +25,13 @@ class AppException(Exception):
         super().__init__(message)
 
 
-class ValidationException(AppException):
+class ValidationError(AppError):
     """Raised when request validation fails."""
 
     def __init__(
         self,
         message: str = "Request validation failed",
-        details: Optional[list[ErrorDetail]] = None,
+        details: list[ErrorDetail] | None = None,
     ):
         super().__init__(
             message=message,
@@ -43,7 +41,7 @@ class ValidationException(AppException):
         )
 
 
-class AuthenticationException(AppException):
+class AuthenticationError(AppError):
     """Raised when authentication fails."""
 
     def __init__(self, message: str = "Authentication failed"):
@@ -54,7 +52,7 @@ class AuthenticationException(AppException):
         )
 
 
-class AuthorizationException(AppException):
+class AuthorizationError(AppError):
     """Raised when user lacks required permissions."""
 
     def __init__(self, message: str = "Insufficient permissions"):
@@ -65,7 +63,7 @@ class AuthorizationException(AppException):
         )
 
 
-class ResourceNotFoundException(AppException):
+class ResourceNotFoundError(AppError):
     """Raised when requested resource is not found."""
 
     def __init__(self, message: str = "Resource not found"):
@@ -76,7 +74,7 @@ class ResourceNotFoundException(AppException):
         )
 
 
-class ConflictException(AppException):
+class ConflictError(AppError):
     """Raised when request conflicts with existing data."""
 
     def __init__(self, message: str = "Resource conflict"):
@@ -87,7 +85,7 @@ class ConflictException(AppException):
         )
 
 
-class RateLimitedException(AppException):
+class RateLimitedError(AppError):
     """Raised when rate limit is exceeded."""
 
     def __init__(self, message: str = "Rate limit exceeded"):
@@ -98,7 +96,7 @@ class RateLimitedException(AppException):
         )
 
 
-class ExternalServiceException(AppException):
+class ExternalServiceError(AppError):
     """Raised when external service (LLM, embeddings, etc.) fails."""
 
     def __init__(self, message: str = "External service error"):
@@ -124,8 +122,8 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     # Get request ID from request state (set by RequestIDMiddleware)
     request_id = getattr(request.state, "request_id", None)
 
-    # Handle AppException
-    if isinstance(exc, AppException):
+    # Handle AppError
+    if isinstance(exc, AppError):
         error_response = StandardErrorResponse(
             status="error",
             error=exc.error_code.value,

@@ -1,10 +1,6 @@
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Query
-from sqlalchemy import func
-from sqlmodel import select
-
 from app.api.deps import CurrentUser, SessionDep
 from app.models.chat import ChatMessages, ChatSession
 from app.models.document import Document
@@ -12,6 +8,9 @@ from app.models.note import Notes
 from app.schemas.error import StandardErrorResponse
 from app.schemas.search import SearchResponse, SearchResultItem
 from app.utils.text_processing import create_content_preview
+from fastapi import APIRouter, Query
+from sqlalchemy import func
+from sqlmodel import select
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -66,7 +65,7 @@ def unified_search(
             doc_score,
         ).where(
             Document.user_id == current_user.id,
-            Document.is_deleted == False,
+            Document.is_deleted is False,
             doc_vector.op("@@")(ts_query),
         )
         if date_from is not None:
@@ -106,7 +105,7 @@ def unified_search(
             note_score,
         ).where(
             Notes.user_id == current_user.id,
-            Notes.is_deleted == False,
+            Notes.is_deleted is False,
             note_vector.op("@@")(ts_query),
         )
         if folder_id is not None:

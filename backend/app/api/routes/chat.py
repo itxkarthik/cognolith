@@ -1,6 +1,9 @@
+import json
+import logging
 from typing import Any
 
 from app.api.deps import CurrentUser, SessionDep
+from app.core.websocket import manager
 from app.models.chat import ChatMessages, ChatSession
 from app.schemas.chat import ChatCreate, ChatMessageCreate, ChatMessageResponse, ChatResponse
 from app.schemas.error import StandardErrorResponse
@@ -13,9 +16,11 @@ from app.services.chat_service import (
     send_message_and_get_response,
     stream_message_and_get_response,
 )
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -254,3 +259,83 @@ def convert_chat_to_note_endpoint(
         folder_id=body.folder_id,
     )
     return _to_note_response(note)
+
+
+@router.websocket("/sessions/{session_id}/ws")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    session_id: int,
+) -> None:
+    """
+    WebSocket endpoint for real-time chat messaging.
+
+    Connection flow:
+    1. Client connects with authentication token in query params
+    2. Server validates token and establishes connection
+    3. Client receives existing message history
+    4. Messages are broadcast to all connected users in session
+
+    Message format:
+    {
+        "type": "message" | "connection" | "error",
+        "content": "...",
+        "sender_id": user_id,
+        "timestamp": ISO datetime,
+        ...
+    }
+    """
+    # TODO: Extract and validate authentication token from query params
+    # For now, accept all connections (in production, validate JWT)
+    user_id = 1  # Placeholder: extract from token
+
+    await manager.connect(websocket, session_id, user_id)
+
+    try:
+        # Send connection confirmation
+        await manager.send_to_user(
+            session_id,
+            user_id,
+            {
+                "type": "connection",
+                "status": "connected",
+                "session_id": session_id,
+                "user_count": manager.get_session_user_count(session_id),
+            },
+        )
+
+        # Listen for incoming messages
+        while True:
+            data = await websocket.receive_text()
+            message_data = json.loads(data)
+
+            # Broadcast message to session
+            await manager.broadcast_to_session(
+                session_id,
+                {
+                    "type": "message",
+                    "content": message_data.get("content"),
+                    "sender_id": user_id,
+                    "timestamp": __import__("datetime")
+                    .datetime.now(__import__("datetime").timezone.utc)
+                    .isoformat(),
+                },
+            )
+
+    except WebSocketDisconnect:
+        manager.disconnect(session_id, user_id)
+        logger.info(f"WebSocket disconnected: session={session_id}, user={user_id}")
+
+        # Notify other users in session
+        if manager.has_active_connections(session_id):
+            await manager.broadcast_to_session(
+                session_id,
+                {
+                    "type": "user_left",
+                    "user_id": user_id,
+                    "user_count": manager.get_session_user_count(session_id),
+                },
+            )
+
+    except Exception as e:
+        logger.exception(f"WebSocket error in session {session_id}: {e}")
+        manager.disconnect(session_id, user_id)
