@@ -71,3 +71,5 @@ PROJECT_*
 TIMEOUT_*
 EXCEPTION_*
 .ruff_cache
+
+node_modules/

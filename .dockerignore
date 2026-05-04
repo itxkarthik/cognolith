@@ -1,6 +1,10 @@
 .git
 .next
 node_modules
+**/node_modules
+**/.next
+frontend/.turbo
+**/.pnpm-store
 backend/.venv
 backend/__pycache__
 backend/.pytest_cache
