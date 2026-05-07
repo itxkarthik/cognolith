@@ -3,16 +3,16 @@
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
 import { requestQueue } from '@/lib/utils/requestQueue';
 import { useState, useEffect } from 'react';
+import { motion } from 'motion/react';
 
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Separator } from '@/components/ui';
 
 export function StatusTerminal() {
   const { isOnline } = useNetworkStatus();
-  const [queueCount, setQueueCount] = useState(0);
+  const [queueCount, setQueueCount] = useState(() => requestQueue.size());
   const [latency, setLatency] = useState(0);
 
   useEffect(() => {
-    setQueueCount(requestQueue.size());
     const interval = setInterval(() => setQueueCount(requestQueue.size()), 1000);
     return () => clearInterval(interval);
   }, []);
@@ -31,7 +31,13 @@ export function StatusTerminal() {
   const syncStatus = queueCount > 0 ? 'SYNC: ' + queueCount + ' PENDING' : 'SYNC: 100%';
 
   return (
-    <Card className='fixed right-8 top-20 z-20 w-[18rem] border-white/10 bg-[#171717]/90 shadow-2xl backdrop-blur-xl'>
+    <motion.div
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.35, ease: 'easeOut' }}
+      className='fixed right-8 top-20 z-20'
+    >
+    <Card className='w-[18rem] border-cyan-500/25 bg-[#070b1d]/90 shadow-2xl backdrop-blur-xl'>
       <CardHeader className='space-y-2 px-4 py-4'>
         <div className='flex items-center justify-between'>
           <CardTitle className='text-sm font-semibold tracking-wide text-white'>System Status</CardTitle>
@@ -54,5 +60,6 @@ export function StatusTerminal() {
         </div>
       </CardContent>
     </Card>
+    </motion.div>
   );
 }

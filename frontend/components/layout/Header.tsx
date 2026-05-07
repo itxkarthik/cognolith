@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useAuth } from "@/lib/hooks/useAuth";
+import { motion } from "motion/react";
 import { Search, Bell, Settings, User, LogOut } from "lucide-react";
 import {
   Badge,
@@ -22,16 +23,16 @@ export function Header() {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   return (
-    <header className="fixed left-64 right-0 top-0 z-30 border-b border-cyan-500/20 bg-gradient-to-r from-[#0a0e27] via-[#1a1f3a]/40 to-[#0a0e27] backdrop-blur-xl" style={{ boxShadow: '0 0 20px rgba(0, 255, 255, 0.1)' }}>
+    <header className="fixed left-72 right-0 top-0 z-30 border-b border-cyan-500/25 bg-[#060916]/80 backdrop-blur-xl" style={{ boxShadow: "0 0 20px rgba(0, 255, 255, 0.1)" }}>
       <div className="flex h-16 items-center justify-between px-8 relative">
         {/* Animated border line */}
         <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-cyan-500/0 via-cyan-500/50 to-cyan-500/0" />
         
         <div className="flex items-center gap-6">
-          <div className="relative w-[22rem] max-w-[42vw] group">
+          <div className="relative w-[24rem] max-w-[42vw] group">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-cyan-400/50 group-focus-within:text-cyan-400 transition-colors" />
             <Input
-              className="h-11 rounded-full border-cyan-500/30 bg-cyan-500/5 pl-10 text-sm text-cyan-50 placeholder:text-cyan-400/40 focus-visible:ring-cyan-500/50 focus-visible:border-cyan-500/50 transition-all"
+              className="h-11 rounded-full border-cyan-500/35 bg-cyan-500/10 pl-10 text-sm text-cyan-50 placeholder:text-cyan-400/45 focus-visible:border-cyan-400/70 focus-visible:ring-cyan-500/50"
               placeholder="Search knowledge graph..."
               type="text"
             />
@@ -49,13 +50,15 @@ export function Header() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" className="rounded-full text-cyan-400/70 hover:bg-cyan-500/10 hover:text-cyan-300 transition-all" style={{ textShadow: '0 0 8px rgba(0, 255, 255, 0.3)' }}>
+          <motion.div whileHover={{ y: -2 }} whileTap={{ scale: 0.96 }}>
+            <Button variant="ghost" size="icon" className="rounded-full text-cyan-400/70 hover:bg-cyan-500/10 hover:text-cyan-300 transition-all" style={{ textShadow: "0 0 8px rgba(0, 255, 255, 0.3)" }}>
             <Bell className="h-5 w-5" />
             <span className="sr-only">Notifications</span>
           </Button>
+          </motion.div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="rounded-full text-cyan-400/70 hover:bg-cyan-500/10 hover:text-cyan-300 transition-all" style={{ textShadow: '0 0 8px rgba(0, 255, 255, 0.3)' }}>
+              <Button variant="ghost" size="icon" className="rounded-full text-cyan-400/70 hover:bg-cyan-500/10 hover:text-cyan-300 transition-all" style={{ textShadow: "0 0 8px rgba(0, 255, 255, 0.3)" }}>
                 <Settings className="h-5 w-5" />
                 <span className="sr-only">Settings</span>
               </Button>

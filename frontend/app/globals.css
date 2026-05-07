@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&family=Space+Grotesk:wght@500;700&family=JetBrains+Mono&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;800&family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap");
 @import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
@@ -78,9 +78,9 @@
   --surface-container-highest: #303855;
 
   /* Typography */
-  --font-headline: "Inter";
-  --font-body: "Inter";
-  --font-label: "Space Grotesk";
+  --font-headline: "Orbitron";
+  --font-body: "Rajdhani";
+  --font-label: "Orbitron";
   --font-mono: "JetBrains Mono";
   --background: #0a0e27;
   --foreground: #e0f7ff;
@@ -181,6 +181,12 @@ body {
 
 .float-animation {
   animation: float-up 3s ease-in-out infinite;
+}
+
+.cyber-grid {
+  background-image: linear-gradient(rgba(0, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 40px 40px;
 }
 
 /* Scrollbar */

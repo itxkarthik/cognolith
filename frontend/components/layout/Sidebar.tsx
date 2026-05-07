@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/hooks/useAuth";
+import { motion } from "motion/react";
 import {
   LayoutDashboard,
   Database,
@@ -50,19 +51,21 @@ interface NavItemProps {
 
 function NavItem({ item, isActive }: NavItemProps) {
   return (
-    <Link
+    <motion.div whileHover={{ x: 4 }} transition={{ duration: 0.18 }}>
+      <Link
       href={item.href}
-      className={`px-4 py-3 flex items-center gap-3 transition-all duration-300 text-sm tracking-tight ${
+      className={`group flex items-center gap-3 rounded-xl px-4 py-3 text-sm tracking-tight transition-all duration-300 ${
         isActive
-          ? "text-[#c0c1ff] bg-[#1b1b1b] border-l-2 border-[#bcff5f]"
-          : "text-[#e2e2e2]/60 hover:text-[#e2e2e2] hover:bg-[#1b1b1b] hover:text-[#bcff5f]"
+          ? "border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 shadow-[0_0_20px_rgba(0,255,255,0.2)]"
+          : "border border-transparent text-cyan-100/65 hover:border-cyan-500/30 hover:bg-cyan-500/10 hover:text-cyan-100"
       }`}
     >
       <div className="flex-shrink-0">
         {iconMap[item.icon] || iconMap.dashboard}
       </div>
-      <span className="text-xs font-medium">{item.label}</span>
-    </Link>
+      <span className="text-xs font-semibold uppercase tracking-[0.16em]">{item.label}</span>
+      </Link>
+    </motion.div>
   );
 }
 
@@ -71,28 +74,28 @@ export function Sidebar() {
   const { user } = useAuth();
 
   return (
-    <aside className="fixed left-0 top-0 h-full z-40 flex flex-col bg-[#131313] w-64 border-r border-[#464554]/20 font-['Inter'] text-sm tracking-tight hidden lg:flex">
+    <aside className="fixed left-0 top-0 z-40 hidden h-full w-72 flex-col border-r border-cyan-500/25 bg-[#060916]/90 font-['Space_Grotesk'] text-sm tracking-tight backdrop-blur-xl lg:flex">
       <div className="p-6">
         <div className="flex items-center gap-3 mb-8">
-          <div className="w-8 h-8 rounded bg-[#8083ff] flex items-center justify-center">
-            <Terminal className="w-4 h-4 text-[#07006c]" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-400/40 bg-cyan-500/15 shadow-[0_0_20px_rgba(0,255,255,0.25)]">
+            <Terminal className="h-5 w-5 text-cyan-200" />
           </div>
           <div>
-            <h1 className="text-lg font-black tracking-tighter text-[#e2e2e2]">
-              Personal AI Knowledge Assistant
+            <h1 className="text-sm font-extrabold uppercase tracking-[0.12em] text-cyan-100">
+              Personal Knowledge AI
             </h1>
-            <p className="text-[10px] uppercase font-bold font-['Space_Grotesk'] text-[#c0c1ff]/60 tracking-widest">
-              High-Performance Assistant
+            <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-300/65">
+              Neon Ops Console
             </p>
           </div>
         </div>
 
-        <button className="w-full font-bold py-3 px-4 rounded-xl flex items-center justify-center gap-2 mb-8 hover:opacity-90 transition-all bg-[#1a1a1a] border border-[#464554]/30 text-[#e2e2e2] hover:bg-[#252525]">
+        <button className="mb-8 flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-400/35 bg-gradient-to-r from-cyan-500/20 via-fuchsia-500/15 to-cyan-500/20 px-4 py-3 font-bold text-cyan-100 transition-all hover:shadow-[0_0_30px_rgba(0,255,255,0.25)]">
           <Plus className="w-4 h-4" />
-          <span className="text-xs font-bold">New Entry</span>
+          <span className="text-xs font-bold uppercase tracking-[0.16em]">New Entry</span>
         </button>
 
-        <nav className="space-y-1">
+        <nav className="space-y-2">
           {navItems.map((item) => {
             const isActive =
               pathname === item.href ||
@@ -102,23 +105,23 @@ export function Sidebar() {
         </nav>
       </div>
 
-      <div className="mt-auto p-6 space-y-1">
-        <nav className="space-y-1">
+      <div className="mt-auto space-y-2 p-6">
+        <nav className="space-y-2">
           {secondaryNavItems.map((item) => {
             const isActive = pathname === item.href;
             return <NavItem key={item.href} item={item} isActive={isActive} />;
           })}
         </nav>
 
-        <div className="pt-6 flex items-center gap-3 border-t border-[#464554]/10">
-          <div className="w-8 h-8 rounded-full bg-[#353535] overflow-hidden flex items-center justify-center text-[#e2e2e2]/60 font-bold text-xs">
+        <div className="flex items-center gap-3 border-t border-cyan-500/20 pt-6">
+          <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-cyan-500/40 bg-cyan-500/10 text-xs font-bold text-cyan-100/80">
             {user?.full_name?.[0]?.toUpperCase() ?? "U"}
           </div>
           <div className="overflow-hidden">
-            <p className="text-xs font-bold text-[#e2e2e2] truncate">
+            <p className="truncate text-xs font-bold text-cyan-50">
               {user?.full_name ?? "Operator_01"}
             </p>
-            <p className="text-[10px] text-[#908fa0] truncate uppercase font-['Space_Grotesk'] text-[11px]">
+            <p className="truncate font-mono text-[10px] uppercase tracking-[0.14em] text-cyan-300/65">
               Status: Active
             </p>
           </div>
