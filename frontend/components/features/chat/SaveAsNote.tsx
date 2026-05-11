@@ -33,16 +33,16 @@ export function SaveAsNote({
 	const effectiveTitle = hasEditedTitle ? title : defaultTitle ?? "";
 
 	return (
-		<section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3 backdrop-blur">
+		<section className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-3 backdrop-blur">
 			<div className="flex items-center justify-between gap-2">
 				<div>
-					<p className="text-xs uppercase tracking-[0.16em] text-zinc-500">Utilities</p>
-					<p className="mt-1 text-sm text-zinc-300">Save this conversation as a note</p>
+					<p className="text-xs uppercase tracking-[0.16em] text-cyan-300/55">Utilities</p>
+					<p className="mt-1 text-sm text-cyan-100/65">Save this conversation as a note</p>
 				</div>
 				<button
 					type="button"
 					onClick={() => setIsOpen((current) => !current)}
-					className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs text-zinc-100 transition hover:border-zinc-500"
+					className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/8 px-3 py-2 text-xs text-cyan-100 transition hover:border-cyan-400/55"
 				>
 					<NotebookPen className="h-3.5 w-3.5" />
 					Save as Note
@@ -79,13 +79,13 @@ export function SaveAsNote({
 							setTitle(event.target.value);
 						}}
 						placeholder="Note title"
-						className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+						className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-sm text-cyan-100 placeholder:text-cyan-300/45 focus:border-cyan-400/60 focus:outline-none"
 					/>
 
 					<select
 						value={folderId}
 						onChange={(event) => setFolderId(event.target.value)}
-						className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 focus:border-zinc-500 focus:outline-none"
+						className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-sm text-cyan-100 focus:border-cyan-400/60 focus:outline-none"
 					>
 						<option value="">No folder</option>
 						{folders.map((folder) => (
@@ -98,14 +98,14 @@ export function SaveAsNote({
 					<button
 						type="submit"
 						disabled={isSaving}
-						className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-xs text-zinc-100 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
+						className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/8 px-3 py-2 text-xs text-cyan-100 transition hover:border-cyan-400/55 disabled:cursor-not-allowed disabled:opacity-60"
 					>
 						{isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <NotebookPen className="h-3.5 w-3.5" />}
 						Save Conversation
 					</button>
 
 					{statusMessage ? (
-						<p className="flex items-center gap-1.5 text-xs text-zinc-300">
+						<p className="flex items-center gap-1.5 text-xs text-cyan-100/75">
 							<CheckCircle2 className="h-3.5 w-3.5" />
 							{statusMessage}
 						</p>

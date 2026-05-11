@@ -1,19 +1,21 @@
 'use client';
 
 import { useNetworkStatus } from '@/lib/hooks/useNetworkStatus';
-import { AlertCircle, WifiOff, CheckCircle } from 'lucide-react';
+import { WifiOff, CheckCircle } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 export function OfflineIndicator() {
-  const { isOnline, isChecking } = useNetworkStatus();
+  const { isOnline } = useNetworkStatus();
   const [show, setShow] = useState(false);
 
   useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout>;
     if (!isOnline) {
-      setShow(true);
+      timeoutId = setTimeout(() => setShow(true), 0);
     } else {
-      setTimeout(() => setShow(false), 2000);
+      timeoutId = setTimeout(() => setShow(false), 2000);
     }
+    return () => clearTimeout(timeoutId);
   }, [isOnline]);
 
   if (show && !isOnline) {

@@ -41,15 +41,15 @@ export function DocumentViewer({
 
 	return (
 		<div className="space-y-6">
-			<section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
+			<section className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6">
 				<div className="flex flex-wrap items-start justify-between gap-4">
 					<div>
-						<p className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-zinc-500">
+						<p className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-cyan-300/55">
 							<FileText className="h-3.5 w-3.5" />
 							{formatFileType(document.file_type)}
 						</p>
-						<h1 className="mt-2 text-2xl font-semibold text-zinc-100">{document.title}</h1>
-						<p className="mt-2 inline-flex items-center gap-1.5 text-sm text-zinc-400">
+						<h1 className="mt-2 text-3xl font-semibold text-cyan-50">{document.title}</h1>
+						<p className="mt-2 inline-flex items-center gap-1.5 text-sm text-cyan-100/65">
 							<Clock3 className="h-4 w-4" />
 							Updated {formatDate(document.updated_at)}
 						</p>
@@ -68,7 +68,7 @@ export function DocumentViewer({
 							href={`/dashboard/documents/${document.id}/full-text`}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-100 transition hover:border-zinc-500"
+							className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-2 text-sm text-cyan-100 transition hover:border-cyan-400/55"
 						>
 							<ExternalLink className="h-4 w-4" />
 							Open Full Text
@@ -88,21 +88,21 @@ export function DocumentViewer({
 				</div>
 
 				<div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-					<div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3">
-						<p className="text-xs uppercase tracking-[0.14em] text-zinc-500">File Name</p>
-						<p className="mt-1 line-clamp-1 text-sm text-zinc-200">{document.file_name}</p>
+					<div className="rounded-xl border border-cyan-500/20 bg-[#01040f] p-3">
+						<p className="text-xs uppercase tracking-[0.14em] text-cyan-300/55">File Name</p>
+						<p className="mt-1 line-clamp-1 text-sm text-cyan-100">{document.file_name}</p>
 					</div>
-					<div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3">
-						<p className="text-xs uppercase tracking-[0.14em] text-zinc-500">Size</p>
-						<p className="mt-1 text-sm text-zinc-200">{formatBytes(document.file_size)}</p>
+					<div className="rounded-xl border border-cyan-500/20 bg-[#01040f] p-3">
+						<p className="text-xs uppercase tracking-[0.14em] text-cyan-300/55">Size</p>
+						<p className="mt-1 text-sm text-cyan-100">{formatBytes(document.file_size)}</p>
 					</div>
-					<div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3">
-						<p className="text-xs uppercase tracking-[0.14em] text-zinc-500">Chunks</p>
-						<p className="mt-1 text-sm text-zinc-200">{document.chunk_count}</p>
+					<div className="rounded-xl border border-cyan-500/20 bg-[#01040f] p-3">
+						<p className="text-xs uppercase tracking-[0.14em] text-cyan-300/55">Chunks</p>
+						<p className="mt-1 text-sm text-cyan-100">{document.chunk_count}</p>
 					</div>
-					<div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3">
-						<p className="text-xs uppercase tracking-[0.14em] text-zinc-500">Language</p>
-						<p className="mt-1 inline-flex items-center gap-1.5 text-sm text-zinc-200">
+					<div className="rounded-xl border border-cyan-500/20 bg-[#01040f] p-3">
+						<p className="text-xs uppercase tracking-[0.14em] text-cyan-300/55">Language</p>
+						<p className="mt-1 inline-flex items-center gap-1.5 text-sm text-cyan-100">
 							<Languages className="h-3.5 w-3.5" />
 							{document.language}
 						</p>
@@ -111,35 +111,35 @@ export function DocumentViewer({
 			</section>
 
 			{document.summary ? (
-				<section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
-					<h2 className="text-lg font-semibold text-zinc-100">Summary</h2>
-					<p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-300">
+				<section className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6">
+					<h2 className="text-lg font-semibold text-cyan-50">Summary</h2>
+					<p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-cyan-100/70">
 						{document.summary}
 					</p>
 				</section>
 			) : null}
 
-			<section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
-				<h2 className="text-lg font-semibold text-zinc-100">Content Preview</h2>
+			<section className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6">
+				<h2 className="text-lg font-semibold text-cyan-50">Content Preview</h2>
 				{document.content_preview ? (
-					<p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-300">
+					<p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-cyan-100/70">
 						{document.content_preview}
 					</p>
 				) : (
-					<p className="mt-3 text-sm text-zinc-400">
+					<p className="mt-3 text-sm text-cyan-100/60">
 						No preview is available for this document yet.
 					</p>
 				)}
 			</section>
 
 			{document.tags.length > 0 ? (
-				<section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
-					<h2 className="text-lg font-semibold text-zinc-100">Tags</h2>
+				<section className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6">
+					<h2 className="text-lg font-semibold text-cyan-50">Tags</h2>
 					<div className="mt-3 flex flex-wrap gap-2">
 						{document.tags.map((tag) => (
 							<span
 								key={tag}
-								className="rounded-full border border-zinc-700 bg-zinc-950 px-2.5 py-1 text-xs text-zinc-300"
+								className="rounded-full border border-cyan-500/30 bg-cyan-500/8 px-2.5 py-1 text-xs text-cyan-100/75"
 							>
 								#{tag}
 							</span>

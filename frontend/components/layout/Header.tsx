@@ -27,7 +27,7 @@ export function Header() {
       <div className="flex h-16 items-center justify-between px-8 relative">
         {/* Animated border line */}
         <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-cyan-500/0 via-cyan-500/50 to-cyan-500/0" />
-        
+
         <div className="flex items-center gap-6">
           <div className="relative w-[24rem] max-w-[42vw] group">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-cyan-400/50 group-focus-within:text-cyan-400 transition-colors" />
@@ -44,13 +44,13 @@ export function Header() {
             <Badge variant="outline" className="rounded-full border-cyan-500/20 bg-cyan-500/5 px-3 py-1 text-cyan-300/70 hover:border-cyan-500/40 hover:bg-cyan-500/10 cursor-pointer transition-all">
               Logs
             </Badge>
-            <Badge variant="outline" className="rounded-full border-magenta-500/20 bg-magenta-500/5 px-3 py-1 text-magenta-300/70 hover:border-magenta-500/40 hover:bg-magenta-500/10 cursor-pointer transition-all">
+            <Badge variant="outline" className="rounded-full border-teal-500/25 bg-teal-500/8 px-3 py-1 text-teal-200/70 hover:border-teal-400/45 hover:bg-teal-500/15 cursor-pointer transition-all">
               Terminal
             </Badge>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <motion.div whileHover={{ y: -2 }} whileTap={{ scale: 0.96 }}>
+          <motion.div whileHover={{ y: -2 }} whileTap={{ scale: 0.97 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}>
             <Button variant="ghost" size="icon" className="rounded-full text-cyan-400/70 hover:bg-cyan-500/10 hover:text-cyan-300 transition-all" style={{ textShadow: "0 0 8px rgba(0, 255, 255, 0.3)" }}>
             <Bell className="h-5 w-5" />
             <span className="sr-only">Notifications</span>

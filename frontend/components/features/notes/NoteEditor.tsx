@@ -39,10 +39,10 @@ export function NoteEditor({
 }: NoteEditorProps) {
 	if (!note) {
 		return (
-			<div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 text-zinc-300 backdrop-blur">
-				<p className="text-sm uppercase tracking-[0.16em] text-zinc-500">Editor</p>
-				<h2 className="mt-2 text-lg font-semibold text-zinc-100">No note selected</h2>
-				<p className="mt-2 text-sm text-zinc-400">
+			<div className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6 text-cyan-100/70 backdrop-blur">
+				<p className="text-sm uppercase tracking-[0.16em] text-cyan-300/55">Editor</p>
+				<h2 className="mt-2 text-lg font-semibold text-cyan-50">No note selected</h2>
+				<p className="mt-2 text-sm text-cyan-100/60">
 					Pick a note from the list or create one from a template.
 				</p>
 			</div>
@@ -50,16 +50,16 @@ export function NoteEditor({
 	}
 
 	return (
-		<section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 backdrop-blur">
+		<section className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-4 backdrop-blur">
 			<div className="mb-3 flex flex-wrap items-start justify-between gap-3">
 				<div className="min-w-0 flex-1">
-					<p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Entry Editor</p>
+					<p className="text-xs uppercase tracking-[0.2em] text-cyan-300/55">Entry Editor</p>
 					<input
 						type="text"
 						value={title}
 						onChange={(event) => onTitleChange(event.target.value)}
 						placeholder="Untitled note"
-						className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-lg font-semibold text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+						className="mt-2 w-full rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-xl font-semibold text-cyan-50 placeholder:text-cyan-300/45 focus:border-cyan-400/60 focus:outline-none"
 					/>
 				</div>
 
@@ -70,7 +70,7 @@ export function NoteEditor({
 							void onDelete();
 						}}
 						disabled={isDeleting}
-						className="inline-flex items-center gap-2 rounded-lg border border-rose-800/70 px-3 py-2 text-sm text-rose-200 transition hover:bg-rose-900/30 disabled:cursor-not-allowed disabled:opacity-50"
+						className="inline-flex items-center gap-2 rounded-lg border border-rose-700/65 px-3 py-2 text-sm text-rose-200 transition hover:bg-rose-900/30 disabled:cursor-not-allowed disabled:opacity-50"
 					>
 						<Trash2 className="h-4 w-4" />
 						{isDeleting ? "Deleting..." : "Delete"}
@@ -89,8 +89,8 @@ export function NoteEditor({
 							className={cn(
 								"rounded-full border px-2.5 py-1 text-xs uppercase tracking-wider transition",
 								active
-									? "border-zinc-500 bg-zinc-800 text-zinc-100"
-									: "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500"
+									? "border-cyan-400/55 bg-cyan-500/20 text-cyan-100"
+									: "border-cyan-500/28 bg-cyan-500/7 text-cyan-100/65 hover:border-cyan-400/50"
 							)}
 						>
 							#{tag.name}
@@ -101,7 +101,7 @@ export function NoteEditor({
 
 			<TipTapEditor value={content} onChange={onContentChange} />
 
-			<div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-400">
+			<div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-cyan-100/60">
 				<div className="inline-flex items-center gap-2">
 					{isSaving ? (
 						<>

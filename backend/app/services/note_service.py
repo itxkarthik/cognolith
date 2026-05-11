@@ -84,7 +84,7 @@ def list_notes(
     - Applies LIMIT/OFFSET at database level for pagination
     """
     # Build base statement with filters
-    base_where = [Notes.user_id == current_user.id, Notes.is_deleted is not True]
+    base_where = [Notes.user_id == current_user.id, Notes.is_deleted.is_not(True)]
 
     if folder_id is not None:
         base_where.append(Notes.folder_id == folder_id)
@@ -128,7 +128,7 @@ def list_folders(*, session: Session, current_user: User) -> list[NoteFolders]:
         select(NoteFolders)
         .where(
             NoteFolders.user_id == current_user.id,
-            NoteFolders.is_deleted is not True,
+            NoteFolders.is_deleted.is_not(True),
         )
         .order_by(col(NoteFolders.sort_order).asc(), col(NoteFolders.name).asc())
     )
@@ -151,7 +151,7 @@ def get_note_by_id(*, session: Session, current_user: User, note_id: int) -> Not
             .where(
                 Notes.id == note_id,
                 Notes.user_id == current_user.id,
-                Notes.is_deleted is not True,
+                Notes.is_deleted.is_not(True),
             )
             .options(joinedload(Notes.tags))
         )
@@ -258,7 +258,7 @@ def delete_folder(*, session: Session, current_user: User, folder_id: int) -> No
         select(NoteFolders).where(
             NoteFolders.id == folder_id,
             NoteFolders.user_id == current_user.id,
-            NoteFolders.is_deleted is not True,
+            NoteFolders.is_deleted.is_not(True),
         )
     ).first()
     if not folder:
@@ -414,7 +414,7 @@ def _validate_folder_access(*, session: Session, user_id: int, folder_id: int | 
         select(NoteFolders).where(
             NoteFolders.id == folder_id,
             NoteFolders.user_id == user_id,
-            NoteFolders.is_deleted is not True,
+            NoteFolders.is_deleted.is_not(True),
         )
     ).first()
     if not folder:
@@ -428,7 +428,7 @@ def _validate_document_access(*, session: Session, user_id: int, document_id: in
         select(Document).where(
             Document.id == document_id,
             Document.user_id == user_id,
-            Document.is_deleted is not True,
+            Document.is_deleted.is_not(True),
         )
     ).first()
     if not document:

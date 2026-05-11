@@ -51,7 +51,7 @@ interface NavItemProps {
 
 function NavItem({ item, isActive }: NavItemProps) {
   return (
-    <motion.div whileHover={{ x: 4 }} transition={{ duration: 0.18 }}>
+    <motion.div whileHover={{ x: 4 }} transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}>
       <Link
       href={item.href}
       className={`group flex items-center gap-3 rounded-xl px-4 py-3 text-sm tracking-tight transition-all duration-300 ${
@@ -90,7 +90,7 @@ export function Sidebar() {
           </div>
         </div>
 
-        <button className="mb-8 flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-400/35 bg-gradient-to-r from-cyan-500/20 via-fuchsia-500/15 to-cyan-500/20 px-4 py-3 font-bold text-cyan-100 transition-all hover:shadow-[0_0_30px_rgba(0,255,255,0.25)]">
+        <button className="mb-8 flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-400/35 bg-gradient-to-r from-cyan-500/20 via-teal-400/15 to-cyan-500/20 px-4 py-3 font-bold text-cyan-100 transition-all hover:shadow-[0_0_30px_rgba(0,255,255,0.25)]">
           <Plus className="w-4 h-4" />
           <span className="text-xs font-bold uppercase tracking-[0.16em]">New Entry</span>
         </button>

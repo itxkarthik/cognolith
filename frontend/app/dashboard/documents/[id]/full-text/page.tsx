@@ -12,17 +12,16 @@ import type { DocumentContentResponse } from "@/types";
 
 export default function DocumentFullTextPage() {
 	const params = useParams<{ id: string }>();
-	const [document, setDocument] = useState<DocumentContentResponse | null>(null);
-	const [isLoading, setIsLoading] = useState(true);
-	const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
 	const documentId = Number(params.id);
 	const isValidId = Number.isInteger(documentId) && documentId > 0;
+	const [document, setDocument] = useState<DocumentContentResponse | null>(null);
+	const [isLoading, setIsLoading] = useState(isValidId);
+	const [errorMessage, setErrorMessage] = useState<string | null>(
+		isValidId ? null : "Invalid document id."
+	);
 
 	useEffect(() => {
 		if (!isValidId) {
-			setIsLoading(false);
-			setErrorMessage("Invalid document id.");
 			return;
 		}
 
@@ -64,14 +63,14 @@ export default function DocumentFullTextPage() {
 		<div className="space-y-6">
 			<Link
 				href={`/dashboard/documents/${params.id}`}
-				className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-100 transition hover:border-zinc-500"
+				className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-2 text-sm text-cyan-100 transition hover:border-cyan-400/55"
 			>
 				<ArrowLeft className="h-4 w-4" />
 				Back to Document Details
 			</Link>
 
 			{isLoading ? (
-				<div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-6">
+				<div className="rounded-xl border border-cyan-500/20 bg-[#020611]/92 p-6">
 					<LoadingSpinner label="Loading full document text..." />
 				</div>
 			) : errorMessage ? (
@@ -81,7 +80,7 @@ export default function DocumentFullTextPage() {
 			) : document ? (
 				<DocumentFullText document={document} />
 			) : (
-				<p className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-300">
+				<p className="rounded-xl border border-cyan-500/20 bg-[#020611]/92 p-4 text-sm text-cyan-100/65">
 					Document content not found.
 				</p>
 			)}

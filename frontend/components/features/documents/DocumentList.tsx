@@ -25,13 +25,13 @@ export function DocumentList({
 				{Array.from({ length: 6 }).map((_, idx) => (
 					<div
 						key={idx}
-						className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4"
+						className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-4"
 					>
-						<div className="h-3 w-24 animate-pulse rounded bg-zinc-800" />
-						<div className="mt-3 h-5 w-2/3 animate-pulse rounded bg-zinc-800" />
-						<div className="mt-4 h-4 w-full animate-pulse rounded bg-zinc-800" />
-						<div className="mt-2 h-4 w-5/6 animate-pulse rounded bg-zinc-800" />
-						<div className="mt-4 h-9 w-28 animate-pulse rounded bg-zinc-800" />
+						<div className="h-3 w-24 animate-pulse rounded bg-cyan-500/20" />
+						<div className="mt-3 h-5 w-2/3 animate-pulse rounded bg-cyan-500/20" />
+						<div className="mt-4 h-4 w-full animate-pulse rounded bg-cyan-500/20" />
+						<div className="mt-2 h-4 w-5/6 animate-pulse rounded bg-cyan-500/20" />
+						<div className="mt-4 h-9 w-28 animate-pulse rounded bg-cyan-500/20" />
 					</div>
 				))}
 			</div>
@@ -48,9 +48,9 @@ export function DocumentList({
 
 	if (documents.length === 0) {
 		return (
-			<div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center">
-				<h2 className="text-lg font-medium text-zinc-100">No documents found</h2>
-				<p className="mt-2 text-sm text-zinc-300">
+			<div className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-8 text-center">
+				<h2 className="text-lg font-medium text-cyan-50">No documents found</h2>
+				<p className="mt-2 text-sm text-cyan-100/65">
 					Upload your first document to start extracting and searching knowledge.
 				</p>
 			</div>

@@ -162,7 +162,7 @@ def convert_chat_to_note(
                 select(NoteFolders).where(
                     NoteFolders.id == folder_id,
                     NoteFolders.user_id == current_user.id,
-                    NoteFolders.is_deleted is not True,
+                    NoteFolders.is_deleted.is_not(True),
                 )
             ).first()
             if not folder:

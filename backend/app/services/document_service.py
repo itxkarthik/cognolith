@@ -186,7 +186,7 @@ def list_documents(
     """
     base_where = [
         Document.user_id == current_user.id,
-        Document.is_deleted is False,
+        Document.is_deleted.is_(False),
     ]
 
     if search:
@@ -215,7 +215,7 @@ def get_document_by_id(*, session: Session, current_user: User, document_id: int
         select(Document).where(
             Document.id == document_id,
             Document.user_id == current_user.id,
-            Document.is_deleted is False,
+            Document.is_deleted.is_(False),
         )
     ).first()
     if not document:

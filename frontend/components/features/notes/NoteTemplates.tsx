@@ -35,10 +35,10 @@ interface NoteTemplatesProps {
 
 export function NoteTemplates({ onUseTemplate, templates = DEFAULT_NOTE_TEMPLATES }: NoteTemplatesProps) {
 	return (
-		<section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 backdrop-blur">
+		<section className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6 backdrop-blur">
 			<div className="mb-3 flex items-center gap-2">
-				<LayoutTemplate className="h-4 w-4 text-zinc-300" />
-				<p className="text-xs uppercase tracking-[0.2em] text-zinc-400">Templates</p>
+				<LayoutTemplate className="h-4 w-4 text-cyan-200/80" />
+				<p className="text-xs uppercase tracking-[0.2em] text-cyan-300/60">Templates</p>
 			</div>
 			<div className="grid gap-3 md:grid-cols-3">
 				{templates.map((template) => (
@@ -46,18 +46,18 @@ export function NoteTemplates({ onUseTemplate, templates = DEFAULT_NOTE_TEMPLATE
 						key={template.id}
 						type="button"
 						onClick={() => onUseTemplate(template)}
-						className="group rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-left transition hover:border-zinc-600 hover:bg-zinc-900"
+						className="group rounded-lg border border-cyan-500/20 bg-[#01040f] p-3 text-left transition hover:border-cyan-400/45 hover:bg-cyan-500/8"
 					>
 						<div className="flex items-center justify-between">
-							<p className="text-sm font-semibold text-zinc-100">{template.name}</p>
-							<FilePlus2 className="h-4 w-4 text-zinc-500 transition group-hover:text-zinc-300" />
+							<p className="text-sm font-semibold text-cyan-50">{template.name}</p>
+							<FilePlus2 className="h-4 w-4 text-cyan-300/50 transition group-hover:text-cyan-200" />
 						</div>
-						<p className="mt-1 text-xs text-zinc-400">{template.description}</p>
+						<p className="mt-1 text-xs text-cyan-100/60">{template.description}</p>
 						<div className="mt-2 flex flex-wrap gap-1">
 							{template.tags.map((tag) => (
 								<span
 									key={`${template.id}-${tag}`}
-									className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] uppercase tracking-wider text-zinc-400"
+									className="rounded-full border border-cyan-500/25 bg-cyan-500/8 px-2 py-0.5 text-[10px] uppercase tracking-wider text-cyan-100/70"
 								>
 									{tag}
 								</span>

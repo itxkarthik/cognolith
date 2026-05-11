@@ -35,13 +35,13 @@ export default function Home() {
 			{/* Glowing orbs */}
 			<div className="absolute inset-0 pointer-events-none">
 				<div className="absolute top-1/4 left-1/3 w-96 h-96 bg-cyan-500/20 rounded-full blur-3xl" style={{ animation: 'float-up 6s ease-in-out infinite' }} />
-				<div className="absolute bottom-1/4 right-1/4 w-72 h-72 bg-magenta-500/20 rounded-full blur-3xl" style={{ animation: 'float-up 8s ease-in-out infinite, 1s' }} />
+				<div className="absolute bottom-1/4 right-1/4 w-72 h-72 bg-teal-500/20 rounded-full blur-3xl" style={{ animation: 'float-up 8s ease-in-out infinite, 1s' }} />
 			</div>
 
 			<Card className="relative w-full max-w-md border border-cyan-500/30 bg-[#1a1f3a]/60 shadow-2xl backdrop-blur-xl">
 				<CardContent className="flex flex-col items-center justify-center gap-6 py-12 px-8">
 					<div className="relative">
-						<div className="absolute inset-0 bg-gradient-to-r from-cyan-500 to-magenta-500 rounded-3xl blur-lg opacity-50" />
+						<div className="absolute inset-0 bg-gradient-to-r from-cyan-500 to-teal-500 rounded-3xl blur-lg opacity-50" />
 						<div className="relative flex h-16 w-16 items-center justify-center rounded-3xl bg-[#0a0e27] border border-cyan-500/50">
 							<Loader2 className="h-8 w-8 animate-spin text-cyan-500" />
 						</div>
@@ -54,8 +54,8 @@ export default function Home() {
 
 					{/* Animated progress bar */}
 					<div className="w-full h-1 bg-[#252d4a] rounded-full overflow-hidden">
-						<div 
-							className="h-full bg-gradient-to-r from-cyan-500 via-magenta-500 to-cyan-500 rounded-full"
+						<div
+							className="h-full bg-gradient-to-r from-cyan-500 via-teal-500 to-cyan-500 rounded-full"
 							style={{
 								animation: 'scaleX 2s ease-in-out infinite',
 								transformOrigin: 'left'

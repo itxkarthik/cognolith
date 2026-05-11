@@ -42,7 +42,7 @@ export default function DocumentDetailsPage() {
 		<div className="space-y-6">
 			<Link
 				href="/dashboard/documents"
-				className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-100 transition hover:border-zinc-500"
+				className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-2 text-sm text-cyan-100 transition hover:border-cyan-400/55"
 			>
 				<ArrowLeft className="h-4 w-4" />
 				Back to Documents
@@ -53,7 +53,7 @@ export default function DocumentDetailsPage() {
 					Invalid document id.
 				</p>
 			) : isLoading && !selectedDocument ? (
-				<div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-6">
+				<div className="rounded-xl border border-cyan-500/20 bg-[#020611]/92 p-6">
 					<LoadingSpinner label="Loading document..." />
 				</div>
 			) : error ? (
@@ -70,7 +70,7 @@ export default function DocumentDetailsPage() {
 					}}
 				/>
 			) : (
-				<p className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-300">
+				<p className="rounded-xl border border-cyan-500/20 bg-[#020611]/92 p-4 text-sm text-cyan-100/65">
 					Document not found.
 				</p>
 			)}

@@ -48,7 +48,7 @@ export function SearchResults({
 				{Array.from({ length: 8 }).map((_, index) => (
 					<div
 						key={index}
-						className="h-20 animate-pulse rounded-xl border border-zinc-800 bg-zinc-900/70"
+						className="h-20 animate-pulse rounded-xl border border-cyan-500/20 bg-[#020611]/90"
 					/>
 				))}
 			</section>
@@ -57,7 +57,7 @@ export function SearchResults({
 
 	if (!query.trim()) {
 		return (
-			<section className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5 text-sm text-zinc-400">
+			<section className="rounded-xl border border-cyan-500/20 bg-[#020611]/90 p-5 text-sm text-cyan-100/60">
 				Run a search to scan documents, notes, and chats in one place.
 			</section>
 		);
@@ -65,7 +65,7 @@ export function SearchResults({
 
 	if (results.length === 0) {
 		return (
-			<section className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5 text-sm text-zinc-400">
+			<section className="rounded-xl border border-cyan-500/20 bg-[#020611]/90 p-5 text-sm text-cyan-100/60">
 				No results found for {query}.
 			</section>
 		);
@@ -73,7 +73,7 @@ export function SearchResults({
 
 	return (
 		<section className="space-y-3">
-			<p className="text-xs uppercase tracking-[0.16em] text-zinc-500">
+			<p className="text-xs uppercase tracking-[0.16em] text-cyan-300/55">
 				{total} {total === 1 ? "result" : "results"}
 			</p>
 
@@ -89,23 +89,23 @@ export function SearchResults({
 					<Link
 						key={`${result.entity_type}-${result.id}-${result.updated_at ?? ""}`}
 						href={href}
-						className="block rounded-xl border border-zinc-800 bg-zinc-900/70 p-4 transition hover:border-zinc-600"
+						className="ui-card-hover block rounded-xl border border-cyan-500/20 bg-[#020611]/90 p-4 hover:border-cyan-400/50"
 					>
 						<div className="flex items-start justify-between gap-3">
 							<div className="min-w-0">
-								<div className="flex items-center gap-2 text-xs uppercase tracking-[0.12em] text-zinc-500">
+								<div className="flex items-center gap-2 text-xs uppercase tracking-[0.12em] text-cyan-300/55">
 									<EntityIcon className="h-3.5 w-3.5" />
 									<span>{meta.label}</span>
 								</div>
-								<h3 className="mt-1 line-clamp-1 text-sm font-semibold text-zinc-100">
+								<h3 className="mt-1 line-clamp-1 text-sm font-semibold text-cyan-50">
 									{result.title || "Untitled"}
 								</h3>
-								<p className="mt-1 line-clamp-2 text-xs text-zinc-400">
+								<p className="mt-1 line-clamp-2 text-xs text-cyan-100/60">
 									{result.snippet || "No preview available"}
 								</p>
 							</div>
 
-							<div className="flex-shrink-0 text-[11px] uppercase tracking-[0.1em] text-zinc-500">
+							<div className="flex-shrink-0 text-[11px] uppercase tracking-[0.1em] text-cyan-100/40">
 								<Search className="h-4 w-4" />
 							</div>
 						</div>

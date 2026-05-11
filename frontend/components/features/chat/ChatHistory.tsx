@@ -25,11 +25,11 @@ export function ChatHistory({
 
 	if (isLoading && messages.length === 0) {
 		return (
-			<section className="h-[56vh] space-y-2 overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3 backdrop-blur">
+			<section className="h-[56vh] space-y-2 overflow-y-auto rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-3 backdrop-blur">
 				{Array.from({ length: 6 }).map((_, index) => (
 					<div
 						key={index}
-						className="h-16 animate-pulse rounded-lg border border-zinc-800 bg-zinc-950"
+						className="h-16 animate-pulse rounded-lg border border-cyan-500/20 bg-[#01040f]"
 					/>
 				))}
 			</section>
@@ -37,9 +37,9 @@ export function ChatHistory({
 	}
 
 	return (
-		<section className="h-[56vh] overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3 backdrop-blur">
+		<section className="h-[56vh] overflow-y-auto rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-3 backdrop-blur">
 			{messages.length === 0 ? (
-				<div className="flex h-full items-center justify-center rounded-lg border border-dashed border-zinc-700 bg-zinc-950 p-5 text-sm text-zinc-400">
+				<div className="flex h-full items-center justify-center rounded-lg border border-dashed border-cyan-500/25 bg-[#01040f] p-5 text-sm text-cyan-100/60">
 					Start with a question. Answers will include source references from your library.
 				</div>
 			) : (

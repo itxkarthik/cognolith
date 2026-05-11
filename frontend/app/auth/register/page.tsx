@@ -2,154 +2,84 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState, useEffect } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { motion } from "motion/react";
 
+import { Button, Card, CardContent, Input, Label } from "@/components/ui";
 import { register } from "@/lib/api/auth";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { useAuthStore } from "@/store/authStore";
 
 export default function RegisterPage() {
-	const router = useRouter();
-	const { isAuthenticated, hasHydrated } = useAuthStore();
+  const router = useRouter();
+  const { isAuthenticated, hasHydrated } = useAuthStore();
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-	const [fullName, setFullName] = useState("");
-	const [email, setEmail] = useState("");
-	const [password, setPassword] = useState("");
-	const [isSubmitting, setIsSubmitting] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (hasHydrated && isAuthenticated) {
+      router.push("/dashboard");
+    }
+  }, [hasHydrated, isAuthenticated, router]);
 
-	// Redirect to dashboard if already authenticated
-	useEffect(() => {
-		if (hasHydrated && isAuthenticated) {
-			router.push("/dashboard");
-		}
-	}, [hasHydrated, isAuthenticated, router]);
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await register({ full_name: fullName, email, password });
+      router.push("/auth/login");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to register.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
-	const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		setError(null);
-		setIsSubmitting(true);
+  return (
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4">
+      <div className="pointer-events-none absolute inset-0 cyber-grid opacity-30" />
+      <div className="pointer-events-none absolute -left-32 top-16 h-72 w-72 rounded-full bg-cyan-500/15 blur-3xl" />
+      <div className="pointer-events-none absolute -right-32 bottom-10 h-72 w-72 rounded-full bg-teal-500/12 blur-3xl" />
 
-		try {
-			await register({
-				full_name: fullName,
-				email,
-				password,
-			});
-			router.push("/auth/login");
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "Unable to register.");
-		} finally {
-			setIsSubmitting(false);
-		}
-	};
+      <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} className="relative w-full max-w-md">
+        <Card className="border-cyan-500/25 bg-[#070b1d]/85 backdrop-blur-xl">
+          <CardContent className="p-8">
+            <p className="text-xs uppercase tracking-[0.2em] text-cyan-200/70">Get Started</p>
+            <h1 className="mt-2 text-3xl font-bold text-cyan-50">Create account</h1>
+            <p className="mt-1 text-sm text-cyan-100/65">Build your personal knowledge system.</p>
 
-	return (
-		<div className="min-h-screen bg-[#131313] flex items-center justify-center px-4">
-			{/* Ambient glow effect */}
-			<div className="absolute top-20 -left-40 w-80 h-80 bg-[#c0c1ff]/5 rounded-full blur-3xl"></div>
-			<div className="absolute bottom-20 -right-40 w-80 h-80 bg-[#bcff5f]/5 rounded-full blur-3xl"></div>
+            <form onSubmit={onSubmit} className="mt-6 space-y-5">
+              <div className="space-y-2">
+                <Label className="text-cyan-100/85">Full name</Label>
+                <Input value={fullName} onChange={(event) => setFullName(event.target.value)} type="text" required className="border-cyan-500/30 bg-cyan-500/5 text-cyan-50" placeholder="Karthik" />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-cyan-100/85">Email</Label>
+                <Input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required className="border-cyan-500/30 bg-cyan-500/5 text-cyan-50" placeholder="you@example.com" />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-cyan-100/85">Password</Label>
+                <Input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={8} required className="border-cyan-500/30 bg-cyan-500/5 text-cyan-50" placeholder="At least 8 characters" />
+              </div>
+              {error ? <div className="rounded-lg border border-rose-500/35 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div> : null}
+              <Button type="submit" disabled={isSubmitting} className="w-full bg-cyan-300 text-slate-900 hover:bg-cyan-200">
+                {isSubmitting ? <LoadingSpinner className="text-slate-900" /> : "Create account"}
+              </Button>
+            </form>
 
-			<motion.div
-				initial={{ opacity: 0, y: 20 }}
-				animate={{ opacity: 1, y: 0 }}
-				transition={{ duration: 0.5, ease: "easeOut" }}
-				className="relative w-full max-w-md"
-			>
-				<div className="glass-panel border border-[#1f1f1f] rounded-2xl p-8 backdrop-blur-xl">
-					{/* Header */}
-					<div className="mb-8">
-						<p className="text-xs uppercase tracking-widest text-[#98989b] font-medium">Get Started</p>
-						<h1 className="mt-2 text-3xl font-bold text-white">Create account</h1>
-						<p className="mt-2 text-sm text-[#98989b]">Build your personal knowledge system</p>
-					</div>
-
-					{/* Form */}
-					<form onSubmit={onSubmit} className="space-y-5">
-						{/* Full Name */}
-						<div>
-							<label className="block text-xs uppercase tracking-widest text-[#c0c1ff] font-medium mb-2">
-								Full name
-							</label>
-							<input
-								type="text"
-								required
-								value={fullName}
-								onChange={(event) => setFullName(event.target.value)}
-								placeholder="Karthik"
-								className="w-full px-4 py-3 rounded-lg bg-[#1f1f1f] border border-[#2a2a2a] text-white placeholder-[#656569] focus:outline-none focus:border-[#c0c1ff] focus:ring-1 focus:ring-[#c0c1ff]/20 transition-all"
-							/>
-						</div>
-
-						{/* Email */}
-						<div>
-							<label className="block text-xs uppercase tracking-widest text-[#c0c1ff] font-medium mb-2">
-								Email
-							</label>
-							<input
-								type="email"
-								required
-								value={email}
-								onChange={(event) => setEmail(event.target.value)}
-								placeholder="you@example.com"
-								className="w-full px-4 py-3 rounded-lg bg-[#1f1f1f] border border-[#2a2a2a] text-white placeholder-[#656569] focus:outline-none focus:border-[#c0c1ff] focus:ring-1 focus:ring-[#c0c1ff]/20 transition-all"
-							/>
-						</div>
-
-						{/* Password */}
-						<div>
-							<label className="block text-xs uppercase tracking-widest text-[#c0c1ff] font-medium mb-2">
-								Password
-							</label>
-							<input
-								type="password"
-								required
-								minLength={8}
-								value={password}
-								onChange={(event) => setPassword(event.target.value)}
-								placeholder="At least 8 characters"
-								className="w-full px-4 py-3 rounded-lg bg-[#1f1f1f] border border-[#2a2a2a] text-white placeholder-[#656569] focus:outline-none focus:border-[#c0c1ff] focus:ring-1 focus:ring-[#c0c1ff]/20 transition-all"
-							/>
-						</div>
-
-						{/* Error Message */}
-						{error && (
-							<div className="rounded-lg border border-[#ff4d6d]/30 bg-[#ff4d6d]/10 px-4 py-3 text-sm text-[#ff6b7a]">
-								{error}
-							</div>
-						)}
-
-						{/* Submit Button */}
-						<button
-							type="submit"
-							disabled={isSubmitting}
-							className="w-full py-3 px-4 rounded-lg bg-gradient-to-r from-[#c0c1ff] to-[#a6a7e0] text-[#131313] font-semibold uppercase tracking-wider hover:shadow-lg hover:shadow-[#c0c1ff]/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-6"
-						>
-							{isSubmitting ? (
-								<LoadingSpinner className="text-[#131313]" />
-							) : (
-								"Create account"
-							)}
-						</button>
-					</form>
-
-					{/* Divider */}
-					<div className="my-6 flex items-center gap-3">
-						<div className="flex-1 h-px bg-[#2a2a2a]"></div>
-						<p className="text-xs text-[#656569]">ALREADY A USER?</p>
-						<div className="flex-1 h-px bg-[#2a2a2a]"></div>
-					</div>
-
-					{/* Sign In Link */}
-					<p className="text-center text-sm text-[#98989b]">
-						Already have an account?{" "}
-						<Link href="/auth/login" className="text-[#bcff5f] font-semibold hover:underline">
-							Sign in
-						</Link>
-					</p>
-				</div>
-			</motion.div>
-		</div>
-	);
+            <p className="mt-6 text-center text-sm text-cyan-100/65">
+              Already have an account?{" "}
+              <Link href="/auth/login" className="font-semibold text-teal-300 hover:text-teal-200">
+                Sign in
+              </Link>
+            </p>
+          </CardContent>
+        </Card>
+      </motion.div>
+    </div>
+  );
 }

@@ -40,14 +40,14 @@ export function DocumentCard({
 	};
 
 	return (
-		<article className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 backdrop-blur transition hover:border-zinc-700">
+		<article className="ui-card-hover rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-4 backdrop-blur hover:border-cyan-400/45">
 			<div className="flex items-start justify-between gap-3">
 				<div className="min-w-0 flex-1">
-					<p className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-zinc-500">
+					<p className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-cyan-300/55">
 						<FileText className="h-3.5 w-3.5" />
 						{formatFileType(document.file_type)}
 					</p>
-					<h3 className="mt-2 line-clamp-1 text-lg font-medium text-zinc-100">
+					<h3 className="mt-2 line-clamp-1 text-lg font-medium text-cyan-50">
 						{document.title}
 					</h3>
 				</div>
@@ -61,18 +61,18 @@ export function DocumentCard({
 				</span>
 			</div>
 
-			<div className="mt-4 grid grid-cols-2 gap-3 text-sm text-zinc-300">
+			<div className="mt-4 grid grid-cols-2 gap-3 text-sm text-cyan-100/75">
 				<div>
-					<p className="text-xs uppercase tracking-[0.14em] text-zinc-500">File Size</p>
+					<p className="text-xs uppercase tracking-[0.14em] text-cyan-300/55">File Size</p>
 					<p className="mt-1">{formatBytes(document.file_size)}</p>
 				</div>
 				<div>
-					<p className="text-xs uppercase tracking-[0.14em] text-zinc-500">Chunks</p>
+					<p className="text-xs uppercase tracking-[0.14em] text-cyan-300/55">Chunks</p>
 					<p className="mt-1">{document.chunk_count}</p>
 				</div>
 			</div>
 
-			<div className="mt-4 flex items-center justify-between gap-3 text-xs text-zinc-400">
+			<div className="mt-4 flex items-center justify-between gap-3 text-xs text-cyan-100/60">
 				<span className="inline-flex items-center gap-1.5">
 					<Clock3 className="h-3.5 w-3.5" />
 					Updated {formatDate(document.updated_at)}
@@ -87,7 +87,7 @@ export function DocumentCard({
 			<div className="mt-4 flex items-center gap-2">
 				<Link
 					href={`/dashboard/documents/${document.id}`}
-					className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-100 transition hover:border-zinc-500"
+					className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-2 text-sm text-cyan-100 transition hover:border-cyan-400/55"
 				>
 					View Document
 					<ArrowUpRight className="h-4 w-4" />

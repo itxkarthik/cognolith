@@ -61,18 +61,19 @@ export default function DashboardPage() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.12 + idx * 0.05, duration: 0.28 }}
             >
-            <Card className="group border-cyan-500/25 bg-[#070b1d]/85 transition hover:border-cyan-300/45 hover:shadow-[0_0_24px_rgba(0,255,255,0.15)]">
+            <Card className="group border-cyan-500/20 bg-[#030612]/92 transition hover:border-cyan-300/45 hover:shadow-[0_0_24px_rgba(0,255,255,0.12)]">
               <CardContent className="flex h-full flex-col gap-4 p-5">
-                <div className="flex items-start justify-between">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-cyan-400/35 bg-cyan-500/15 text-cyan-200 transition group-hover:border-cyan-300/70">
+                <div className="flex items-center gap-4">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-cyan-400/35 bg-cyan-500/15 text-cyan-200 transition group-hover:border-cyan-300/70">
                     <IconComponent className="h-5 w-5" />
                   </div>
-                  <ArrowUpRight className="h-5 w-5 text-cyan-100/40 transition group-hover:text-cyan-100" />
-                </div>
-
-                <div className="space-y-1">
-                  <h2 className="text-base font-semibold text-cyan-50">{action.title}</h2>
-                  <p className="text-sm text-cyan-100/65">{action.description}</p>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <h2 className="text-lg font-semibold text-cyan-50">{action.title}</h2>
+                      <ArrowUpRight className="mt-0.5 h-5 w-5 shrink-0 text-cyan-100/40 transition group-hover:text-cyan-100" />
+                    </div>
+                    <p className="mt-1 text-sm text-cyan-100/65">{action.description}</p>
+                  </div>
                 </div>
 
                 <div className="mt-auto flex items-center justify-between pt-2">
@@ -90,7 +91,7 @@ export default function DashboardPage() {
         })}
       </section>
 
-      <Card className="border-cyan-500/25 bg-[#070b1d]/85">
+      <Card className="border-cyan-500/22 bg-[#030612]/92">
         <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0 pb-4">
           <div>
             <Badge variant="secondary" className="rounded-full bg-cyan-500/15 text-cyan-100/75">
@@ -130,12 +131,28 @@ export default function DashboardPage() {
                 href: "/dashboard/chat",
               },
             ].map((item) => (
-              <div key={item.title} className="rounded-2xl border border-cyan-500/20 bg-cyan-500/[0.05] p-4">
-                <p className="text-sm font-semibold text-cyan-100">{item.title}</p>
-                <p className="mt-2 text-sm text-cyan-100/65">{item.description}</p>
-                <Button asChild variant="link" className="mt-4 h-auto p-0 text-cyan-300 hover:text-cyan-100">
-                  <Link href={item.href}>{item.cta}</Link>
-                </Button>
+              <div key={item.title} className="rounded-2xl border border-cyan-500/18 bg-cyan-500/[0.04] p-4">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl border border-cyan-400/30 bg-cyan-500/18 text-cyan-100">
+                    {item.title === "Notes" ? (
+                      <FileText className="h-4 w-4" />
+                    ) : item.title === "Documents" ? (
+                      <Upload className="h-4 w-4" />
+                    ) : (
+                      <MessageSquare className="h-4 w-4" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-semibold text-cyan-100">{item.title}</p>
+                      <ArrowUpRight className="h-4 w-4 shrink-0 text-cyan-100/40" />
+                    </div>
+                    <p className="mt-2 text-sm text-cyan-100/65">{item.description}</p>
+                    <Button asChild variant="link" className="mt-4 h-auto p-0 text-cyan-300 hover:text-cyan-100">
+                      <Link href={item.href}>{item.cta}</Link>
+                    </Button>
+                  </div>
+                </div>
               </div>
             ))}
           </div>

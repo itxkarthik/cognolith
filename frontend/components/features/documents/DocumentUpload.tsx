@@ -57,21 +57,21 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
 	return (
 		<form
 			onSubmit={handleSubmit}
-			className="space-y-5 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6"
+			className="space-y-5 rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6"
 		>
 			<div>
-				<p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Upload</p>
-				<h2 className="mt-2 text-xl font-semibold text-zinc-100">Add a new document</h2>
-				<p className="mt-1 text-sm text-zinc-300">
+				<p className="text-xs uppercase tracking-[0.2em] text-cyan-300/55">Upload</p>
+				<h2 className="mt-2 text-2xl font-semibold text-cyan-50">Add a new document</h2>
+				<p className="mt-1 text-sm text-cyan-100/65">
 					Supported formats: PDF, DOCX, Markdown, and TXT.
 				</p>
 			</div>
 
 			<div className="space-y-2">
-				<label htmlFor="document-file" className="text-sm font-medium text-zinc-200">
+				<label htmlFor="document-file" className="text-sm font-medium text-cyan-100/85">
 					Document file
 				</label>
-				<div className="rounded-xl border border-dashed border-zinc-700 bg-zinc-950/60 p-4">
+				<div className="rounded-xl border border-dashed border-cyan-500/30 bg-cyan-500/5 p-4">
 					<input
 						id="document-file"
 						type="file"
@@ -79,10 +79,10 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
 						onChange={(event) => {
 							setFile(event.target.files?.[0] ?? null);
 						}}
-						className="block w-full text-sm text-zinc-300 file:mr-4 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-2 file:text-sm file:font-medium file:text-zinc-100 hover:file:bg-zinc-700"
+						className="block w-full text-sm text-cyan-100/70 file:mr-4 file:rounded-lg file:border-0 file:bg-cyan-500/15 file:px-3 file:py-2 file:text-sm file:font-medium file:text-cyan-100 hover:file:bg-cyan-500/25"
 					/>
 					{file ? (
-						<p className="mt-2 inline-flex items-center gap-2 text-xs text-zinc-400">
+						<p className="mt-2 inline-flex items-center gap-2 text-xs text-cyan-100/60">
 							<FileUp className="h-3.5 w-3.5" />
 							{file.name}
 						</p>
@@ -92,7 +92,7 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
 
 			<div className="grid gap-4 md:grid-cols-2">
 				<div className="space-y-2">
-					<label htmlFor="document-title" className="text-sm font-medium text-zinc-200">
+					<label htmlFor="document-title" className="text-sm font-medium text-cyan-100/85">
 						Title (optional)
 					</label>
 					<input
@@ -101,12 +101,12 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
 						value={title}
 						onChange={(event) => setTitle(event.target.value)}
 						placeholder="Leave blank to use filename"
-						className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+						className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-sm text-cyan-100 placeholder:text-cyan-300/45 focus:border-cyan-400/60 focus:outline-none"
 					/>
 				</div>
 
 				<div className="space-y-2">
-					<label htmlFor="document-language" className="text-sm font-medium text-zinc-200">
+					<label htmlFor="document-language" className="text-sm font-medium text-cyan-100/85">
 						Language
 					</label>
 					<input
@@ -115,13 +115,13 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
 						value={language}
 						onChange={(event) => setLanguage(event.target.value)}
 						placeholder="en"
-						className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+						className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-sm text-cyan-100 placeholder:text-cyan-300/45 focus:border-cyan-400/60 focus:outline-none"
 					/>
 				</div>
 			</div>
 
 			<div className="space-y-2">
-				<label htmlFor="document-tags" className="text-sm font-medium text-zinc-200">
+				<label htmlFor="document-tags" className="text-sm font-medium text-cyan-100/85">
 					Tags (comma separated)
 				</label>
 				<input
@@ -130,7 +130,7 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
 					value={tags}
 					onChange={(event) => setTags(event.target.value)}
 					placeholder="research, planning, handbook"
-					className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+					className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-sm text-cyan-100 placeholder:text-cyan-300/45 focus:border-cyan-400/60 focus:outline-none"
 				/>
 			</div>
 
@@ -143,7 +143,7 @@ export function DocumentUpload({ onSuccess }: DocumentUploadProps) {
 			<button
 				type="submit"
 				disabled={isUploading}
-				className="inline-flex items-center gap-2 rounded-lg border border-zinc-600 bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+				className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/40 bg-cyan-300 px-4 py-2 text-sm font-medium text-slate-900 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
 			>
 				<UploadCloud className="h-4 w-4" />
 				{isUploading ? "Uploading..." : "Upload document"}

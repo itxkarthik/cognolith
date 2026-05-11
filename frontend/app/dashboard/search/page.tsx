@@ -62,10 +62,10 @@ export default function SearchPage() {
 
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 backdrop-blur">
-        <p className="text-xs uppercase tracking-[0.22em] text-zinc-500">Discovery</p>
-        <h1 className="mt-2 text-2xl font-semibold text-zinc-100">Global Search</h1>
-        <p className="mt-1 text-sm text-zinc-300">
+      <section className="rounded-2xl border border-cyan-500/22 bg-[#020611]/92 p-6 backdrop-blur">
+        <p className="text-xs uppercase tracking-[0.22em] text-cyan-300/55">Discovery</p>
+        <h1 className="mt-2 text-3xl font-semibold text-cyan-50">Global Search</h1>
+        <p className="mt-1 text-sm text-cyan-100/65">
           Find matching context across documents, notes, and chat sessions.
         </p>
 
@@ -110,7 +110,7 @@ export default function SearchPage() {
           onClick={() => {
             void runSearch(1);
           }}
-          className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition hover:border-zinc-500 hover:text-zinc-100"
+          className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 px-3 py-2 text-xs text-cyan-100/75 transition hover:border-cyan-400/55 hover:text-cyan-100"
         >
           <RefreshCw className="h-3.5 w-3.5" />
           Refresh Results
@@ -135,12 +135,12 @@ export default function SearchPage() {
                 void runSearch(page - 1);
               }
             }}
-            className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-cyan-500/30 px-3 py-2 text-xs text-cyan-100/75 transition hover:border-cyan-400/55 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Previous
           </button>
 
-          <p className="text-xs uppercase tracking-[0.12em] text-zinc-500">Page {page}</p>
+          <p className="text-xs uppercase tracking-[0.12em] text-cyan-300/55">Page {page}</p>
 
           <button
             type="button"
@@ -150,7 +150,7 @@ export default function SearchPage() {
                 void runSearch(page + 1);
               }
             }}
-            className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-300 transition hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-cyan-500/30 px-3 py-2 text-xs text-cyan-100/75 transition hover:border-cyan-400/55 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Next
           </button>

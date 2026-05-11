@@ -65,11 +65,11 @@ export default function ChatSessionPage() {
 
 	if (Number.isNaN(sessionId) || sessionId <= 0) {
 		return (
-			<div className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 backdrop-blur">
+			<div className="space-y-4 rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6 backdrop-blur">
 				<p className="text-sm text-rose-300">Invalid session id.</p>
 				<Link
 					href="/dashboard/chat"
-					className="inline-flex items-center gap-2 text-sm text-zinc-300 hover:text-zinc-100"
+					className="inline-flex items-center gap-2 text-sm text-cyan-100/75 hover:text-cyan-100"
 				>
 					<ArrowLeft className="h-4 w-4" />
 					Back to Sessions
@@ -80,20 +80,20 @@ export default function ChatSessionPage() {
 
 	return (
 		<div className="space-y-4">
-			<section className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 backdrop-blur">
+			<section className="rounded-2xl border border-cyan-500/20 bg-[#020611]/92 p-6 backdrop-blur">
 				<div className="flex flex-wrap items-center justify-between gap-3">
 					<div>
 						<Link
 							href="/dashboard/chat"
-							className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-zinc-500 hover:text-zinc-300"
+							className="inline-flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-cyan-300/55 hover:text-cyan-200"
 						>
 							<ArrowLeft className="h-3.5 w-3.5" />
 							All Sessions
 						</Link>
-						<h1 className="mt-2 text-2xl font-semibold text-zinc-100">
+						<h1 className="mt-2 text-3xl font-semibold text-cyan-50">
 							{activeSession?.title || `Session ${sessionId}`}
 						</h1>
-						<p className="mt-1 text-sm text-zinc-400">
+						<p className="mt-1 text-sm text-cyan-100/65">
 							{activeSession ? `${activeSession.messages.length} messages` : "Loading conversation..."}
 						</p>
 					</div>
@@ -107,7 +107,7 @@ export default function ChatSessionPage() {
 			) : null}
 
 			{savedStatus ? (
-				<p className="rounded-lg border border-zinc-700 bg-zinc-900/70 p-3 text-sm text-zinc-200">
+				<p className="rounded-lg border border-cyan-500/22 bg-cyan-500/8 p-3 text-sm text-cyan-100">
 					{savedStatus}
 				</p>
 			) : null}
