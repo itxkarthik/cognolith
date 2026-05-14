@@ -6,6 +6,7 @@ from app.api.deps import CurrentUser, SessionDep
 from app.models.note import Notes
 from app.models.user import Message
 from app.schemas.error import StandardErrorResponse
+from app.schemas.graph import GraphAllResponse, GraphResponse
 from app.schemas.note import (
     FolderCreate,
     FolderResponse,
@@ -20,7 +21,11 @@ from app.services.note_service import (
     create_folder,
     create_note,
     create_tag,
+    create_note_link,
+    delete_note_link,
+    get_full_user_graph,
     get_note_by_id,
+    get_note_graph,
     list_folders,
     list_notes,
     list_tags,
@@ -208,3 +213,171 @@ def create_folder_endpoint(
 )
 def create_tag_endpoint(*, session: SessionDep, current_user: CurrentUser, body: TagCreate) -> Any:
     return create_tag(session=session, current_user=current_user, payload=body)
+
+
+# ==================== Knowledge Graph Endpoints ====================
+
+
+@router.get(
+    path="/{note_id}/graph",
+    response_model=GraphResponse,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Access denied"},
+        404: {"model": StandardErrorResponse, "description": "Note not found"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
+)
+def get_note_graph_endpoint(
+    *, session: SessionDep, current_user: CurrentUser, note_id: int
+) -> Any:
+    """
+    Get knowledge graph for a specific note.
+    Returns the note and all directly connected notes (depth=1) with their links.
+    """
+    nodes, edges = get_note_graph(session=session, current_user=current_user, note_id=note_id)
+    
+    node_responses = [
+        {
+            "id": node.id,
+            "title": node.title,
+            "content_preview": node.content_preview,
+            "is_favorite": node.is_favorite,
+            "is_archived": node.is_archived,
+            "is_pinned": node.is_pinned,
+            "color": node.color,
+            "emoji": node.emoji,
+            "created_at": node.created_at,
+            "updated_at": node.updated_at,
+        }
+        for node in nodes
+    ]
+    
+    edge_responses = [
+        {
+            "id": edge.id,
+            "source_note_id": edge.source_note_id,
+            "target_note_id": edge.target_note_id,
+            "link_type": edge.link_type,
+            "description": edge.description,
+            "created_at": edge.created_at,
+        }
+        for edge in edges
+    ]
+    
+    return GraphResponse(nodes=node_responses, edges=edge_responses, center_node_id=note_id)
+
+
+@router.get(
+    path="/graph/all",
+    response_model=GraphAllResponse,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
+)
+def get_full_graph_endpoint(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    limit: int = Query(default=500, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    """
+    Get full knowledge graph for the user with pagination.
+    Returns all notes and their interconnections.
+    """
+    nodes, edges = get_full_user_graph(
+        session=session, current_user=current_user, limit=limit, offset=offset
+    )
+    
+    node_responses = [
+        {
+            "id": node.id,
+            "title": node.title,
+            "content_preview": node.content_preview,
+            "is_favorite": node.is_favorite,
+            "is_archived": node.is_archived,
+            "is_pinned": node.is_pinned,
+            "color": node.color,
+            "emoji": node.emoji,
+            "created_at": node.created_at,
+            "updated_at": node.updated_at,
+        }
+        for node in nodes
+    ]
+    
+    edge_responses = [
+        {
+            "id": edge.id,
+            "source_note_id": edge.source_note_id,
+            "target_note_id": edge.target_note_id,
+            "link_type": edge.link_type,
+            "description": edge.description,
+            "created_at": edge.created_at,
+        }
+        for edge in edges
+    ]
+    
+    has_more = len(nodes) == limit
+    return GraphAllResponse(nodes=node_responses, edges=edge_responses, has_more=has_more)
+
+
+@router.post(
+    path="/{source_id}/links/{target_id}",
+    response_model=Message,
+    responses={
+        400: {"model": StandardErrorResponse, "description": "Invalid link"},
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Access denied"},
+        404: {"model": StandardErrorResponse, "description": "Note not found"},
+        409: {"model": StandardErrorResponse, "description": "Link already exists"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
+)
+def create_link_endpoint(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    source_id: int,
+    target_id: int,
+    link_type: str = Query(default="related", regex="^(related|referenced|parent|child)$"),
+    description: str | None = Query(default=None),
+) -> Any:
+    """Create a link between two notes."""
+    create_note_link(
+        session=session,
+        current_user=current_user,
+        source_note_id=source_id,
+        target_note_id=target_id,
+        link_type=link_type,
+        description=description,
+    )
+    return Message(message="Link created successfully")
+
+
+@router.delete(
+    path="/{source_id}/links/{target_id}",
+    response_model=Message,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        403: {"model": StandardErrorResponse, "description": "Access denied"},
+        404: {"model": StandardErrorResponse, "description": "Link not found"},
+        500: {"model": StandardErrorResponse, "description": "Internal server error"},
+    },
+)
+def delete_link_endpoint(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    source_id: int,
+    target_id: int,
+) -> Any:
+    """Delete a link between two notes."""
+    delete_note_link(
+        session=session,
+        current_user=current_user,
+        source_note_id=source_id,
+        target_note_id=target_id,
+    )
+    return Message(message="Link deleted successfully")

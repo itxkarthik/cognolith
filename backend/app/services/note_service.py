@@ -407,6 +407,128 @@ def link_note_to_document(
     return note
 
 
+def get_note_graph(*, session: Session, current_user: User, note_id: int) -> tuple[list[Notes], list[NoteLinks]]:
+    """
+    Get a note and all its connected notes (depth=1).
+    Returns a tuple of (nodes, edges) for knowledge graph visualization.
+    """
+    # Get the center note
+    center_note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
+    
+    # Get all outbound links (source_links) and inbound links (target_links)
+    all_links = session.exec(
+        select(NoteLinks).where(
+            (NoteLinks.source_note_id == center_note.id) | (NoteLinks.target_note_id == center_note.id)
+        )
+    ).all()
+    
+    # Collect all connected note IDs
+    connected_ids = {center_note.id}
+    for link in all_links:
+        connected_ids.add(link.source_note_id)
+        connected_ids.add(link.target_note_id)
+    
+    # Get all connected notes
+    nodes = session.exec(
+        select(Notes).where(
+            Notes.id.in_(connected_ids),
+            Notes.user_id == current_user.id,
+            Notes.is_deleted.is_not(True),
+        )
+    ).all()
+    
+    return nodes, all_links
+
+
+def get_full_user_graph(
+    *, session: Session, current_user: User, limit: int = 500, offset: int = 0
+) -> tuple[list[Notes], list[NoteLinks]]:
+    """
+    Get all notes and links for a user with pagination.
+    Useful for building full knowledge graph visualization.
+    """
+    # Get all user notes (with limit/offset for pagination)
+    nodes = session.exec(
+        select(Notes)
+        .where(
+            Notes.user_id == current_user.id,
+            Notes.is_deleted.is_not(True),
+        )
+        .order_by(col(Notes.updated_at).desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    
+    node_ids = {node.id for node in nodes}
+    
+    # Get all links where both source and target are in the nodes list
+    edges = session.exec(
+        select(NoteLinks).where(
+            NoteLinks.source_note_id.in_(node_ids),
+            NoteLinks.target_note_id.in_(node_ids),
+        )
+    ).all()
+    
+    return nodes, edges
+
+
+def create_note_link(
+    *, session: Session, current_user: User, source_note_id: int, target_note_id: int, 
+    link_type: str = "related", description: str | None = None
+) -> NoteLinks:
+    """Create a link between two notes."""
+    # Verify both notes belong to the user
+    source = get_note_by_id(session=session, current_user=current_user, note_id=source_note_id)
+    target = get_note_by_id(session=session, current_user=current_user, note_id=target_note_id)
+    
+    if source_note_id == target_note_id:
+        raise HTTPException(status_code=400, detail="Cannot link a note to itself")
+    
+    # Check if link already exists
+    existing = session.exec(
+        select(NoteLinks).where(
+            NoteLinks.source_note_id == source_note_id,
+            NoteLinks.target_note_id == target_note_id,
+        )
+    ).first()
+    
+    if existing:
+        raise HTTPException(status_code=409, detail="Link already exists")
+    
+    link = NoteLinks(
+        source_note_id=source_note_id,
+        target_note_id=target_note_id,
+        link_type=link_type,
+        description=description,
+    )
+    session.add(link)
+    session.commit()
+    session.refresh(link)
+    return link
+
+
+def delete_note_link(
+    *, session: Session, current_user: User, source_note_id: int, target_note_id: int
+) -> None:
+    """Delete a link between two notes."""
+    # Verify both notes belong to the user
+    get_note_by_id(session=session, current_user=current_user, note_id=source_note_id)
+    get_note_by_id(session=session, current_user=current_user, note_id=target_note_id)
+    
+    link = session.exec(
+        select(NoteLinks).where(
+            NoteLinks.source_note_id == source_note_id,
+            NoteLinks.target_note_id == target_note_id,
+        )
+    ).first()
+    
+    if not link:
+        raise HTTPException(status_code=404, detail="Link not found")
+    
+    session.delete(link)
+    session.commit()
+
+
 def _validate_folder_access(*, session: Session, user_id: int, folder_id: int | None) -> None:
     if folder_id is None:
         return
