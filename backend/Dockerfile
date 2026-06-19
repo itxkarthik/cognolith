@@ -1,7 +1,7 @@
 FROM python:3.12.10-slim
 
 # Set working directory
-WORKDIR /usr/src/app
+WORKDIR /usr/src/app/backend
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -14,15 +14,15 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends libmagic1 curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy the canonical requirements file first for better caching
+COPY requirements.txt /usr/src/app/requirements.txt
 
 # Install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r /usr/src/app/requirements.txt
 
 # Copy application code
-COPY . .
+COPY backend/ /usr/src/app/backend/
 
 # Expose port
 EXPOSE 3000

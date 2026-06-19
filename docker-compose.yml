@@ -50,8 +50,8 @@ services:
   # FastAPI Backend
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: pka-backend
     environment:
       HOST: 0.0.0.0
@@ -93,9 +93,9 @@ services:
       retries: 5
       start_period: 15s
     volumes:
-      - ./backend:/usr/src/app
-      - ./backend/uploads:/usr/src/app/uploads
-      - ./backend/logs:/usr/src/app/logs
+      - ./backend:/usr/src/app/backend
+      - ./backend/uploads:/usr/src/app/backend/uploads
+      - ./backend/logs:/usr/src/app/backend/logs
     networks:
       - pka-network
     command: python run.py

@@ -2,12 +2,12 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Use pnpm via corepack
-RUN corepack enable
+# Use a pnpm version that is compatible with Node 20
+RUN corepack enable && corepack prepare pnpm@10.15.1 --activate
 
 # Install dependencies first for better layer caching
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 
 # Copy frontend source
 COPY frontend/ ./

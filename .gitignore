@@ -44,6 +44,10 @@ next-env.d.ts
 tailwind.config.ts
 docker-compose.yaml
 Details.md
+Design.md
+.agents
+.next
+skills-lock.json
 
 .venv
 venv
@@ -53,23 +57,7 @@ __pycache__
 .vscode
 DOCKER_*
 docker-compose.override.yml
-task.md
-walkthrough.md
-
-knowle*.html
 uploads
-
-ANALYSIS_INDEX.md
-BACK*.md
-COMPLETE*.md
-CONNECTIVITY*
-DOCUMENT_*.txt
-IMPLEMENTATION_*.md
-WEEK1_*
-SECURITY_*
-PROJECT_*
-TIMEOUT_*
-EXCEPTION_*
 .ruff_cache
 
 node_modules/
