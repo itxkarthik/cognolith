@@ -72,7 +72,7 @@ Backend:
 cd backend
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r ../requirements.txt
 python run.py
 ```
 
@@ -129,7 +129,7 @@ The application includes comprehensive error boundaries for better UX:
 cd backend
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r ../requirements.txt
 pre-commit install
 python run.py
 
