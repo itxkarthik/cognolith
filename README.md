@@ -1,166 +1,146 @@
-# Personal AI Knowledge Assistant
+# Personal Knowledge Assistant
 
-Private AI for agents, assistants, and enterprise knowledge workflows.
+A self-hosted workspace for Markdown notes, documents, knowledge graphs, and contextual chat. The application runs as a Next.js frontend, FastAPI backend, and PostgreSQL database.
 
-Personal AI Knowledge Assistant is an open-source platform for building intelligent assistants over your private knowledge. It combines document ingestion, note management, semantic retrieval, and conversational AI in a full-stack architecture using FastAPI and Next.js. Deploy locally or in your own infrastructure with full control over data and model providers.
+## Features
 
-[![GitHub stars](https://img.shields.io/github/stars/Karthik-Git763/Personal-AI-Knowledge-Assistant?style=for-the-badge)](https://github.com/Karthik-Git763/Personal-AI-Knowledge-Assistant/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/Karthik-Git763/Personal-AI-Knowledge-Assistant?style=for-the-badge)](https://github.com/Karthik-Git763/Personal-AI-Knowledge-Assistant/network/members)
-[![License](https://img.shields.io/github/license/Karthik-Git763/Personal-AI-Knowledge-Assistant?style=for-the-badge)](https://github.com/Karthik-Git763/Personal-AI-Knowledge-Assistant/blob/main/LICENSE)
-<!-- [![Discord](https://img.shields.io/badge/Discord-Community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/)
-[![X](https://img.shields.io/badge/X-Follow-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/) -->
+- Markdown notes with Obsidian-style live preview
+- `[[Wiki links]]`, backlinks, and automatic graph relationships
+- Full and local knowledge graph views
+- Nested note folders and tags
+- PDF, DOCX, Markdown, and text document ingestion
+- Authenticated, user-isolated workspaces
+- Optional local model integration through Ollama
 
-Quickstart: [Self-Hosted Setup](#quickstart)
-Cloud Version: Coming soon
-<!-- Community: [Discord](https://discord.gg/) -->
+## Quick Start
 
-Contribute: Open issues and pull requests in this repository
+### Requirements
 
-<!-- ## Demo -->
+- Docker Desktop or Docker Engine with Compose
+- Git
 
-## Key Features
-
-- Wide file support: ingest and process text-centric formats such as PDF, DOCX, Markdown, and plain text with extensible file processing in the backend.
-- AI-assisted workflows: architecture is prepared for RAG, embeddings, vector search, and model abstraction across local and cloud providers.
-- Unified experience: manage documents, notes, chats, and search from a single web application.
-- Source-aware retrieval: backend models include chunking and metadata structures to support cited, grounded responses.
-- Modular APIs: FastAPI route and service structure designed for clean extension and integration.
-- Secure by design direction: JWT auth, role-aware user management, and security hardening checklist.
-- Flexible deployment: local development and multi-service container deployment via Docker Compose.
-- Scalable foundation: PostgreSQL-backed data model with room for vector extensions and enterprise deployment patterns.
-
-## Quickstart
-
-### Prerequisites
-
-- Docker Desktop (or Docker Engine + Docker Compose)
-- Node.js 20+
-- Python 3.12+
-
-### Option 1: Run with Docker Compose (recommended)
-
-1. Clone the repository:
+### Run the stack
 
 ```bash
 git clone https://github.com/Karthik-Git763/Personal-AI-Knowledge-Assistant.git
 cd Personal-AI-Knowledge-Assistant
+docker compose up --build -d
 ```
 
-2. Start services:
+Open:
+
+- Application: [http://localhost:8080](http://localhost:8080)
+- API documentation: [http://localhost:3000/docs](http://localhost:3000/docs)
+- Backend health: [http://localhost:3000/health/ready](http://localhost:3000/health/ready)
+
+Check service health:
 
 ```bash
-docker compose up --build
+docker compose ps
 ```
 
-3. Open the application:
-
-- Frontend: http://localhost:8080
-- Backend API: http://localhost:3000
-- API docs: http://localhost:3000/docs
-
-4. Stop services:
+Stop the stack:
 
 ```bash
 docker compose down
 ```
 
-### Option 2: Run backend and frontend locally
+Database data is stored in the `postgres_data` Docker volume and is preserved between restarts.
 
-Backend:
+## Configuration
+
+Copy the example environment file and set secure local values before deployment:
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
-pip install -r ../requirements.txt
-python run.py
+cp backend/.env.example backend/.env
 ```
 
-Frontend (new terminal, repository root):
+The main settings are:
+
+| Variable | Purpose |
+| --- | --- |
+| `POSTGRES_USER` | PostgreSQL user |
+| `POSTGRES_PASSWORD` | PostgreSQL password |
+| `POSTGRES_DB` | Database name |
+| `SECRET_KEY` | Token-signing secret |
+| `FRONTEND_HOST` | Allowed frontend origin |
+| `OLLAMA_BASE_URL` | Optional Ollama endpoint |
+
+Ollama is optional for notes, documents, authentication, and graph features. AI requests require a reachable Ollama server and an installed model.
+
+## Notes and Graphs
+
+Notes are stored as Markdown. Link notes by title:
+
+```markdown
+This idea extends [[Distributed Systems]].
+```
+
+Saving the note creates a directed graph relationship. Renaming or deleting the wiki link updates that relationship. The graph also supports manually created `related`, `parent`, and `child` links.
+
+## Development
+
+Install dependencies from the repository root:
 
 ```bash
 pnpm install
-pnpm dev
+python -m pip install -r requirements.txt
 ```
 
-Then open http://localhost:8080.
-
-## Development Notes
-
-- Environment variables are read from `.env` and `.env.docker` depending on run mode.
-- Current implementation includes core auth/data models with additional feature modules in progress.
-
-## Development Workflow
-
-### Code Quality & Type Safety
-
-This project uses automated tooling to maintain code quality and type safety:
-
-#### Pre-commit Hooks
-
-Automatic code validation runs before every commit:
+Run the frontend:
 
 ```bash
-# Install pre-commit (one time)
-pip install pre-commit
-pre-commit install
-
-# Hooks run automatically on git commit:
-# - Black: Python code formatting
-# - isort: Import sorting
-# - Ruff: Fast Python linting with auto-fix
-# - Prettier: JavaScript/TypeScript/JSON formatting
-# - Mixed line ending detection
+pnpm --dir frontend dev
 ```
 
-#### Error Handling
-
-The application includes comprehensive error boundaries for better UX:
-
-- **ErrorBoundary**: Catches React rendering errors with recovery options
-- **Error Types**: Automatic detection of render, API, auth, network, and permission errors
-- **Error Reporting**: Client-side errors are reported to `/api/errors` endpoint
-- **Mobile Responsive**: Error UI adapts to all screen sizes
-
-### Running Locally with Code Quality
+Run the backend in another terminal:
 
 ```bash
-# Backend with type checking
 cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
-pip install -r ../requirements.txt
-pre-commit install
 python run.py
+```
 
-# Frontend in another terminal
-pnpm install
-pnpm dev
+The local frontend expects PostgreSQL and the backend to be available. Docker Compose is the recommended development path when working across the full stack.
+
+## Verification
+
+```bash
+frontend/node_modules/.bin/tsc -p frontend/tsconfig.json --noEmit
+frontend/node_modules/.bin/vitest run
+docker compose build frontend backend
+docker compose up -d
+docker compose ps
+```
+
+## Architecture
+
+```text
+Browser
+  |
+  v
+Next.js frontend :8080
+  |
+  v
+FastAPI backend :3000
+  |
+  +--> PostgreSQL + pgvector :5432
+  |
+  +--> Ollama (optional)
+```
+
+Key directories:
+
+```text
+frontend/app/          Next.js routes
+frontend/components/   UI and feature components
+frontend/lib/          API clients, hooks, and utilities
+frontend/store/        Zustand stores
+backend/app/api/       FastAPI routes
+backend/app/services/  Application services
+backend/app/models/    SQLModel database models
+backend/app/schemas/   Request and response schemas
 ```
 
 ## Contributing
 
-Contributions are welcome.
-
-1. Fork this repository
-2. Create a feature branch
-3. Commit your changes with clear messages
-4. Open a pull request describing scope, rationale, and test coverage
-
-## Architecture
-
-- Frontend: Next.js App Router with React and TypeScript
-- Backend: FastAPI with SQLModel and Pydantic
-- Database: PostgreSQL
-- AI pipeline (in progress): embeddings, vector store, retrieval, and chat orchestration
-
-## Project Structure
-
-- `app/`: Next.js application routes
-- `components/`: UI and feature components
-- `backend/`: FastAPI application, models, services, and API routes
-- `lib/`: frontend utilities, hooks, and API client helpers
-- `store/`: Zustand state stores
-- `types/`: shared TypeScript types
-
-<!-- ## License -->
+Keep pull requests focused, include verification steps, and document any environment or schema changes. Use clear commit messages that describe behavior rather than implementation detail.
