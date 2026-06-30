@@ -11,6 +11,33 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "frame-ancestors 'none'"
+)
+
+DOCS_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+    "img-src 'self' data: https://fastapi.tiangolo.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'"
+)
+
+DOCS_PATHS = {"/docs", "/docs/oauth2-redirect", "/redoc"}
+
+
+def content_security_policy_for_path(path: str) -> str:
+    if path in DOCS_PATHS:
+        return DOCS_CONTENT_SECURITY_POLICY
+    return DEFAULT_CONTENT_SECURITY_POLICY
+
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
@@ -33,14 +60,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Permissions-Policy"
         ] = "camera=(), microphone=(), geolocation=(), browsing-topics=()"
 
-        # Content Security Policy — restrict resource loading to same origin
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
-            "font-src 'self'; "
-            "frame-ancestors 'none'"
+        # Documentation uses FastAPI's pinned CDN assets; all other routes stay same-origin only.
+        response.headers["Content-Security-Policy"] = content_security_policy_for_path(
+            request.url.path
         )
 
         # HSTS — only in staging/production (not local dev)
