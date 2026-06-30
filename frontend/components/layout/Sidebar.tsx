@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Database,
   FileText,
+  NotebookPen,
   MessageSquare,
   BarChart3,
   Settings,
@@ -22,6 +23,7 @@ const iconMap: Record<string, React.ReactNode> = {
   dashboard: <LayoutDashboard className="h-4 w-4" />,
   database: <Database className="h-4 w-4" />,
   description: <FileText className="h-4 w-4" />,
+  note: <NotebookPen className="h-4 w-4" />,
   smart_toy: <MessageSquare className="h-4 w-4" />,
   monitoring: <BarChart3 className="h-4 w-4" />,
   settings: <Settings className="h-4 w-4" />,
@@ -32,7 +34,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
   { href: "/dashboard/knowledge-graph", label: "Knowledge Base", icon: "database" },
   { href: "/dashboard/documents", label: "Documents", icon: "description" },
-  { href: "/dashboard/notes", label: "Notes", icon: "description" },
+  { href: "/dashboard/notes", label: "Notes", icon: "note" },
   { href: "/dashboard/chat", label: "Chat Assistant", icon: "smart_toy" },
   { href: "/dashboard/search", label: "Analytics", icon: "monitoring" },
 ];
@@ -108,9 +110,11 @@ export function Sidebar({ expanded, onToggle }: SidebarProps) {
       </div>
 
       <div className={cn(expanded ? "p-4" : "p-2")}>
-        <Button className="mb-4 w-full justify-center overflow-hidden" variant="default" title="New Entry" aria-label="New Entry">
-          <Plus className="h-4 w-4" />
-          {expanded ? <span>New Entry</span> : null}
+        <Button asChild className="mb-4 w-full justify-center overflow-hidden" variant="default">
+          <Link href="/dashboard/notes?new=1" title="New note" aria-label="New note">
+            <Plus className="h-4 w-4" />
+            {expanded ? <span>New note</span> : null}
+          </Link>
         </Button>
 
         <nav className="space-y-1">

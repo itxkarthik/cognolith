@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "motion/react";
+import { ArrowRight, FileText } from "lucide-react";
 import Link from "next/link";
 
 import { formatBytes, formatDate } from "@/components/features/dashboard/utils";
@@ -12,80 +12,54 @@ interface RecentDocumentsPanelProps {
   errorMessage: string | null;
 }
 
-export function RecentDocumentsPanel({
-  documents,
-  isLoading,
-  errorMessage,
-}: RecentDocumentsPanelProps) {
+export function RecentDocumentsPanel({ documents, isLoading, errorMessage }: RecentDocumentsPanelProps) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 18 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, ease: "easeOut", delay: 0.06 }}
-      className="rounded-2xl border border-outline-variant/30 bg-surface-container-high/70 p-5"
-    >
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-on-surface-variant">
-            Recent Documents
-          </p>
-          <h3 className="mt-1 text-lg font-medium text-on-surface">
-            Latest uploaded docs
-          </h3>
+    <section className="border border-border bg-background">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <FileText className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-bold text-foreground">Recent documents</h2>
         </div>
-        <Link
-          href="/dashboard/documents"
-          className="text-sm text-on-surface-variant/80 hover:text-on-surface"
-        >
+        <Link href="/dashboard/documents" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
           View all
+          <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </div>
 
       {isLoading ? (
-        <ul className="space-y-3">
-          {Array.from({ length: 3 }).map((_, idx) => (
-            <li
-              key={idx}
-              className="rounded-xl border border-outline-variant/30 p-3"
-            >
-              <div className="h-4 w-2/3 animate-pulse rounded bg-surface-container-highest" />
-              <div className="mt-2 h-3 w-full animate-pulse rounded bg-surface-container-highest" />
-            </li>
+        <div className="space-y-3 p-4" aria-label="Loading recent documents">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="space-y-2 border-b border-border pb-3 last:border-0 last:pb-0">
+              <div className="h-3 w-2/5 animate-pulse bg-muted" />
+              <div className="h-3 w-3/5 animate-pulse bg-muted" />
+            </div>
           ))}
-        </ul>
+        </div>
       ) : errorMessage ? (
-        <p className="rounded-xl border border-error/50 bg-error/10 p-3 text-sm text-error">
-          {errorMessage}
-        </p>
+        <p className="m-4 border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{errorMessage}</p>
       ) : documents.length === 0 ? (
-        <p className="rounded-xl border border-outline-variant/30 p-3 text-sm text-on-surface-variant/80">
-          No documents yet. Upload your first document to build context.
-        </p>
+        <div className="p-6 text-center">
+          <p className="text-sm font-medium text-foreground">No documents yet</p>
+          <p className="mt-1 text-xs text-muted-foreground">Upload a source to add searchable context.</p>
+          <Link href="/dashboard/documents/upload" className="mt-4 inline-flex text-sm font-medium text-foreground underline underline-offset-4">
+            Upload document
+          </Link>
+        </div>
       ) : (
-        <ul className="space-y-3">
+        <div className="divide-y divide-border">
           {documents.map((document) => (
-            <li key={document.id}>
-              <Link
-                href={`/dashboard/documents/${document.id}`}
-                className="block rounded-xl border border-outline-variant/30 p-3 transition hover:border-outline-variant/60 hover:bg-surface-container-highest"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="line-clamp-1 font-medium text-on-surface">
-                    {document.title}
-                  </p>
-                  <span className="shrink-0 text-xs text-on-surface-variant/70">
-                    {formatDate(document.updated_at)}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm text-on-surface-variant/80">
-                  {document.file_type.toUpperCase()} -{" "}
-                  {formatBytes(document.file_size)}
-                </p>
-              </Link>
-            </li>
+            <Link key={document.id} href={`/dashboard/documents/${document.id}`} className="block px-4 py-3 hover:bg-muted">
+              <div className="flex items-start justify-between gap-3">
+                <p className="line-clamp-1 text-sm font-medium text-foreground">{document.title}</p>
+                <span className="shrink-0 text-[11px] text-muted-foreground">{formatDate(document.updated_at)}</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {document.file_type.replace(".", "").toUpperCase()} / {formatBytes(document.file_size)} / {document.chunk_count} chunks
+              </p>
+            </Link>
           ))}
-        </ul>
+        </div>
       )}
-    </motion.div>
+    </section>
   );
 }

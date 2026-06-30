@@ -1,12 +1,9 @@
 "use client";
 
-import { motion } from "motion/react";
+import { ArrowRight, NotebookPen } from "lucide-react";
 import Link from "next/link";
 
-import {
-  extractPreview,
-  formatDate,
-} from "@/components/features/dashboard/utils";
+import { extractPreview, formatDate } from "@/components/features/dashboard/utils";
 import type { NoteResponse } from "@/types";
 
 interface RecentNotesPanelProps {
@@ -15,79 +12,52 @@ interface RecentNotesPanelProps {
   errorMessage: string | null;
 }
 
-export function RecentNotesPanel({
-  notes,
-  isLoading,
-  errorMessage,
-}: RecentNotesPanelProps) {
+export function RecentNotesPanel({ notes, isLoading, errorMessage }: RecentNotesPanelProps) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 18 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, ease: "easeOut" }}
-      className="rounded-2xl border border-outline-variant/30 bg-surface-container-high/70 p-5"
-    >
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-on-surface-variant">
-            Recent Notes
-          </p>
-          <h3 className="mt-1 text-lg font-medium text-on-surface">
-            Latest note updates
-          </h3>
+    <section className="border border-border bg-background">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2">
+          <NotebookPen className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-bold text-foreground">Recent notes</h2>
         </div>
-        <Link
-          href="/dashboard/notes"
-          className="text-sm text-on-surface-variant/80 hover:text-on-surface"
-        >
+        <Link href="/dashboard/notes" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
           View all
+          <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </div>
 
       {isLoading ? (
-        <ul className="space-y-3">
-          {Array.from({ length: 3 }).map((_, idx) => (
-            <li
-              key={idx}
-              className="rounded-xl border border-outline-variant/30 p-3"
-            >
-              <div className="h-4 w-2/3 animate-pulse rounded bg-surface-container-highest" />
-              <div className="mt-2 h-3 w-full animate-pulse rounded bg-surface-container-highest" />
-            </li>
+        <div className="space-y-3 p-4" aria-label="Loading recent notes">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="space-y-2 border-b border-border pb-3 last:border-0 last:pb-0">
+              <div className="h-3 w-2/5 animate-pulse bg-muted" />
+              <div className="h-3 w-4/5 animate-pulse bg-muted" />
+            </div>
           ))}
-        </ul>
+        </div>
       ) : errorMessage ? (
-        <p className="rounded-xl border border-error/50 bg-error/10 p-3 text-sm text-error">
-          {errorMessage}
-        </p>
+        <p className="m-4 border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{errorMessage}</p>
       ) : notes.length === 0 ? (
-        <p className="rounded-xl border border-outline-variant/30 p-3 text-sm text-on-surface-variant/80">
-          No notes yet. Use Create Note to start your first note.
-        </p>
+        <div className="p-6 text-center">
+          <p className="text-sm font-medium text-foreground">No notes yet</p>
+          <p className="mt-1 text-xs text-muted-foreground">Create a note to start building your workspace.</p>
+          <Link href="/dashboard/notes?new=1" className="mt-4 inline-flex text-sm font-medium text-foreground underline underline-offset-4">
+            Create note
+          </Link>
+        </div>
       ) : (
-        <ul className="space-y-3">
+        <div className="divide-y divide-border">
           {notes.map((note) => (
-            <li key={note.id}>
-              <Link
-                href={`/dashboard/notes?note=${note.id}`}
-                className="block rounded-xl border border-outline-variant/30 p-3 transition hover:border-outline-variant/60 hover:bg-surface-container-highest"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="line-clamp-1 font-medium text-on-surface">
-                    {note.title}
-                  </p>
-                  <span className="shrink-0 text-xs text-on-surface-variant/70">
-                    {formatDate(note.updated_at)}
-                  </span>
-                </div>
-                <p className="mt-1 text-sm text-on-surface-variant/80">
-                  {extractPreview(note.content)}
-                </p>
-              </Link>
-            </li>
+            <Link key={note.id} href={`/dashboard/notes?note=${note.id}`} className="block px-4 py-3 hover:bg-muted">
+              <div className="flex items-start justify-between gap-3">
+                <p className="line-clamp-1 text-sm font-medium text-foreground">{note.title}</p>
+                <span className="shrink-0 text-[11px] text-muted-foreground">{formatDate(note.updated_at)}</span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{extractPreview(note.content, 140)}</p>
+            </Link>
           ))}
-        </ul>
+        </div>
       )}
-    </motion.div>
+    </section>
   );
 }

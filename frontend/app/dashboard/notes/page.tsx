@@ -76,6 +76,7 @@ export default function NotesPage() {
   const [vaultNotes, setVaultNotes] = useState<NoteResponse[]>([]);
   const [isVaultLoading, setIsVaultLoading] = useState(false);
   const [requestedNoteId, setRequestedNoteId] = useState<number | null>(null);
+  const handledNewNoteQueryRef = useRef(false);
   const deletingNoteIdsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
@@ -194,6 +195,15 @@ export default function NotesPage() {
       setIsCreatingNote(false);
     }
   }, [createNote, filters.folderId, isCreatingNote, refreshVaultNotes, setFolderFilter, setSelectedNote]);
+
+  useEffect(() => {
+    if (handledNewNoteQueryRef.current || isLoading || isCreatingNote) return;
+    if (new URLSearchParams(window.location.search).get("new") !== "1") return;
+
+    handledNewNoteQueryRef.current = true;
+    window.history.replaceState({}, "", "/dashboard/notes");
+    void handleCreateNote();
+  }, [handleCreateNote, isCreatingNote, isLoading]);
 
   const handleCreateFolder = useCallback(
     async (parentFolderId?: number | null) => {
