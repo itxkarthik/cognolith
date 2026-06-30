@@ -41,32 +41,36 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="flex min-h-[100dvh] items-center justify-center bg-background px-4">
       <Card className="w-full max-w-md border-border bg-background">
         <CardContent className="p-8">
-          <p className="text-xs text-muted-foreground">Welcome Back</p>
+          <p className="text-xs text-muted-foreground">Welcome back</p>
           <h1 className="mt-2 text-3xl font-bold text-foreground">Sign in</h1>
           <p className="mt-1 text-sm text-muted-foreground">Access your personal knowledge workspace.</p>
 
           <form onSubmit={onSubmit} className="mt-6 space-y-4">
             <div className="space-y-2">
-              <Label>Email</Label>
+              <Label htmlFor="login-email">Email address</Label>
               <Input
+                id="login-email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 type="email"
+                autoComplete="email"
                 required
-                placeholder="you@example.com"
+                placeholder="name@example.com"
               />
             </div>
             <div className="space-y-2">
-              <Label>Password</Label>
+              <Label htmlFor="login-password">Password</Label>
               <Input
+                id="login-password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 type="password"
+                autoComplete="current-password"
                 required
-                placeholder="••••••••"
+                placeholder="Enter your password"
               />
             </div>
 

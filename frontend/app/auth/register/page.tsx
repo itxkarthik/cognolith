@@ -39,25 +39,25 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="flex min-h-[100dvh] items-center justify-center bg-background px-4">
       <Card className="w-full max-w-md border-border bg-background">
         <CardContent className="p-8">
-          <p className="text-xs text-muted-foreground">Get Started</p>
+          <p className="text-xs text-muted-foreground">Get started</p>
           <h1 className="mt-2 text-3xl font-bold text-foreground">Create account</h1>
           <p className="mt-1 text-sm text-muted-foreground">Build your personal knowledge system.</p>
 
           <form onSubmit={onSubmit} className="mt-6 space-y-4">
             <div className="space-y-2">
-              <Label>Full name</Label>
-              <Input value={fullName} onChange={(event) => setFullName(event.target.value)} type="text" required placeholder="Karthik" />
+              <Label htmlFor="register-name">Full name</Label>
+              <Input id="register-name" value={fullName} onChange={(event) => setFullName(event.target.value)} type="text" autoComplete="name" required placeholder="Enter your full name" />
             </div>
             <div className="space-y-2">
-              <Label>Email</Label>
-              <Input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required placeholder="you@example.com" />
+              <Label htmlFor="register-email">Email address</Label>
+              <Input id="register-email" value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" required placeholder="name@example.com" />
             </div>
             <div className="space-y-2">
-              <Label>Password</Label>
-              <Input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={8} required placeholder="At least 8 characters" />
+              <Label htmlFor="register-password">Password</Label>
+              <Input id="register-password" value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="new-password" minLength={8} required placeholder="Minimum 8 characters" />
             </div>
 
             {error ? (
