@@ -1,6 +1,6 @@
 # Personal Knowledge Assistant
 
-A self-hosted workspace for Markdown notes, documents, knowledge graphs, and contextual chat. The application runs as a Next.js frontend, FastAPI backend, and PostgreSQL database.
+A self-hosted knowledge workspace for Markdown notes, document ingestion, relationship graphs, hybrid search, and local AI chat. The stack uses Next.js, FastAPI, PostgreSQL with pgvector, and optional Ollama models.
 
 ## Features
 
@@ -9,7 +9,8 @@ A self-hosted workspace for Markdown notes, documents, knowledge graphs, and con
 - Full and local knowledge graph views
 - Nested note folders and tags
 - PDF, DOCX, Markdown, and text document ingestion
-- Contextual chat across uploaded documents and Markdown notes
+- Hybrid full-text and semantic search across documents, notes, and chats
+- Conversational chat with grounded answers from documents and notes when relevant
 - Authenticated, user-isolated workspaces
 - Optional local model integration through Ollama
 
@@ -25,14 +26,17 @@ A self-hosted workspace for Markdown notes, documents, knowledge graphs, and con
 ```bash
 git clone https://github.com/itxkarthik/Personal-AI-Knowledge-Assistant.git
 cd Personal-AI-Knowledge-Assistant
-docker compose up --build -d
+docker compose --profile ai up --build -d
 ```
 
 Open:
 
 - Application: [http://localhost:8080](http://localhost:8080)
-- API documentation: [http://localhost:3000/docs](http://localhost:3000/docs)
+- Swagger API documentation: [http://localhost:3000/docs](http://localhost:3000/docs)
+- ReDoc API documentation: [http://localhost:3000/redoc](http://localhost:3000/redoc)
 - Backend health: [http://localhost:3000/health/ready](http://localhost:3000/health/ready)
+
+The frontend runs on port `8080`; FastAPI and its documentation run on port `3000`. Therefore, `http://localhost:8080/docs` returns `404` by design. Use `http://localhost:3000/docs`.
 
 Check service health:
 
@@ -47,6 +51,12 @@ docker compose down
 ```
 
 Database data is stored in the `postgres_data` Docker volume and is preserved between restarts.
+
+To run the core application without local AI, omit the profile:
+
+```bash
+docker compose up --build -d
+```
 
 ## Configuration
 
@@ -69,7 +79,7 @@ The main settings are:
 
 Ollama is optional for notes, document extraction, authentication, and graph features. The default stack stays lightweight and reports AI as unavailable without writing placeholder chat messages.
 
-### Run with local AI
+### Local AI
 
 Start the stack with the optional Ollama profile:
 
@@ -77,7 +87,7 @@ Start the stack with the optional Ollama profile:
 docker compose --profile ai up --build -d
 ```
 
-The profile starts Ollama and installs `llama3.2:1b` for chat plus `nomic-embed-text` for document and note embeddings. The first startup takes longer while those models download; follow progress with:
+The profile starts Ollama and installs `llama3.2:1b` for chat plus `nomic-embed-text` for document and note embeddings. The first startup takes longer while those models download. Follow progress with:
 
 ```bash
 docker compose logs -f ollama-models
@@ -92,19 +102,19 @@ Signed-in users can change their chat model from **Settings > Local AI model**:
 1. Install the model in Ollama if it is not already available:
 
    ```bash
-   docker compose exec ollama ollama pull gemma3:1b
+   docker compose exec ollama ollama pull qwen3:4b
    ```
 
 2. Open **Settings > Local AI model** in the application.
 3. Select **Refresh** to reload the installed model list.
 4. Choose the model and select **Save model**.
 
-The preference is saved per account and applies to new chat responses. The embedding model remains separate because changing its dimensions requires rebuilding vector indexes.
+The preference is saved per account and applies to new chat responses. `qwen3:4b` is the recommended local starting point; larger models generally improve multi-source synthesis but require more memory. The embedding model remains separate because changing its dimensions requires rebuilding the vector indexes.
 
 `OLLAMA_CHAT_MODEL` and `OLLAMA_EMBEDDING_MODEL` set the Docker defaults for users who have no saved preference. Put overrides in `.env.docker`:
 
 ```bash
-OLLAMA_CHAT_MODEL=gemma3:1b
+OLLAMA_CHAT_MODEL=qwen3:4b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 ```
 
@@ -117,13 +127,13 @@ docker compose --env-file .env.docker --profile ai up --build -d
 You can also assign a model from the command line. First install it in the shared Ollama volume:
 
 ```bash
-docker compose exec ollama ollama pull gemma3:1b
+docker compose exec ollama ollama pull qwen3:4b
 ```
 
 Then save the per-user preference by email:
 
 ```bash
-docker compose exec backend python -m scripts.set_user_model --email you@example.com --chat-model gemma3:1b
+docker compose exec backend python -m scripts.set_user_model --email you@example.com --chat-model qwen3:4b
 ```
 
 The account preference overrides the Docker default. Omit `--embedding-model` to keep `nomic-embed-text`; changing embedding dimensions requires rebuilding the vector indexes. Confirm the active Docker defaults and installed models with:
@@ -132,6 +142,18 @@ The account preference overrides the Docker default. Omit `--embedding-model` to
 curl http://localhost:3000/health/ready
 docker compose exec ollama ollama list
 ```
+
+## Search and Chat
+
+Search combines PostgreSQL full-text matching with pgvector semantic retrieval. The Documents, Notes, and Chats filters are applied independently, so a result does not need to repeat the exact query wording to match.
+
+Chat uses three response paths:
+
+- Casual conversation is answered directly without searching the workspace.
+- General knowledge questions use the selected chat model when workspace context is unnecessary.
+- Questions about personal notes, documents, or projects remain grounded in retrieved workspace context.
+
+If the correct source appears but the answer is weak, use a stronger chat model. If the correct source does not appear, review the embedding model, chunking settings, and similarity threshold.
 
 ## Notes and Graphs
 
@@ -170,29 +192,65 @@ The local frontend expects PostgreSQL and the backend to be available. Docker Co
 ## Verification
 
 ```bash
-frontend/node_modules/.bin/tsc -p frontend/tsconfig.json --noEmit
-frontend/node_modules/.bin/vitest run
 docker compose build frontend backend
-docker compose up -d
-docker compose ps
+docker compose --profile ai up -d
+docker compose --profile ai ps
 curl http://localhost:3000/health/ready
 ```
 
 ## Architecture
 
-```text
-Browser
-  |
-  v
-Next.js frontend :8080
-  |
-  v
-FastAPI backend :3000
-  |
-  +--> PostgreSQL + pgvector :5432
-  |
-  +--> Ollama (optional)
+```mermaid
+flowchart LR
+    User["Browser"]
+
+    subgraph Frontend["Frontend container :8080"]
+        Next["Next.js 16 application"]
+        Workspace["Notes, documents, chat, search, graph UI"]
+        Client["Authenticated API client"]
+        Workspace --> Client
+        Next --> Workspace
+    end
+
+    subgraph Backend["Backend container :3000"]
+        Proxy["FastAPI routes /api/v1"]
+        Auth["Authentication and user isolation"]
+        Services["Notes, documents, chat, search, graph services"]
+        Ingestion["Document extraction and chunking"]
+        RAG["RAG orchestration and source attribution"]
+        Proxy --> Auth --> Services
+        Services --> Ingestion
+        Services --> RAG
+    end
+
+    subgraph Database["PostgreSQL :5432"]
+        Records["Users, notes, documents, chats, links"]
+        FullText["PostgreSQL full-text indexes"]
+        Vectors["pgvector chunk and note embeddings"]
+    end
+
+    subgraph AI["Optional Ollama :11434"]
+        ChatModel["Selected chat model"]
+        EmbedModel["Embedding model"]
+    end
+
+    Files["Uploaded file storage"]
+
+    User -->|"HTTP :8080"| Next
+    Client -->|"Next.js rewrite /api/v1/*"| Proxy
+    Services --> Records
+    Services --> FullText
+    Ingestion --> Files
+    Ingestion --> Records
+    Ingestion -->|"Create embeddings"| EmbedModel
+    EmbedModel --> Vectors
+    RAG -->|"Semantic retrieval"| Vectors
+    RAG -->|"Lexical retrieval"| FullText
+    RAG -->|"Grounded prompt"| ChatModel
+    ChatModel -->|"Answer with sources"| RAG
 ```
+
+The browser communicates only with the Next.js application. Browser API requests use the `/api/v1` rewrite to reach FastAPI inside the Docker network. FastAPI enforces account ownership before services access records, files, search indexes, or AI models. Search combines PostgreSQL full-text ranking with pgvector similarity; chat reuses the same indexed context when a question requires workspace grounding.
 
 Key directories:
 
