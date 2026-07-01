@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "personal-knowledge-assistant"
 version = "0.1.0"
 description = "A personal knowledge assistant with FastAPI backend"
+authors = [{ name = "Karthik Das" }]
+license = { file = "LICENSE" }
 python-requires = ">=3.12"
 
 [tool.black]
