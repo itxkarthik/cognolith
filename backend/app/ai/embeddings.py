@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from sqlmodel import Session
+
 from app.ai.http_client import create_embedding_client
 from app.core.config import settings
 from app.models.user import UserSettings
-from sqlmodel import Session
 
 DEFAULT_EMBEDDING_MODEL = settings.OLLAMA_EMBEDDING_MODEL
 

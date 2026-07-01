@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 
+from sqlmodel import Session, select
+
 from app.core.database import engine
 from app.models.user import LlmProvider, User, UserSettings
-from sqlmodel import Session, select
 
 
 def parse_args() -> argparse.Namespace:

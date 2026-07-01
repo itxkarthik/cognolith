@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from app.ai.llm import LLMService
 from sqlmodel import Session
+
+from app.ai.llm import LLMService
 
 MAX_SUMMARY_INPUT_CHARS = 18000
 

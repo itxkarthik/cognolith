@@ -1,10 +1,13 @@
 from types import SimpleNamespace
+from typing import cast
 from unittest import TestCase
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from sqlmodel import Session
 
 from app.core.exceptions import AIServiceUnavailableError
+from app.models.user import User
 from app.schemas.chat import ChatMessageCreate
 from app.services.chat_service import send_message_and_get_response
 
@@ -53,8 +56,8 @@ class ChatServiceTests(TestCase):
         ):
             with self.assertRaises(AIServiceUnavailableError):
                 send_message_and_get_response(
-                    session=session,
-                    current_user=current_user,
+                    session=cast(Session, session),
+                    current_user=cast(User, current_user),
                     chat_session_id=chat_session.id,
                     payload=ChatMessageCreate(content="Hello", role="user"),
                 )
@@ -78,8 +81,8 @@ class ChatServiceTests(TestCase):
             patch("app.services.chat_service._acquire_chat_generation_lock"),
         ):
             user_message, assistant_message = send_message_and_get_response(
-                session=session,
-                current_user=current_user,
+                session=cast(Session, session),
+                current_user=cast(User, current_user),
                 chat_session_id=chat_session.id,
                 payload=ChatMessageCreate(content="Hello", role="user"),
             )
@@ -109,8 +112,8 @@ class ChatServiceTests(TestCase):
         ):
             with self.assertRaises(HTTPException) as raised:
                 send_message_and_get_response(
-                    session=session,
-                    current_user=current_user,
+                    session=cast(Session, session),
+                    current_user=cast(User, current_user),
                     chat_session_id=chat_session.id,
                     payload=ChatMessageCreate(content="Hello", role="user"),
                 )

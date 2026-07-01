@@ -1,12 +1,14 @@
 from unittest import TestCase
 
+from fastapi.routing import APIRoute
+
 from app.api.routes.search import _merge_result, router
 from app.schemas.search import SearchResultItem
 
 
 class SearchRouteTests(TestCase):
     def test_search_uses_non_redirecting_canonical_path(self) -> None:
-        route_paths = {route.path for route in router.routes}
+        route_paths = {route.path for route in router.routes if isinstance(route, APIRoute)}
 
         self.assertIn("/search", route_paths)
 

@@ -2,10 +2,20 @@ import json
 import logging
 from typing import Any
 
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
 from app.api.deps import CurrentUser, SessionDep
 from app.core.websocket import manager
 from app.models.chat import ChatMessages, ChatRole, ChatSession
-from app.schemas.chat import ChatCreate, ChatMessageCreate, ChatMessageResponse, ChatResponse
+from app.schemas.chat import (
+    ChatCreate,
+    ChatMessageCreate,
+    ChatMessageResponse,
+    ChatResponse,
+    ChatSources,
+)
 from app.schemas.error import StandardErrorResponse
 from app.schemas.note import NoteResponse
 from app.services.chat_service import (
@@ -16,9 +26,6 @@ from app.services.chat_service import (
     send_message_and_get_response,
     stream_message_response,
 )
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +46,14 @@ class ConvertChatToNoteRequest(BaseModel):
 
 def _to_chat_message_response(message: ChatMessages) -> ChatMessageResponse:
     return ChatMessageResponse(
-        id=message.id,
-        session_id=message.session_id,
-        role=message.role.value if isinstance(message.role, ChatRole) else str(message.role),
+        id=_require_id(message.id, "Chat message"),
+        session_id=_require_id(message.session_id, "Chat session"),
+        role=(message.role.value if isinstance(message.role, ChatRole) else str(message.role)),
         content=message.content,
         model_used=message.model_used,
         tokens_used=message.tokens_used,
         response_time_ms=message.response_time_ms,
-        sources=message.sources,
+        sources=ChatSources.model_validate(message.sources) if message.sources else None,
         created_at=message.created_at,
         updated_at=message.updated_at,
     )
@@ -54,8 +61,8 @@ def _to_chat_message_response(message: ChatMessages) -> ChatMessageResponse:
 
 def _to_chat_response(chat_session: ChatSession) -> ChatResponse:
     return ChatResponse(
-        id=chat_session.id,
-        user_id=chat_session.user_id,
+        id=_require_id(chat_session.id, "Chat session"),
+        user_id=_require_id(chat_session.user_id, "User"),
         title=chat_session.title,
         description=chat_session.description,
         is_archived=chat_session.is_archived,
@@ -65,6 +72,12 @@ def _to_chat_response(chat_session: ChatSession) -> ChatResponse:
         updated_at=chat_session.updated_at,
         messages=[_to_chat_message_response(message) for message in chat_session.messages],
     )
+
+
+def _require_id(value: int | None, entity_name: str) -> int:
+    if value is None:
+        raise RuntimeError(f"{entity_name} must be persisted before serialization")
+    return value
 
 
 def _to_note_response(note: Any) -> NoteResponse:
@@ -111,7 +124,10 @@ def create_chat_session_endpoint(
     path="/sessions",
     response_model=ChatSessionListResponse,
     responses={
-        400: {"model": StandardErrorResponse, "description": "Invalid query parameters"},
+        400: {
+            "model": StandardErrorResponse,
+            "description": "Invalid query parameters",
+        },
         401: {"model": StandardErrorResponse, "description": "Authentication required"},
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
@@ -167,7 +183,10 @@ def get_chat_session_endpoint(
         401: {"model": StandardErrorResponse, "description": "Authentication required"},
         403: {"model": StandardErrorResponse, "description": "Access denied"},
         404: {"model": StandardErrorResponse, "description": "Chat session not found"},
-        409: {"model": StandardErrorResponse, "description": "A reply is already being generated"},
+        409: {
+            "model": StandardErrorResponse,
+            "description": "A reply is already being generated",
+        },
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
         503: {"model": StandardErrorResponse, "description": "LLM service unavailable"},
     },
@@ -196,7 +215,10 @@ def send_message_endpoint(
         401: {"model": StandardErrorResponse, "description": "Authentication required"},
         403: {"model": StandardErrorResponse, "description": "Access denied"},
         404: {"model": StandardErrorResponse, "description": "Chat session not found"},
-        409: {"model": StandardErrorResponse, "description": "A reply is already being generated"},
+        409: {
+            "model": StandardErrorResponse,
+            "description": "A reply is already being generated",
+        },
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
         503: {"model": StandardErrorResponse, "description": "LLM service unavailable"},
     },

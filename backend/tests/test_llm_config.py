@@ -1,4 +1,7 @@
+from typing import cast
 from unittest import TestCase
+
+from sqlmodel import Session
 
 from app.ai.llm import resolve_llm_config
 from app.models.user import LlmProvider, UserSettings
@@ -22,7 +25,7 @@ class LLMConfigTests(TestCase):
         )
 
         config = resolve_llm_config(
-            session=FakeSettingsSession(preferences),
+            session=cast(Session, FakeSettingsSession(preferences)),
             user_id=7,
         )
 

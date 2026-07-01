@@ -3,6 +3,11 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from fastapi import APIRouter, Query
+from sqlalchemy import func
+from sqlalchemy import select as sa_select
+from sqlmodel import col, select
+
 from app.ai.embeddings import generate_embedding
 from app.ai.rag import ensure_workspace_embeddings
 from app.ai.vectorstore import PgVectorStore
@@ -13,9 +18,6 @@ from app.models.note import Notes
 from app.schemas.error import StandardErrorResponse
 from app.schemas.search import SearchResponse, SearchResultItem
 from app.utils.text_processing import create_content_preview
-from fastapi import APIRouter, Query
-from sqlalchemy import func
-from sqlmodel import select
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
@@ -39,7 +41,10 @@ def _merge_result(
     path="",
     response_model=SearchResponse,
     responses={
-        400: {"model": StandardErrorResponse, "description": "Invalid query parameters"},
+        400: {
+            "model": StandardErrorResponse,
+            "description": "Invalid query parameters",
+        },
         401: {"model": StandardErrorResponse, "description": "Authentication required"},
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
@@ -78,23 +83,25 @@ def unified_search(
             ),
         )
         doc_score = func.ts_rank(doc_vector, ts_query).label("score")
-        doc_statement = select(
-            Document.id,
-            Document.title,
-            Document.content,
-            Document.created_at,
-            Document.updated_at,
+        doc_statement = sa_select(
+            col(Document.id),
+            col(Document.title),
+            col(Document.content),
+            col(Document.created_at),
+            col(Document.updated_at),
             doc_score,
         ).where(
-            Document.user_id == current_user.id,
-            Document.is_deleted.is_(False),
+            col(Document.user_id) == current_user.id,
+            col(Document.is_deleted).is_(False),
             doc_vector.op("@@")(ts_query),
         )
         if date_from is not None:
-            doc_statement = doc_statement.where(Document.created_at >= date_from)
+            doc_statement = doc_statement.where(col(Document.created_at) >= date_from)
         if date_to is not None:
-            doc_statement = doc_statement.where(Document.created_at <= date_to)
-        doc_rows = session.exec(doc_statement.order_by(doc_score.desc()).limit(100)).all()
+            doc_statement = doc_statement.where(col(Document.created_at) <= date_to)
+        doc_rows = (
+            session.connection().execute(doc_statement.order_by(doc_score.desc()).limit(100)).all()
+        )
         for row in doc_rows:
             _merge_result(
                 results_by_key,
@@ -106,7 +113,7 @@ def unified_search(
                     score=float(row.score or 0),
                     created_at=row.created_at,
                     updated_at=row.updated_at,
-                )
+                ),
             )
 
     if "note" in enabled_types:
@@ -121,25 +128,29 @@ def unified_search(
             ),
         )
         note_score = func.ts_rank(note_vector, ts_query).label("score")
-        note_statement = select(
-            Notes.id,
-            Notes.title,
-            Notes.content,
-            Notes.created_at,
-            Notes.updated_at,
+        note_statement = sa_select(
+            col(Notes.id),
+            col(Notes.title),
+            col(Notes.content),
+            col(Notes.created_at),
+            col(Notes.updated_at),
             note_score,
         ).where(
-            Notes.user_id == current_user.id,
-            Notes.is_deleted.is_(False),
+            col(Notes.user_id) == current_user.id,
+            col(Notes.is_deleted).is_(False),
             note_vector.op("@@")(ts_query),
         )
         if folder_id is not None:
-            note_statement = note_statement.where(Notes.folder_id == folder_id)
+            note_statement = note_statement.where(col(Notes.folder_id) == folder_id)
         if date_from is not None:
-            note_statement = note_statement.where(Notes.created_at >= date_from)
+            note_statement = note_statement.where(col(Notes.created_at) >= date_from)
         if date_to is not None:
-            note_statement = note_statement.where(Notes.created_at <= date_to)
-        note_rows = session.exec(note_statement.order_by(note_score.desc()).limit(100)).all()
+            note_statement = note_statement.where(col(Notes.created_at) <= date_to)
+        note_rows = (
+            session.connection()
+            .execute(note_statement.order_by(note_score.desc()).limit(100))
+            .all()
+        )
         for row in note_rows:
             _merge_result(
                 results_by_key,
@@ -151,32 +162,36 @@ def unified_search(
                     score=float(row.score or 0),
                     created_at=row.created_at,
                     updated_at=row.updated_at,
-                )
+                ),
             )
 
     if "chat" in enabled_types:
         chat_vector = func.to_tsvector("english", func.coalesce(ChatMessages.content, ""))
         chat_score = func.ts_rank(chat_vector, ts_query).label("score")
         chat_statement = (
-            select(
-                ChatSession.id.label("session_id"),
-                ChatSession.title,
-                ChatMessages.content,
-                ChatMessages.created_at,
-                ChatMessages.updated_at,
+            sa_select(
+                col(ChatSession.id).label("session_id"),
+                col(ChatSession.title),
+                col(ChatMessages.content),
+                col(ChatMessages.created_at),
+                col(ChatMessages.updated_at),
                 chat_score,
             )
-            .join(ChatSession, ChatSession.id == ChatMessages.session_id)
+            .join(ChatSession, col(ChatSession.id) == col(ChatMessages.session_id))
             .where(
-                ChatSession.user_id == current_user.id,
+                col(ChatSession.user_id) == current_user.id,
                 chat_vector.op("@@")(ts_query),
             )
         )
         if date_from is not None:
-            chat_statement = chat_statement.where(ChatMessages.created_at >= date_from)
+            chat_statement = chat_statement.where(col(ChatMessages.created_at) >= date_from)
         if date_to is not None:
-            chat_statement = chat_statement.where(ChatMessages.created_at <= date_to)
-        chat_rows = session.exec(chat_statement.order_by(chat_score.desc()).limit(100)).all()
+            chat_statement = chat_statement.where(col(ChatMessages.created_at) <= date_to)
+        chat_rows = (
+            session.connection()
+            .execute(chat_statement.order_by(chat_score.desc()).limit(100))
+            .all()
+        )
         for row in chat_rows:
             _merge_result(
                 results_by_key,
@@ -188,7 +203,7 @@ def unified_search(
                     score=float(row.score or 0),
                     created_at=row.created_at,
                     updated_at=row.updated_at,
-                )
+                ),
             )
 
     if current_user.id is not None and enabled_types.intersection({"document", "note"}):
@@ -222,13 +237,11 @@ def unified_search(
                 document_ids = sorted({hit.document_id for hit in document_hits})
                 document_statement = select(Document).where(
                     Document.user_id == current_user.id,
-                    Document.is_deleted.is_(False),
-                    Document.id.in_(document_ids),
+                    col(Document.is_deleted).is_(False),
+                    col(Document.id).in_(document_ids),
                 )
                 if date_from is not None:
-                    document_statement = document_statement.where(
-                        Document.created_at >= date_from
-                    )
+                    document_statement = document_statement.where(Document.created_at >= date_from)
                 if date_to is not None:
                     document_statement = document_statement.where(Document.created_at <= date_to)
                 document_map = {
@@ -263,8 +276,8 @@ def unified_search(
                 note_ids = sorted({hit.note_id for hit in note_hits})
                 note_statement = select(Notes).where(
                     Notes.user_id == current_user.id,
-                    Notes.is_deleted.is_not(True),
-                    Notes.id.in_(note_ids),
+                    col(Notes.is_deleted).is_not(True),
+                    col(Notes.id).in_(note_ids),
                 )
                 if folder_id is not None:
                     note_statement = note_statement.where(Notes.folder_id == folder_id)

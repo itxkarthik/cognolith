@@ -37,7 +37,7 @@ def summarize_document_into_note(
         "Overview, Key Concepts, Important Details, and Quick Recap."
     )
     generated_markdown = _generate_markdown(
-        session=session, user_id=user_id, prompt=prompt, content=document.content
+        session=session, user_id=user_id, prompt=prompt, content=document.content or ""
     )
 
     note_title = title or f"Summary: {document.title}"
@@ -167,7 +167,11 @@ def _generate_markdown(*, session: Session, user_id: int, prompt: str, content: 
 
 def _extract_bullet_items(*, markdown: str, section_header: str) -> list[str]:
     lines = markdown.splitlines()
-    header_markers = {f"## {section_header}", f"### {section_header}", f"# {section_header}"}
+    header_markers = {
+        f"## {section_header}",
+        f"### {section_header}",
+        f"# {section_header}",
+    }
 
     in_section = False
     items: list[str] = []

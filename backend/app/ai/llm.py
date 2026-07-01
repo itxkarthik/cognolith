@@ -5,10 +5,11 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from sqlmodel import Session
+
 from app.ai.http_client import create_llm_client
 from app.core.config import settings
 from app.models.user import LlmProvider, UserSettings
-from sqlmodel import Session
 
 ChatMessage = dict[str, str]
 
@@ -32,7 +33,7 @@ class BaseLLMProvider(Protocol):
     ) -> str:
         ...
 
-    async def stream(
+    def stream(
         self,
         *,
         messages: Sequence[ChatMessage],

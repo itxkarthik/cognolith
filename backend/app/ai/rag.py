@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
+from sqlmodel import Session, col, select
+
 from app.ai.embeddings import generate_embedding, generate_embeddings
 from app.ai.llm import LLMService, build_chat_messages
 from app.ai.vectorstore import NoteVectorSearchResult, PgVectorStore, VectorSearchResult
@@ -16,7 +18,6 @@ from app.models.document import Document
 from app.models.note import Notes
 from app.models.user import UserSettings
 from app.utils.text_processing import create_content_preview
-from sqlmodel import Session, select
 
 
 @dataclass(slots=True)
@@ -185,9 +186,7 @@ def run_rag_pipeline(
         if message.get("role") == "user" and message.get("content")
     ]
     retrieval_query = (
-        "\n".join([*recent_user_context, query])
-        if _needs_history_for_retrieval(query)
-        else query
+        "\n".join([*recent_user_context, query]) if _needs_history_for_retrieval(query) else query
     )
 
     query_embedding, embedding_model = _run_async(
@@ -255,8 +254,15 @@ def run_rag_pipeline(
         result_limit = min(retrieval_limit, 10 if needs_inventory else 6)
         relevance_floor = max(adaptive_threshold, ranked_hits[0][0] - score_window)
         ranked_hits = [item for item in ranked_hits if item[0] >= relevance_floor][:result_limit]
-    chunk_hits = [hit for _, source_type, hit in ranked_hits if source_type == "document"]
-    note_hits = [hit for _, source_type, hit in ranked_hits if source_type == "note"]
+    ranked_chunk_hits: list[VectorSearchResult] = []
+    ranked_note_hits: list[NoteVectorSearchResult] = []
+    for _, source_type, hit in ranked_hits:
+        if source_type == "document" and isinstance(hit, VectorSearchResult):
+            ranked_chunk_hits.append(hit)
+        elif source_type == "note" and isinstance(hit, NoteVectorSearchResult):
+            ranked_note_hits.append(hit)
+    chunk_hits = ranked_chunk_hits
+    note_hits = ranked_note_hits
 
     inventory_entries = (
         _load_workspace_inventory(session=session, user_id=user_id) if needs_inventory else []
@@ -366,16 +372,16 @@ def _load_workspace_inventory(*, session: Session, user_id: int) -> list[Workspa
         select(Document)
         .where(
             Document.user_id == user_id,
-            Document.is_deleted.is_(False),
+            col(Document.is_deleted).is_(False),
             Document.status == "completed",
         )
-        .order_by(Document.updated_at.desc())
+        .order_by(col(Document.updated_at).desc())
         .limit(40)
     ).all()
     notes = session.exec(
         select(Notes)
-        .where(Notes.user_id == user_id, Notes.is_deleted.is_not(True))
-        .order_by(Notes.updated_at.desc())
+        .where(Notes.user_id == user_id, col(Notes.is_deleted).is_not(True))
+        .order_by(col(Notes.updated_at).desc())
         .limit(40)
     ).all()
 
@@ -536,19 +542,19 @@ def ensure_workspace_embeddings(
 
     if include_notes:
         active_notes = session.exec(
-            select(Notes).where(Notes.user_id == user_id, Notes.is_deleted.is_not(True))
+            select(Notes).where(Notes.user_id == user_id, col(Notes.is_deleted).is_not(True))
         ).all()
         indexed_note_hashes = vector_store.note_embedding_hashes(
             user_id=user_id, model=embedding_model
         )
-        stale_notes: list[tuple[Notes, str, str]] = []
+        stale_notes: list[tuple[int, str, str]] = []
         for note in active_notes:
             if note.id is None:
                 continue
             embedding_text = f"{note.title}\n\n{note.content}"[:12000]
             content_hash = hashlib.sha256(embedding_text.encode("utf-8")).hexdigest()
             if indexed_note_hashes.get(note.id) != content_hash:
-                stale_notes.append((note, embedding_text, content_hash))
+                stale_notes.append((note.id, embedding_text, content_hash))
 
         for start in range(0, len(stale_notes), 32):
             batch = stale_notes[start : start + 32]
@@ -561,7 +567,7 @@ def ensure_workspace_embeddings(
                 )
             )
             vector_store.store_note_embeddings(
-                notes=[(int(note.id), content_hash) for note, _, content_hash in batch],
+                notes=[(note_id, content_hash) for note_id, _, content_hash in batch],
                 embeddings=embeddings,
                 user_id=user_id,
                 model=embedding_model,
@@ -572,7 +578,7 @@ def _load_document_map(*, session: Session, document_ids: list[int]) -> dict[int
     unique_ids = sorted(set(document_ids))
     if not unique_ids:
         return {}
-    documents = session.exec(select(Document).where(Document.id.in_(unique_ids))).all()
+    documents = session.exec(select(Document).where(col(Document.id).in_(unique_ids))).all()
     return {document.id: document for document in documents if document.id is not None}
 
 
@@ -612,7 +618,9 @@ def _build_sources_payload(
         summary["max_score"] = max(float(summary["max_score"]), float(hit.score))
 
     documents = sorted(
-        document_summary.values(), key=lambda item: float(item["max_score"]), reverse=True
+        document_summary.values(),
+        key=lambda item: float(item["max_score"]),
+        reverse=True,
     )
 
     return {

@@ -4,6 +4,7 @@ HTTP client factories for AI services.
 RAG calls can run on short-lived event loops, so clients must not be shared
 globally across requests. Each client still pools connections for its own call.
 """
+
 from __future__ import annotations
 
 import httpx

@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from app.models.document import Document, DocumentChunks
 from sqlalchemy import text
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
+
+from app.models.document import Document, DocumentChunks
 
 
 @dataclass(slots=True)
@@ -37,9 +38,9 @@ class PgVectorStore:
         if embedding_dimensions <= 0:
             raise ValueError("Embedding dimensions must be greater than zero")
 
-        self.session.exec(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        self.session.connection().execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
-        self.session.exec(
+        self.session.connection().execute(
             text(
                 f"""
 				CREATE TABLE IF NOT EXISTS chunk_embeddings (
@@ -55,7 +56,7 @@ class PgVectorStore:
             )
         )
 
-        self.session.exec(
+        self.session.connection().execute(
             text(
                 f"""
 				CREATE TABLE IF NOT EXISTS note_embeddings (
@@ -71,7 +72,7 @@ class PgVectorStore:
             )
         )
 
-        self.session.exec(
+        self.session.connection().execute(
             text(
                 """
 				CREATE INDEX IF NOT EXISTS ix_chunk_embeddings_user_document
@@ -80,7 +81,7 @@ class PgVectorStore:
             )
         )
 
-        self.session.exec(
+        self.session.connection().execute(
             text(
                 """
 				CREATE INDEX IF NOT EXISTS ix_chunk_embeddings_embedding_cosine
@@ -90,7 +91,7 @@ class PgVectorStore:
             )
         )
 
-        self.session.exec(
+        self.session.connection().execute(
             text(
                 """
 				CREATE INDEX IF NOT EXISTS ix_note_embeddings_user
@@ -99,7 +100,7 @@ class PgVectorStore:
             )
         )
 
-        self.session.exec(
+        self.session.connection().execute(
             text(
                 """
 				CREATE INDEX IF NOT EXISTS ix_note_embeddings_embedding_cosine
@@ -110,36 +111,46 @@ class PgVectorStore:
         )
 
     def indexed_document_chunk_ids(self, *, user_id: int, model: str) -> set[int]:
-        rows = self.session.exec(
-            text(
-                """
+        rows = (
+            self.session.connection()
+            .execute(
+                text(
+                    """
 				SELECT chunk_id
 				FROM chunk_embeddings
 				WHERE user_id = :user_id AND model = :model
 				"""
-            ),
-            params={"user_id": user_id, "model": model},
-        ).all()
+                ),
+                parameters={"user_id": user_id, "model": model},
+            )
+            .all()
+        )
         return {int(row.chunk_id) for row in rows}
 
     def active_document_chunks(self, *, user_id: int) -> list[DocumentChunks]:
-        return self.session.exec(
-            select(DocumentChunks)
-            .join(Document, Document.id == DocumentChunks.document_id)
-            .where(Document.user_id == user_id, Document.is_deleted.is_(False))
-        ).all()
+        return list(
+            self.session.exec(
+                select(DocumentChunks)
+                .join(Document, col(Document.id) == col(DocumentChunks.document_id))
+                .where(Document.user_id == user_id, col(Document.is_deleted).is_(False))
+            ).all()
+        )
 
     def note_embedding_hashes(self, *, user_id: int, model: str) -> dict[int, str]:
-        rows = self.session.exec(
-            text(
-                """
+        rows = (
+            self.session.connection()
+            .execute(
+                text(
+                    """
 				SELECT note_id, content_hash
 				FROM note_embeddings
 				WHERE user_id = :user_id AND model = :model
 				"""
-            ),
-            params={"user_id": user_id, "model": model},
-        ).all()
+                ),
+                parameters={"user_id": user_id, "model": model},
+            )
+            .all()
+        )
         return {int(row.note_id): str(row.content_hash) for row in rows}
 
     def store_note_embeddings(
@@ -176,7 +187,7 @@ class PgVectorStore:
             params[f"{prefix}_content_hash"] = content_hash
             params[f"{prefix}_embedding"] = self._to_vector_literal(embedding)
 
-        self.session.exec(
+        self.session.connection().execute(
             text(
                 f"""
 				INSERT INTO note_embeddings (note_id, user_id, model, content_hash, embedding)
@@ -190,7 +201,7 @@ class PgVectorStore:
 					updated_at = NOW()
 				"""
             ),
-            params=params,
+            parameters=params,
         )
 
     def upsert_chunk_embedding(
@@ -204,7 +215,7 @@ class PgVectorStore:
     ) -> None:
         embedding_literal = self._to_vector_literal(embedding)
 
-        self.session.exec(
+        self.session.connection().execute(
             text(
                 """
 				INSERT INTO chunk_embeddings (chunk_id, document_id, user_id, model, embedding)
@@ -218,7 +229,7 @@ class PgVectorStore:
 					updated_at = NOW()
 				"""
             ),
-            params={
+            parameters={
                 "chunk_id": chunk_id,
                 "document_id": document_id,
                 "user_id": user_id,
@@ -297,7 +308,7 @@ class PgVectorStore:
 			"""
         )
 
-        self.session.exec(bulk_insert_statement, params=params)
+        self.session.connection().execute(bulk_insert_statement, params)
 
     def similarity_search(
         self,
@@ -346,7 +357,7 @@ class PgVectorStore:
 			"""
         )
 
-        rows = self.session.exec(statement, params=params).all()
+        rows = self.session.connection().execute(statement, params).all()
         return [
             VectorSearchResult(
                 chunk_id=row.chunk_id,
@@ -382,9 +393,11 @@ class PgVectorStore:
             )
             params["similarity_threshold"] = similarity_threshold
 
-        rows = self.session.exec(
-            text(
-                f"""
+        rows = (
+            self.session.connection()
+            .execute(
+                text(
+                    f"""
 				SELECT
 					n.id AS note_id,
 					n.title AS title,
@@ -396,9 +409,11 @@ class PgVectorStore:
 				ORDER BY ne.embedding <=> CAST(:embedding AS vector)
 				LIMIT :top_k
 				"""
-            ),
-            params=params,
-        ).all()
+                ),
+                parameters=params,
+            )
+            .all()
+        )
         return [
             NoteVectorSearchResult(
                 note_id=row.note_id,

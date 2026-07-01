@@ -1,5 +1,8 @@
+from typing import cast
 from unittest import TestCase
 from unittest.mock import AsyncMock, patch
+
+from sqlmodel import Session
 
 from app.ai.llm import build_chat_messages
 from app.ai.rag import (
@@ -91,7 +94,7 @@ class RAGNoteSourceTests(TestCase):
             )
 
             result = run_rag_pipeline(
-                session=object(),
+                session=cast(Session, object()),
                 user_id=1,
                 query="What's up?",
             )

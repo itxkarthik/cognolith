@@ -4,6 +4,11 @@ import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
 
+from fastapi import HTTPException
+from sqlalchemy import func, text
+from sqlalchemy.orm import joinedload
+from sqlmodel import Session, col, select
+
 from app.ai.rag import run_rag_pipeline
 from app.core.exceptions import AIServiceUnavailableError
 from app.models.chat import ChatMessages, ChatRole, ChatSession
@@ -11,19 +16,19 @@ from app.models.note import Notes
 from app.models.user import User
 from app.schemas.chat import ChatCreate, ChatMessageCreate
 from app.utils.text_processing import create_content_preview
-from fastapi import HTTPException
-from sqlalchemy import func, text
-from sqlalchemy.orm import joinedload
-from sqlmodel import Session, col, select
 
 logger = logging.getLogger(__name__)
 
 
 def _acquire_chat_generation_lock(*, session: Session, chat_session_id: int) -> None:
-    result = session.exec(
-        text("SELECT pg_try_advisory_xact_lock(:namespace, :chat_session_id)"),
-        params={"namespace": 5262145, "chat_session_id": chat_session_id},
-    ).one()
+    result = (
+        session.connection()
+        .execute(
+            text("SELECT pg_try_advisory_xact_lock(:namespace, :chat_session_id)"),
+            parameters={"namespace": 5262145, "chat_session_id": chat_session_id},
+        )
+        .one()
+    )
     if not bool(result[0]):
         raise HTTPException(
             status_code=409,
@@ -42,18 +47,23 @@ def create_chat_session(
     session.add(chat_session)
     session.commit()
     session.refresh(chat_session)
+    if chat_session.id is None:
+        raise RuntimeError("Chat session must be persisted before use")
+    chat_session_id = chat_session.id
 
     # Re-fetch with eager-loaded messages to avoid lazy loading issues
     chat_session = (
         session.exec(
             select(ChatSession)
-            .where(ChatSession.id == chat_session.id)
-            .options(joinedload(ChatSession.messages))
+            .where(ChatSession.id == chat_session_id)
+            .options(joinedload(ChatSession.messages))  # pyright: ignore[reportArgumentType]
         )
         .unique()
         .first()
     )
 
+    if chat_session is None:
+        raise RuntimeError("Persisted chat session could not be reloaded")
     return chat_session
 
 
@@ -80,13 +90,13 @@ def list_chat_sessions(
         .where(ChatSession.user_id == current_user.id)
         .order_by(col(ChatSession.last_message_at).desc())
         # Eagerly load messages to prevent N+1 query issue when accessing session.messages
-        .options(joinedload(ChatSession.messages))
+        .options(joinedload(ChatSession.messages))  # pyright: ignore[reportArgumentType]
         .limit(limit)
         .offset(skip)
     )
 
     sessions = session.exec(statement).unique().all()
-    return sessions, total_count
+    return list(sessions), total_count
 
 
 def send_message_and_get_response(
@@ -112,9 +122,11 @@ def send_message_and_get_response(
             query=payload.content,
             conversation_history=[
                 {
-                    "role": message.role.value
-                    if isinstance(message.role, ChatRole)
-                    else str(message.role),
+                    "role": (
+                        message.role.value
+                        if isinstance(message.role, ChatRole)
+                        else str(message.role)
+                    ),
                     "content": message.content,
                 }
                 for message in getattr(chat_session, "messages", [])[-6:]
@@ -127,14 +139,14 @@ def send_message_and_get_response(
 
     user_message = ChatMessages(
         session_id=chat_session.id,
-        role="user",
+        role=ChatRole.user,
         content=payload.content,
     )
     session.add(user_message)
 
     assistant_message = ChatMessages(
         session_id=chat_session.id,
-        role="assistant",
+        role=ChatRole.assistant,
         content=rag_answer,
         model_used="rag-v1",
         sources=rag_sources,
@@ -184,7 +196,7 @@ def convert_chat_to_note(
                 select(NoteFolders).where(
                     NoteFolders.id == folder_id,
                     NoteFolders.user_id == current_user.id,
-                    NoteFolders.is_deleted.is_not(True),
+                    col(NoteFolders.is_deleted).is_not(True),
                 )
             ).first()
             if not folder:
@@ -222,7 +234,7 @@ def get_chat_session_by_id(
                 ChatSession.id == chat_session_id,
                 ChatSession.user_id == current_user.id,
             )
-            .options(joinedload(ChatSession.messages))
+            .options(joinedload(ChatSession.messages))  # pyright: ignore[reportArgumentType]
         )
         .unique()
         .first()
