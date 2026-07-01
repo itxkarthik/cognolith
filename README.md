@@ -14,6 +14,16 @@ A self-hosted knowledge workspace for Markdown notes, document ingestion, relati
 - Authenticated, user-isolated workspaces
 - Optional local model integration through Ollama
 
+<!--## Screenshots
+
+| Dashboard | Notes |
+| --- | --- |
+| ![Dashboard overview in dark mode](docs/img/dashboard.png) | ![Markdown notes workspace in dark mode](docs/img/notes.png) |
+| Documents | Search |
+| ![Document library in dark mode](docs/img/documents.png) | ![Workspace search in dark mode](docs/img/search.png) |
+| Chat | Knowledge Graph |
+| ![Chat sessions in dark mode](docs/img/chat.png) | ![Knowledge graph in dark mode](docs/img/knowledge-graph.png) |-->
+
 ## Quick Start
 
 ### Requirements
@@ -270,3 +280,7 @@ backend/app/schemas/   Request and response schemas
 Keep pull requests focused, include verification steps, and document any environment or schema changes. Use clear commit messages that describe behavior rather than implementation detail.
 
 Use [GitHub Issues](https://github.com/itxkarthik/Personal-AI-Knowledge-Assistant/issues) for bug reports, support questions, and feature requests.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Karthik Das.
