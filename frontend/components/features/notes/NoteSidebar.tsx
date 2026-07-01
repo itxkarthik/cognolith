@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, FolderPlus, Plus, Search, Tag } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button, Input } from "@/components/ui";
 import { cn } from "@/lib/utils/cn";
@@ -50,16 +50,8 @@ export function NoteSidebar({
   onCreateNote,
   onCreateTag,
 }: NoteSidebarProps) {
-  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<number>>(() => new Set(folders.map((folder) => folder.id)));
+  const [collapsedFolderIds, setCollapsedFolderIds] = useState<Set<number>>(() => new Set());
   const [isRootExpanded, setIsRootExpanded] = useState(true);
-
-  useEffect(() => {
-    setExpandedFolderIds((current) => {
-      const next = new Set(current);
-      folders.forEach((folder) => next.add(folder.id));
-      return next;
-    });
-  }, [folders]);
 
   const foldersByParent = useMemo(() => {
     return folders.reduce<Record<string, NoteFolder[]>>((acc, folder) => {
@@ -78,7 +70,7 @@ export function NoteSidebar({
   }, [notes]);
 
   const toggleFolder = (folderId: number) => {
-    setExpandedFolderIds((current) => {
+    setCollapsedFolderIds((current) => {
       const next = new Set(current);
       if (next.has(folderId)) {
         next.delete(folderId);
@@ -113,7 +105,7 @@ export function NoteSidebar({
   const renderFolder = (folder: NoteFolder, depth: number) => {
     const childFolders = sortByName(foldersByParent[String(folder.id)] ?? []);
     const childNotes = sortNotes(notesByFolder[String(folder.id)] ?? []);
-    const expanded = expandedFolderIds.has(folder.id);
+    const expanded = !collapsedFolderIds.has(folder.id);
     const active = selectedFolderId === folder.id && selectedNoteId === null;
 
     return (

@@ -73,24 +73,22 @@ export default function NotesPage() {
 
   const [draftsByNoteId, setDraftsByNoteId] = useState<Record<number, DraftState>>({});
   const [isCreatingNote, setIsCreatingNote] = useState(false);
-  const [vaultNotes, setVaultNotes] = useState<NoteResponse[]>([]);
+  const [fetchedVaultNotes, setFetchedVaultNotes] = useState<NoteResponse[]>([]);
   const [isVaultLoading, setIsVaultLoading] = useState(false);
-  const [requestedNoteId, setRequestedNoteId] = useState<number | null>(null);
+  const requestedNoteIdRef = useRef<number | null>(null);
   const handledNewNoteQueryRef = useRef(false);
   const deletingNoteIdsRef = useRef<Set<number>>(new Set());
 
   useEffect(() => {
+    if (isLoading || requestedNoteIdRef.current !== null) return;
+
     const value = new URLSearchParams(window.location.search).get("note");
     const noteId = value ? Number(value) : null;
-    setRequestedNoteId(noteId && Number.isInteger(noteId) ? noteId : null);
-  }, []);
+    if (!noteId || !Number.isInteger(noteId)) return;
 
-  useEffect(() => {
-    if (requestedNoteId === null || isLoading) return;
-
-    setRequestedNoteId(null);
-    void fetchNoteById(requestedNoteId);
-  }, [fetchNoteById, isLoading, requestedNoteId]);
+    requestedNoteIdRef.current = noteId;
+    queueMicrotask(() => void fetchNoteById(noteId));
+  }, [fetchNoteById, isLoading]);
 
   const draft = useMemo(() => {
     if (!selectedNote) {
@@ -115,25 +113,21 @@ export default function NotesPage() {
         skip: 0,
         limit: 100,
       });
-      setVaultNotes(response.data ?? []);
+      setFetchedVaultNotes(response.data ?? []);
     } finally {
       setIsVaultLoading(false);
     }
   }, [filters.search, filters.tagId]);
 
   useEffect(() => {
-    void refreshVaultNotes();
+    queueMicrotask(() => void refreshVaultNotes());
   }, [refreshVaultNotes]);
 
-  useEffect(() => {
-    if (notes.length === 0) return;
-
-    setVaultNotes((current) => {
-      const byId = new Map(current.map((note) => [note.id, note]));
-      notes.forEach((note) => byId.set(note.id, note));
-      return Array.from(byId.values());
-    });
-  }, [notes]);
+  const vaultNotes = useMemo(() => {
+    const byId = new Map(fetchedVaultNotes.map((note) => [note.id, note]));
+    notes.forEach((note) => byId.set(note.id, note));
+    return Array.from(byId.values());
+  }, [fetchedVaultNotes, notes]);
 
   const setDraftForSelectedNote = useCallback(
     (updater: (prev: DraftState) => DraftState) => {
@@ -202,7 +196,7 @@ export default function NotesPage() {
 
     handledNewNoteQueryRef.current = true;
     window.history.replaceState({}, "", "/dashboard/notes");
-    void handleCreateNote();
+    queueMicrotask(() => void handleCreateNote());
   }, [handleCreateNote, isCreatingNote, isLoading]);
 
   const handleCreateFolder = useCallback(
@@ -233,7 +227,7 @@ export default function NotesPage() {
 
     try {
       await deleteNoteById(noteId);
-      setVaultNotes((current) => current.filter((note) => note.id !== noteId));
+      setFetchedVaultNotes((current) => current.filter((note) => note.id !== noteId));
       clearError();
     } finally {
       deletingNoteIdsRef.current.delete(noteId);

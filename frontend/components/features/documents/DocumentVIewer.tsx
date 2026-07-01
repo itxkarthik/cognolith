@@ -93,7 +93,7 @@ export function DocumentViewer({
               {isGeneratingSummary ? "Generating..." : "Regenerate"}
             </button>
           </div>
-          <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{document.summary}</p>
+          <div className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-muted-foreground">{document.summary}</div>
         </section>
       ) : (
         <section className="border border-border bg-background p-6">
@@ -105,15 +105,6 @@ export function DocumentViewer({
           </button>
         </section>
       )}
-
-      <section className="border border-border bg-background p-6">
-        <h2 className="text-lg font-bold text-foreground">Content Preview</h2>
-        {document.content_preview ? (
-          <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{document.content_preview}</p>
-        ) : (
-          <p className="mt-3 text-sm text-muted-foreground">No preview is available for this document yet.</p>
-        )}
-      </section>
 
       {document.tags.length > 0 ? (
         <section className="border border-border bg-background p-6">

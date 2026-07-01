@@ -46,6 +46,7 @@ export function MarkdownEditor({ value, onChange, editable = true, className }: 
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
+  const initialValueRef = useRef(value);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -57,7 +58,7 @@ export function MarkdownEditor({ value, onChange, editable = true, className }: 
     const view = new EditorView({
       parent: hostRef.current,
       state: EditorState.create({
-        doc: value,
+        doc: initialValueRef.current,
         extensions: [
           markdown(),
           history(),
