@@ -195,7 +195,7 @@ apiClient.interceptors.response.use(
 		}
 
 		// Handle transient failures with retry
-		if (originalRequest && isRetryableError(error)) {
+		if (originalRequest && isRetryableError(error, originalRequest.method)) {
 			// Don't retry if already attempted
 			if (originalRequest._retry) {
 				return Promise.reject(error);

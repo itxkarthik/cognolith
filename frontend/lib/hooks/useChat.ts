@@ -10,7 +10,10 @@ export function useChat() {
 	const selectedSession = useChatStore((state) => state.selectedSession);
 	const isLoading = useChatStore((state) => state.isLoading);
 	const isCreatingSession = useChatStore((state) => state.isCreatingSession);
-	const isSendingMessage = useChatStore((state) => state.isSendingMessage);
+	const pendingMessageRequests = useChatStore((state) => state.pendingMessageRequests);
+	const isSendingMessage = selectedSession
+		? pendingMessageRequests[selectedSession.id] === true
+		: false;
 	const isSavingAsNote = useChatStore((state) => state.isSavingAsNote);
 	const streamingMessageId = useChatStore((state) => state.streamingMessageId);
 	const streamedMessages = useChatStore((state) => state.streamedMessages);
@@ -50,6 +53,7 @@ export function useChat() {
 		isLoading,
 		isCreatingSession,
 		isSendingMessage,
+		pendingMessageRequests,
 		isSavingAsNote,
 		streamingMessageId,
 		streamedMessages,

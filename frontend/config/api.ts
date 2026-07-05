@@ -9,7 +9,7 @@ const ENDPOINT_TIMEOUTS = {
 	"POST /documents": 120000,
 
 	// RAG and search operations - AI processing takes time
-	"POST /chat": 180000, // Match the backend model timeout for slow local responses
+	"POST /chat": 60000, // Bound local model requests; failed sends are explicitly retryable by the user
 	"GET /search": 60000, // 60 seconds for semantic search
 	"POST /knowledge-graph": 60000, // 60 seconds for graph generation
 	"POST /rag": 60000, // 60 seconds for RAG queries
@@ -43,7 +43,7 @@ export const apiConfig = {
  */
 export function getTimeoutForEndpoint(method: string, url: string): number {
 	// Normalize URL to just the path portion
-	const path = url.replace(apiConfig.baseUrl, "").split("?")[0];
+	const path = url.replace(apiConfig.baseUrl, "").split("?")[0].toLowerCase();
 
 	// Try to find a matching pattern
 	for (const [pattern, timeout] of Object.entries(ENDPOINT_TIMEOUTS)) {

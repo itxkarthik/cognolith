@@ -91,6 +91,14 @@ describe("Retry Utility", () => {
       };
       expect(isRetryableError(nonRetryableError)).toBe(false);
     });
+
+    it("does not retry non-idempotent requests", () => {
+      const timeoutError = new Error("timeout");
+
+      expect(isRetryableError(timeoutError, "POST")).toBe(false);
+      expect(isRetryableError(timeoutError, "PATCH")).toBe(false);
+      expect(isRetryableError(timeoutError, "GET")).toBe(true);
+    });
   });
 
   describe("retryWithExponentialBackoff", () => {

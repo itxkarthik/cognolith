@@ -104,7 +104,12 @@ interface RetryableErrorLike {
   message?: string;
 }
 
-export function isRetryableError(error: unknown): boolean {
+export function isRetryableError(error: unknown, method?: string): boolean {
+  const normalizedMethod = method?.toUpperCase();
+  if (normalizedMethod && ["POST", "PATCH"].includes(normalizedMethod)) {
+    return false;
+  }
+
   const candidate = error as RetryableErrorLike;
 
   // No response = network error

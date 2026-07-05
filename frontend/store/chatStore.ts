@@ -15,6 +15,12 @@ import type {
 	ChatResponse,
 	NoteResponse,
 } from "@/types";
+import {
+	beginChatRequest,
+	endChatRequest,
+	isChatRequestPending,
+	type PendingChatRequests,
+} from "./chatRequestState";
 
 type StreamedMessages = Record<number, string>;
 
@@ -24,7 +30,7 @@ interface ChatState {
 	selectedSession: ChatResponse | null;
 	isLoading: boolean;
 	isCreatingSession: boolean;
-	isSendingMessage: boolean;
+	pendingMessageRequests: PendingChatRequests;
 	isSavingAsNote: boolean;
 	streamingMessageId: number | null;
 	streamedMessages: StreamedMessages;
@@ -117,7 +123,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 	selectedSession: null,
 	isLoading: false,
 	isCreatingSession: false,
-	isSendingMessage: false,
+	pendingMessageRequests: {},
 	isSavingAsNote: false,
 	streamingMessageId: null,
 	streamedMessages: {},
@@ -189,8 +195,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 	},
 
 	sendMessage: async (sessionId, content) => {
-		if (get().isSendingMessage) {
-			throw new Error("A message is already being processed.");
+		if (isChatRequestPending(get().pendingMessageRequests, sessionId)) {
+			throw new Error("A message is already being processed for this session.");
 		}
 
 		const normalizedContent = content.trim();
@@ -200,9 +206,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
 		const optimisticUserMessage = createTemporaryUserMessage(sessionId, normalizedContent);
 		set((state) => {
+			const pendingMessageRequests = beginChatRequest(
+				state.pendingMessageRequests,
+				sessionId
+			);
 			if (!state.selectedSession || state.selectedSession.id !== sessionId) {
 				return {
-					isSendingMessage: true,
+					pendingMessageRequests,
 					error: null,
 				};
 			}
@@ -213,7 +223,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 					messages: [...state.selectedSession.messages, optimisticUserMessage],
 					last_message_at: optimisticUserMessage.created_at,
 				},
-				isSendingMessage: true,
+				pendingMessageRequests,
 				error: null,
 			};
 		});
@@ -232,7 +242,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
 			await streamAssistantMessage(assistantMessage.id, assistantMessage.content, set);
 
-			set({ isSendingMessage: false });
 			return assistantMessage;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Failed to send message.";
@@ -240,7 +249,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 			set((state) => {
 				if (!state.selectedSession || state.selectedSession.id !== sessionId) {
 					return {
-						isSendingMessage: false,
 						error: message,
 					};
 				}
@@ -252,12 +260,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
 							(item) => item.id !== optimisticUserMessage.id
 						),
 					},
-					isSendingMessage: false,
 					error: message,
 				};
 			});
 
 			throw new Error(message);
+		} finally {
+			set((state) => ({
+				pendingMessageRequests: endChatRequest(
+					state.pendingMessageRequests,
+					sessionId
+				),
+			}));
 		}
 	},
 

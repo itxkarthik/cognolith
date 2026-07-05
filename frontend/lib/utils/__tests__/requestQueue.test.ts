@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { requestQueue } from '@/lib/utils/requestQueue';
+import { requestQueue } from '../requestQueue';
 
 describe('Offline Detection & Request Queueing', () => {
   beforeEach(() => {

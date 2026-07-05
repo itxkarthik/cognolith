@@ -98,9 +98,9 @@ describe("API Configuration - Endpoint-Specific Timeouts", () => {
 				expect(getTimeoutForEndpoint("post", "/api/v1/chat")).toBe(60000);
 			});
 
-			it("should handle mixed case paths", () => {
-				expect(getTimeoutForEndpoint("GET", "/api/v1/Chat")).toBe(60000);
-			});
+    it("should handle mixed case paths", () => {
+      expect(getTimeoutForEndpoint("POST", "/api/v1/Chat")).toBe(60000);
+    });
 		});
 
 		describe("URL Normalization", () => {
