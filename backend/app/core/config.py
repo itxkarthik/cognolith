@@ -120,6 +120,14 @@ class Settings(BaseSettings):
     def emails_enabled(self) -> bool:
         return bool(self.SMTP_HOST and self.EMAILS_FROM_EMAIL)
 
+    @model_validator(mode="after")
+    def _require_production_email(self) -> Self:
+        if self.ENVIRONMENT == "production" and not self.emails_enabled:
+            raise ValueError(
+                "SMTP_HOST and EMAILS_FROM_EMAIL are required in production for email verification"
+            )
+        return self
+
     EMAIL_TEST_USER: str = "test@example.com"
     FIRST_SUPERUSER: str = "admin@example.com"
     FIRST_SUPERUSER_PASSWORD: str = "changethis"

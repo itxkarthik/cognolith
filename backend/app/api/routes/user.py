@@ -1,16 +1,20 @@
+import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlmodel import col, func, select
 
 from app import crud
 from app.api.deps import CurrentUser, SessionDep, get_current_active_superuser
+from app.api.routes.auth import clear_auth_cookies, set_auth_cookies
 from app.core.config import settings
+from app.core.exceptions import AppError, ExternalServiceError
 from app.core.security import get_password_hash, verify_password
 from app.models.user import (
     LlmProvider,
     Message,
+    Token,
     UpdatePassword,
     User,
     UserCreate,
@@ -21,10 +25,28 @@ from app.models.user import (
     UserUpdate,
     UserUpdateMe,
 )
-from app.schemas.error import StandardErrorResponse
+from app.schemas.error import ErrorCode, StandardErrorResponse
 from app.schemas.settings import OllamaModelOption, UserAISettingsResponse, UserAISettingsUpdate
+from app.schemas.verification import (
+    EmailChangeRequest,
+    ResendVerificationRequest,
+    ResendVerificationResponse,
+    VerificationChallenge,
+    VerifyEmailRequest,
+)
+from app.services import auth_service
+from app.services.email_service import EmailDeliveryError, send_verification_email
+from app.services.email_verification_service import (
+    InvalidVerificationCodeError,
+    VerificationCodeExpiredError,
+    VerificationRateLimitError,
+    issue_verification_code,
+    mask_email,
+    verify_email_code,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
+logger = logging.getLogger(__name__)
 
 
 @router.get(
@@ -103,13 +125,12 @@ def update_user_me(*, session: SessionDep, user_in: UserUpdateMe, current_user: 
     """
     Update own user
     """
-    if user_in.email:
-        existing_user = crud.get_user_by_email(session=session, email=user_in.email)
-        if existing_user and existing_user.id != current_user.id:
-            raise HTTPException(
-                status_code=409,
-                detail="User with this email already exists",
-            )
+    if user_in.email is not None and user_in.email != current_user.email:
+        raise AppError(
+            message="Use the email change endpoint to verify a new email address.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
     user_data = user_in.model_dump(exclude_unset=True)
     current_user.sqlmodel_update(user_data)
     session.add(current_user)
@@ -297,7 +318,8 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
 
 @router.post(
     path="/signup",
-    response_model=UserPublic,
+    response_model=VerificationChallenge,
+    status_code=status.HTTP_201_CREATED,
     responses={
         400: {
             "model": StandardErrorResponse,
@@ -306,19 +328,155 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
-def register_user(session: SessionDep, user_in: UserRegister) -> Any:
+def register_user(session: SessionDep, user_in: UserRegister) -> VerificationChallenge:
     """
     Register a new user
     """
     user = crud.get_user_by_email(session=session, email=user_in.email)
     if user:
-        raise HTTPException(
-            status_code=400,
-            detail="The user with this email already exists",
+        raise AppError(
+            message="The user with this email already exists",
+            error_code=ErrorCode.CONFLICT,
+            status_code=status.HTTP_409_CONFLICT,
         )
     user_create = UserCreate.model_validate(user_in)
-    user = crud.create_user(session=session, user_create=user_create)
-    return user
+    user = crud.create_user(
+        session=session,
+        user_create=user_create,
+        is_verified=False,
+    )
+    issued = issue_verification_code(session=session, user=user)
+    try:
+        send_verification_email(
+            recipient=user.email,
+            code=issued.code,
+            recipient_name=user.full_name,
+        )
+    except EmailDeliveryError as exc:
+        raise ExternalServiceError(
+            "Your account was created, but the verification email could not be sent. "
+            "Please retry from the verification page."
+        ) from exc
+    return VerificationChallenge(
+        masked_email=mask_email(user.email),
+        expires_at=issued.expires_at,
+        resend_available_at=issued.resend_available_at,
+    )
+
+
+@router.post(path="/verify-email", response_model=Token)
+def verify_email(
+    response: Response,
+    session: SessionDep,
+    body: VerifyEmailRequest,
+) -> Token:
+    user = crud.get_user_by_email(session=session, email=str(body.email))
+    if user is None or user.is_verified:
+        raise AppError(
+            message="Invalid or expired verification code.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        verify_email_code(session=session, user=user, code=body.code)
+    except VerificationCodeExpiredError as exc:
+        raise AppError(
+            message="Verification code has expired.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_410_GONE,
+        ) from exc
+    except InvalidVerificationCodeError as exc:
+        raise AppError(
+            message="Invalid or expired verification code.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        ) from exc
+
+    token_pair = auth_service.create_token_pair(session=session, user=user)
+    set_auth_cookies(response, token_pair.access_token, token_pair.refresh_token)
+    return Token(
+        access_token=token_pair.access_token,
+        refresh_token=token_pair.refresh_token,
+        token_type=token_pair.token_type,
+    )
+
+
+@router.post(
+    path="/resend-verification",
+    response_model=ResendVerificationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def resend_verification(
+    session: SessionDep,
+    body: ResendVerificationRequest,
+) -> ResendVerificationResponse:
+    user = crud.get_user_by_email(session=session, email=str(body.email))
+    if user is None or user.is_verified:
+        return ResendVerificationResponse()
+    try:
+        issued = issue_verification_code(session=session, user=user)
+        send_verification_email(
+            recipient=user.email,
+            code=issued.code,
+            recipient_name=user.full_name,
+        )
+    except VerificationRateLimitError:
+        pass
+    except EmailDeliveryError:
+        logger.warning("Verification email delivery failed for user %s", user.id)
+    return ResendVerificationResponse()
+
+
+@router.post(
+    path="/me/email-change",
+    response_model=VerificationChallenge,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def change_email(
+    response: Response,
+    session: SessionDep,
+    current_user: CurrentUser,
+    body: EmailChangeRequest,
+) -> VerificationChallenge:
+    password_valid, _ = verify_password(body.password, current_user.hashed_password)
+    if not password_valid:
+        raise AppError(
+            message="Current password is incorrect.",
+            error_code=ErrorCode.AUTHENTICATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    new_email = str(body.new_email)
+    existing = crud.get_user_by_email(session=session, email=new_email)
+    if existing is not None and existing.id != current_user.id:
+        raise AppError(
+            message="An account already uses this email address.",
+            error_code=ErrorCode.CONFLICT,
+            status_code=status.HTTP_409_CONFLICT,
+        )
+
+    current_user.email = new_email
+    current_user.is_verified = False
+    session.add(current_user)
+    session.commit()
+    session.refresh(current_user)
+    if current_user.id is None:
+        raise AppError(message="Invalid authenticated user")
+    auth_service.revoke_all_user_tokens(session=session, user_id=current_user.id)
+    issued = issue_verification_code(session=session, user=current_user)
+    try:
+        send_verification_email(
+            recipient=current_user.email,
+            code=issued.code,
+            recipient_name=current_user.full_name,
+        )
+    except EmailDeliveryError as exc:
+        raise ExternalServiceError("Verification email could not be delivered.") from exc
+    clear_auth_cookies(response)
+    return VerificationChallenge(
+        masked_email=mask_email(current_user.email),
+        expires_at=issued.expires_at,
+        resend_available_at=issued.resend_available_at,
+    )
 
 
 @router.get(

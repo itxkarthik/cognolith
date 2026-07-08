@@ -10,6 +10,7 @@ class ErrorCode(StrEnum):
     # Client errors (4xx)
     VALIDATION_ERROR = "validation_error"
     AUTHENTICATION_ERROR = "authentication_error"
+    EMAIL_NOT_VERIFIED = "email_not_verified"
     AUTHORIZATION_ERROR = "authorization_error"
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"

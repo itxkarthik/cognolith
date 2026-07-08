@@ -3,6 +3,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar, Optional
 
 from pydantic import field_validator
+from sqlalchemy import DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import CheckConstraint, Column, Field, Index, Relationship, SQLModel, desc
 
@@ -135,8 +136,36 @@ class User(TimestampMixin, UserBase, SQLModel, table=True):
     note_collaborations: list["NoteCollaborators"] = Relationship(back_populates="user")
 
 
+class EmailVerificationCode(SQLModel, table=True):
+    __tablename__: ClassVar[str] = "email_verification_codes"  # pyright: ignore
+    __table_args__ = (
+        Index("ix_email_verification_expires_at", "expires_at"),
+        Index("ix_email_verification_resend_available_at", "resend_available_at"),
+    )
+
+    user_id: int = Field(primary_key=True, foreign_key="users.id", ondelete="CASCADE")
+    code_hash: str = Field(max_length=64, nullable=False)
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    failed_attempts: int = Field(default=0, nullable=False)
+    resend_available_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    window_started_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    send_count: int = Field(default=1, nullable=False)
+    consumed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
 class UserPublic(UserBase):
     id: int
+    is_verified: bool
     created_at: datetime | None = None
 
 

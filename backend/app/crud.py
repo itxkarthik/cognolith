@@ -7,9 +7,13 @@ from app.core.security import get_password_hash, hash_refresh_token, verify_pass
 from app.models.user import RefreshToken, TokenBlacklist, User, UserCreate, UserUpdate
 
 
-def create_user(*, session: Session, user_create: UserCreate) -> User:
+def create_user(*, session: Session, user_create: UserCreate, is_verified: bool = True) -> User:
     db_obj = User.model_validate(
-        user_create, update={"hashed_password": get_password_hash(user_create.password)}
+        user_create,
+        update={
+            "hashed_password": get_password_hash(user_create.password),
+            "is_verified": is_verified,
+        },
     )
     session.add(db_obj)
     session.commit()

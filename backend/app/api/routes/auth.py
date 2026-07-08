@@ -12,9 +12,10 @@ from app.api.deps import CurrentUser, SessionDep, TokenDep
 from app.core import security
 from app.core.config import settings
 from app.core.csrf import get_csrf_token
+from app.core.exceptions import AppError
 from app.core.rate_limit import limiter
 from app.models.user import Message, Token, TokenPayload, User, UserPublic
-from app.schemas.error import StandardErrorResponse
+from app.schemas.error import ErrorCode, StandardErrorResponse
 from app.services import auth_service
 
 router = APIRouter(tags=["login"])
@@ -39,7 +40,7 @@ async def get_csrf_token_endpoint(request: Request) -> dict[str, Any]:
     return await get_csrf_token(request)  # type: ignore[no-any-return]
 
 
-def _set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
     secure = settings.ENVIRONMENT != "local"
     csrf_token = secrets.token_urlsafe(32)
 
@@ -72,7 +73,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
     )
 
 
-def _clear_auth_cookies(response: Response) -> None:
+def clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(key=settings.ACCESS_TOKEN_COOKIE_NAME, path="/")
     response.delete_cookie(key=settings.REFRESH_TOKEN_COOKIE_NAME, path="/")
     response.delete_cookie(key=settings.CSRF_COOKIE_NAME, path="/")
@@ -105,10 +106,16 @@ def login_access_token(
         raise HTTPException(status_code=400, detail="Incorrect Email or Password")
     elif not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
+    elif not user.is_verified:
+        raise AppError(
+            message="Verify your email before signing in.",
+            error_code=ErrorCode.EMAIL_NOT_VERIFIED,
+            status_code=403,
+        )
 
     # Use auth_service to create token pair
     token_pair = auth_service.create_token_pair(session=session, user=user)
-    _set_auth_cookies(
+    set_auth_cookies(
         response,
         access_token=token_pair.access_token,
         refresh_token=token_pair.refresh_token,
@@ -180,7 +187,7 @@ def refresh_access_token(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid refresh token")
 
-    _set_auth_cookies(
+    set_auth_cookies(
         response,
         access_token=token_pair.access_token,
         refresh_token=token_pair.refresh_token,
@@ -224,7 +231,7 @@ def logout(
     auth_service.revoke_all_user_tokens(
         session=session, user_id=_authenticated_user_id(current_user)
     )
-    _clear_auth_cookies(response)
+    clear_auth_cookies(response)
 
     return Message(message="Successfully logged out")
 
@@ -299,7 +306,7 @@ def revoke_current_token(
         auth_service.revoke_access_token(session=session, jti=token_data.jti, expires_at=expires_at)
 
     # Clear auth cookies
-    _clear_auth_cookies(response)
+    clear_auth_cookies(response)
 
     return Message(message="Token revoked successfully")
 
@@ -333,7 +340,7 @@ def revoke_all_user_tokens_endpoint(
     auth_service.revoke_all_user_tokens(
         session=session, user_id=_authenticated_user_id(current_user)
     )
-    _clear_auth_cookies(response)
+    clear_auth_cookies(response)
 
     return Message(message="All tokens revoked successfully")
 
