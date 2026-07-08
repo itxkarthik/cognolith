@@ -6,7 +6,7 @@ services:
       dockerfile: frontend/Dockerfile
       args:
         NEXT_PUBLIC_API_URL: /api/v1
-    container_name: pka-frontend
+    container_name: cognolith-frontend
     environment:
       # Relative path for browser-side requests (proxied by Next.js)
       NEXT_PUBLIC_API_URL: /api/v1
@@ -24,12 +24,12 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - pka-network
+      - cognolith-network
 
   # PostgreSQL Database
   db:
     image: pgvector/pgvector:pg16
-    container_name: pka-postgres
+    container_name: cognolith-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -45,7 +45,7 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - pka-network
+      - cognolith-network
 
   # FastAPI Backend
   backend:
@@ -54,7 +54,7 @@ services:
       dockerfile: backend/Dockerfile
       args:
         INSTALL_DEV: "true"
-    container_name: pka-backend
+    container_name: cognolith-backend
     environment:
       HOST: 0.0.0.0
       PORT: 3000
@@ -84,7 +84,7 @@ services:
       SMTP_TLS: ${SMTP_TLS:-False}
       SMTP_SSL: ${SMTP_SSL:-False}
       EMAILS_FROM_EMAIL: ${EMAILS_FROM_EMAIL:-no-reply@example.com}
-      EMAILS_FROM_NAME: ${EMAILS_FROM_NAME:-Personal Knowledge Assistant}
+      EMAILS_FROM_NAME: ${EMAILS_FROM_NAME:-Cognolith}
 
       # Logging
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -113,22 +113,22 @@ services:
       - ./backend/uploads:/usr/src/app/backend/uploads
       - ./backend/logs:/usr/src/app/backend/logs
     networks:
-      - pka-network
+      - cognolith-network
     command: python run.py
 
   mailpit:
     image: axllent/mailpit:latest
-    container_name: pka-mailpit
+    container_name: cognolith-mailpit
     ports:
       - "${MAILPIT_SMTP_PORT:-1025}:1025"
       - "${MAILPIT_UI_PORT:-8025}:8025"
     networks:
-      - pka-network
+      - cognolith-network
 
   # Optional local AI runtime. Start with: docker compose --profile ai up --build -d
   ollama:
     image: ollama/ollama:latest
-    container_name: pka-ollama
+    container_name: cognolith-ollama
     profiles: ["ai"]
     ports:
       - "${OLLAMA_PORT:-11434}:11434"
@@ -141,11 +141,11 @@ services:
       retries: 12
       start_period: 10s
     networks:
-      - pka-network
+      - cognolith-network
 
   ollama-models:
     image: ollama/ollama:latest
-    container_name: pka-ollama-models
+    container_name: cognolith-ollama-models
     profiles: ["ai"]
     depends_on:
       ollama:
@@ -161,12 +161,12 @@ services:
         ollama pull "$${OLLAMA_EMBEDDING_MODEL}"
     restart: "no"
     networks:
-      - pka-network
+      - cognolith-network
 
 volumes:
   postgres_data:
   ollama_data:
 
 networks:
-  pka-network:
+  cognolith-network:
     driver: bridge

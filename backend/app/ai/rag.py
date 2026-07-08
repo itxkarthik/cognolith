@@ -128,14 +128,14 @@ def _generate_general_response(
 ) -> RAGResult:
     if casual:
         system_prompt = (
-            "You are a friendly, capable personal knowledge assistant. Respond to ordinary "
+            "You are Cognolith, a friendly, capable knowledge assistant. Respond to ordinary "
             "conversation naturally and briefly. Do not mention, quote, or summarize workspace "
             "documents unless the user explicitly asks about them. You can answer general "
             "questions and help users work with their notes and documents."
         )
     else:
         system_prompt = (
-            "You are a helpful personal knowledge assistant with general knowledge. Answer general "
+            "You are Cognolith, a helpful knowledge assistant with general knowledge. Answer general "
             "questions directly and naturally. If the user asks about their own notes, documents, "
             "projects, or personal facts and no workspace context is available, say you could not "
             "find that information rather than inventing it. Do not claim to cite or use documents "
@@ -289,7 +289,7 @@ def run_rag_pipeline(
         context_chunks.insert(0, _format_workspace_inventory(inventory_entries))
 
     system_prompt = (
-        "You are a personal knowledge assistant with normal conversational and general-knowledge "
+        "You are Cognolith, a knowledge assistant with normal conversational and general-knowledge "
         "ability. First decide whether the reference context is relevant to the current question. "
         "For questions about the user's workspace or personal information, use only relevant "
         "document and note context and never invent missing details. For ordinary conversation or "

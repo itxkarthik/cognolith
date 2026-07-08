@@ -9,7 +9,7 @@ def test_verification_email_contains_code_and_expiry() -> None:
     )
 
     assert message["To"] == "person@example.com"
-    assert message["Subject"] == "Verify your Personal Knowledge Assistant account"
+    assert message["Subject"] == "Verify your Cognolith account"
     plain_part = message.get_body(preferencelist=("plain",))
     assert plain_part is not None
     body = plain_part.get_content()

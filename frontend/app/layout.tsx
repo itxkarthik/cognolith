@@ -16,7 +16,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Personal Knowledge Assistant",
+  title: "Cognolith",
   description: "Organize your notes, documents, and AI conversations in one place.",
   metadataBase: new URL(process.env.NEXT_PUBLIC_FRONTEND_URL || "http://localhost:8080"),
 };

@@ -88,13 +88,13 @@ export function Sidebar({ expanded, onToggle }: SidebarProps) {
       <div className={cn("border-b border-border", expanded ? "p-5" : "p-2")}>
         <div className={cn("flex items-start", expanded ? "justify-between gap-3" : "justify-center")}>
           <div className={cn("min-w-0", expanded ? "block" : "hidden")}>
-            <p className="truncate text-xs text-muted-foreground">Personal Knowledge Assistant</p>
-            <h1 className="mt-1 truncate text-base font-bold text-foreground">PKA</h1>
+            <p className="truncate text-xs text-muted-foreground">Personal knowledge workspace</p>
+            <h1 className="mt-1 truncate text-base font-bold text-foreground">Cognolith</h1>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
               Notes, documents, chats, and graph relationships in one workspace.
             </p>
           </div>
-          {!expanded ? <h1 className="sr-only">PKA</h1> : null}
+          {!expanded ? <h1 className="sr-only">Cognolith</h1> : null}
           <Button
             type="button"
             variant="outline"

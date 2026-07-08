@@ -66,7 +66,7 @@ export default function SettingsPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground">Workspace name</p>
-                <div className="border border-border bg-muted px-3 py-2 text-sm text-foreground">Personal Knowledge Assistant</div>
+                <div className="border border-border bg-muted px-3 py-2 text-sm text-foreground">Cognolith</div>
               </div>
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground">Account status</p>

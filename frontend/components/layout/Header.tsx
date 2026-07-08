@@ -185,7 +185,7 @@ export function Header({ sidebarExpanded }: HeaderProps) {
       >
         <div className="flex h-14 items-center gap-2 px-3">
           <Link href="/dashboard" className="flex min-w-0 flex-1 items-center gap-2" aria-label="Open dashboard">
-            <span className="shrink-0 text-sm font-bold text-foreground">PKA</span>
+            <span className="shrink-0 text-sm font-bold text-foreground">Cognolith</span>
             <span className="h-4 w-px shrink-0 bg-border" aria-hidden="true" />
             <span className="truncate text-xs text-muted-foreground">{getPageTitle(pathname)}</span>
           </Link>

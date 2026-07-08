@@ -22,7 +22,7 @@ export default function Home() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-xl border border-border p-8 text-center">
         <p className="text-sm text-muted-foreground">Loading workspace</p>
-        <h1 className="mt-3 text-xl font-bold text-foreground">Personal Knowledge Assistant</h1>
+        <h1 className="mt-3 text-xl font-bold text-foreground">Cognolith</h1>
         <p className="mt-2 text-sm text-muted-foreground">Preparing notes, documents, and AI conversations...</p>
       </div>
     </div>

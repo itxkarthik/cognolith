@@ -50,8 +50,8 @@ class Settings(BaseSettings):
         ]
 
     # Project Info
-    PROJECT_NAME: str = "Personal Knowledge Assistant"
-    PROJECT_DESCRIPTION: str = "A personal knowledge assistant"
+    PROJECT_NAME: str = "Cognolith"
+    PROJECT_DESCRIPTION: str = "A connected workspace for knowledge, memory, and retrieval"
     VERSION: str = "0.1.0"
     DEBUG: bool = False
 

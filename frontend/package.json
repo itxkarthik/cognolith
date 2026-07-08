@@ -1,8 +1,8 @@
 {
-  "name": "@my-app/frontend",
+  "name": "@cognolith/frontend",
   "version": "0.1.0",
   "private": true,
-  "description": "Personal Knowledge Assistant - Frontend (Next.js 16, React 19)",
+  "description": "Cognolith frontend (Next.js 16, React 19)",
   "scripts": {
     "dev": "next dev --webpack -p 8080",
     "build": "next build --webpack",

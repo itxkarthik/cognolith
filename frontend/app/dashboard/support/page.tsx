@@ -2,7 +2,7 @@ import { Bug, CircleHelp, ExternalLink, GitFork, ListChecks } from "lucide-react
 
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 
-const repositoryUrl = "https://github.com/itxkarthik/Personal-AI-Knowledge-Assistant";
+const repositoryUrl = "https://github.com/itxkarthik/cognolith";
 
 const supportLinks = [
   {
@@ -44,7 +44,7 @@ export default function SupportPage() {
           <div>
             <CardTitle className="flex items-center gap-2">
               <GitFork className="h-4 w-4" />
-              Personal AI Knowledge Assistant
+              Cognolith
             </CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">Source code, documentation, releases, and project history.</p>
           </div>

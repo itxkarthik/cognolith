@@ -15,7 +15,9 @@ interface DashboardLayoutProps {
   children: ReactNode;
 }
 
-const SIDEBAR_EVENT = "pka-sidebar-change";
+const SIDEBAR_EVENT = "cognolith-sidebar-change";
+const SIDEBAR_STORAGE_KEY = "cognolith-sidebar-expanded";
+const LEGACY_SIDEBAR_STORAGE_KEY = "pka-sidebar-expanded";
 
 function subscribeToSidebar(callback: () => void) {
   window.addEventListener("storage", callback);
@@ -27,7 +29,10 @@ function subscribeToSidebar(callback: () => void) {
 }
 
 function getSidebarSnapshot() {
-  return window.localStorage.getItem("pka-sidebar-expanded") !== "false";
+  const storedValue =
+    window.localStorage.getItem(SIDEBAR_STORAGE_KEY) ??
+    window.localStorage.getItem(LEGACY_SIDEBAR_STORAGE_KEY);
+  return storedValue !== "false";
 }
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
@@ -36,7 +41,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const isSidebarExpanded = useSyncExternalStore(subscribeToSidebar, getSidebarSnapshot, () => true);
 
   const toggleSidebar = () => {
-    window.localStorage.setItem("pka-sidebar-expanded", String(!isSidebarExpanded));
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(!isSidebarExpanded));
+    window.localStorage.removeItem(LEGACY_SIDEBAR_STORAGE_KEY);
     window.dispatchEvent(new Event(SIDEBAR_EVENT));
   };
 
