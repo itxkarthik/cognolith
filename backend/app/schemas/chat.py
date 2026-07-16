@@ -37,7 +37,9 @@ class ChatSourceDocument(BaseModel):
     document_id: int
     title: str
     chunk_count: int
-    max_score: float
+    max_score: float | None
+    citation_ids: list[int] = Field(default_factory=list)
+    origin: Literal["vector", "inventory", "lexical", "hybrid"] = "vector"
 
 
 class ChatSourceChunk(BaseModel):
@@ -45,15 +47,22 @@ class ChatSourceChunk(BaseModel):
     document_id: int
     document_title: str
     chunk_index: int
-    score: float
+    chunk_end_index: int | None = None
+    score: float | None
+    hybrid_score: float | None = None
     preview: str
+    citation_id: int | None = None
+    origin: Literal["vector", "inventory", "lexical", "hybrid"] = "vector"
 
 
 class ChatSourceNote(BaseModel):
     note_id: int
     title: str
-    score: float
+    score: float | None
+    hybrid_score: float | None = None
     preview: str
+    citation_id: int | None = None
+    origin: Literal["vector", "inventory", "lexical", "hybrid"] = "vector"
 
 
 class ChatSources(BaseModel):

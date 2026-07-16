@@ -102,6 +102,16 @@ class Notes(TimestampMixin, SQLModel, table=True):
             ),
             postgresql_using="gin",
         ),
+        Index(
+            "ix_notes_title_trgm",
+            text("lower(title) gin_trgm_ops"),
+            postgresql_using="gin",
+        ),
+        Index(
+            "ix_notes_content_trgm",
+            text("lower(content) gin_trgm_ops"),
+            postgresql_using="gin",
+        ),
     )
     id: int | None = Field(default=None, primary_key=True)
     user_id: int | None = Field(foreign_key="users.id", nullable=False)

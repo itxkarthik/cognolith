@@ -18,12 +18,12 @@ describe("API Configuration - Endpoint-Specific Timeouts", () => {
 		});
 
 		describe("RAG and AI Operations", () => {
-			it("should return 60s for POST /chat", () => {
-				expect(getTimeoutForEndpoint("POST", "/api/v1/chat")).toBe(60000);
+			it("should return 120s for POST /chat", () => {
+				expect(getTimeoutForEndpoint("POST", "/api/v1/chat")).toBe(120000);
 			});
 
-			it("should return 60s for POST /chat with session ID", () => {
-				expect(getTimeoutForEndpoint("POST", "/api/v1/chat/123/messages")).toBe(60000);
+			it("should return 120s for POST /chat with session ID", () => {
+				expect(getTimeoutForEndpoint("POST", "/api/v1/chat/123/messages")).toBe(120000);
 			});
 
 			it("should return 60s for GET /search", () => {
@@ -95,12 +95,12 @@ describe("API Configuration - Endpoint-Specific Timeouts", () => {
 
 		describe("Case Insensitivity", () => {
 			it("should handle lowercase HTTP methods", () => {
-				expect(getTimeoutForEndpoint("post", "/api/v1/chat")).toBe(60000);
+				expect(getTimeoutForEndpoint("post", "/api/v1/chat")).toBe(120000);
 			});
 
-    it("should handle mixed case paths", () => {
-      expect(getTimeoutForEndpoint("POST", "/api/v1/Chat")).toBe(60000);
-    });
+			it("should handle mixed case paths", () => {
+				expect(getTimeoutForEndpoint("POST", "/api/v1/Chat")).toBe(120000);
+			});
 		});
 
 		describe("URL Normalization", () => {
@@ -151,7 +151,7 @@ describe("API Configuration - Endpoint-Specific Timeouts", () => {
 			expect(Math.min(...timeouts)).toBe(5000);
 		});
 
-		it("should have file upload as slowest timeout", () => {
+		it("should reserve the longest timeout for AI and upload work", () => {
 			const timeouts = [
 				getTimeoutForEndpoint("GET", "/health"),
 				getTimeoutForEndpoint("GET", "/documents"),
@@ -169,7 +169,7 @@ describe("API Configuration - Endpoint-Specific Timeouts", () => {
 
 			expect(health < regular).toBe(true);
 			expect(regular < rag).toBe(true);
-			expect(rag < upload).toBe(true);
+			expect(rag <= upload).toBe(true);
 		});
 	});
 });

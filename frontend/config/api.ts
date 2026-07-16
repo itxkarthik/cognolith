@@ -9,7 +9,7 @@ const ENDPOINT_TIMEOUTS = {
 	"POST /documents": 120000,
 
 	// RAG and search operations - AI processing takes time
-	"POST /chat": 60000, // Bound local model requests; failed sends are explicitly retryable by the user
+	"POST /chat": 120000, // Local models can need extra time for grounded, multi-source answers
 	"GET /search": 60000, // 60 seconds for semantic search
 	"POST /knowledge-graph": 60000, // 60 seconds for graph generation
 	"POST /rag": 60000, // 60 seconds for RAG queries

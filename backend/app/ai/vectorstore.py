@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import text
 from sqlmodel import Session, col, select
 
+from app.ai.reranking import LexicalQuery
 from app.models.chat import ChatMessages, ChatRole, ChatSession
 from app.models.document import Document, DocumentChunks
 
@@ -26,6 +27,25 @@ class NoteVectorSearchResult:
     title: str
     content: str
     score: float
+
+
+@dataclass(slots=True)
+class LexicalChunkSearchResult:
+    chunk_id: int
+    document_id: int
+    chunk_index: int
+    content: str
+    lexical_score: float
+    exact_match: bool
+
+
+@dataclass(slots=True)
+class LexicalNoteSearchResult:
+    note_id: int
+    title: str
+    content: str
+    lexical_score: float
+    exact_match: bool
 
 
 @dataclass(slots=True)
@@ -511,6 +531,7 @@ class PgVectorStore:
         query_embedding: Sequence[float],
         top_k: int = 5,
         similarity_threshold: float | None = None,
+        note_ids: Sequence[int] | None = None,
     ) -> list[NoteVectorSearchResult]:
         if not query_embedding:
             return []
@@ -527,6 +548,9 @@ class PgVectorStore:
                 "(1 - (ne.embedding <=> CAST(:embedding AS vector))) >= :similarity_threshold"
             )
             params["similarity_threshold"] = similarity_threshold
+        if note_ids:
+            where_clauses.append("n.id = ANY(CAST(:note_ids AS int[]))")
+            params["note_ids"] = list(note_ids)
 
         rows = (
             self.session.connection()
@@ -555,6 +579,162 @@ class PgVectorStore:
                 title=row.title,
                 content=row.content,
                 score=float(row.score),
+            )
+            for row in rows
+        ]
+
+    def lexical_chunk_search(
+        self,
+        *,
+        user_id: int,
+        query: LexicalQuery,
+        top_k: int = 20,
+        document_ids: Sequence[int] | None = None,
+    ) -> list[LexicalChunkSearchResult]:
+        if not query.phrase:
+            return []
+
+        where_clauses = ["d.user_id = :user_id", "d.is_deleted = FALSE"]
+        params: dict[str, object] = {
+            "user_id": user_id,
+            "phrase": query.phrase,
+            "phrase_pattern": f"%{query.phrase}%",
+            "compact_pattern": f"%{query.compact_phrase}%",
+            "top_k": max(1, top_k),
+        }
+        if document_ids:
+            where_clauses.append("d.id = ANY(CAST(:document_ids AS int[]))")
+            params["document_ids"] = list(document_ids)
+
+        rows = (
+            self.session.connection()
+            .execute(
+                text(
+                    f"""
+                    WITH lexical_matches AS (
+                        SELECT
+                            dc.id AS chunk_id,
+                            dc.document_id,
+                            dc.chunk_index,
+                            dc.content,
+                            (
+                                lower(dc.content) LIKE :phrase_pattern
+                                OR lower(dc.content) LIKE :compact_pattern
+                                OR lower(d.title) LIKE :phrase_pattern
+                                OR lower(d.title) LIKE :compact_pattern
+                            ) AS exact_match,
+                            ts_rank_cd(
+                                to_tsvector('english', d.title || ' ' || dc.content),
+                                websearch_to_tsquery('english', :phrase)
+                            ) AS text_rank
+                        FROM document_chunks dc
+                        INNER JOIN documents d ON d.id = dc.document_id
+                        WHERE {" AND ".join(where_clauses)}
+                    )
+                    SELECT
+                        chunk_id,
+                        document_id,
+                        chunk_index,
+                        content,
+                        exact_match,
+                        CASE
+                            WHEN exact_match THEN 1.0
+                            ELSE LEAST(1.0, text_rank * 4.0)
+                        END AS lexical_score
+                    FROM lexical_matches
+                    WHERE exact_match OR text_rank > 0
+                    ORDER BY exact_match DESC, lexical_score DESC, chunk_id
+                    LIMIT :top_k
+                    """
+                ),
+                parameters=params,
+            )
+            .all()
+        )
+        return [
+            LexicalChunkSearchResult(
+                chunk_id=int(row.chunk_id),
+                document_id=int(row.document_id),
+                chunk_index=int(row.chunk_index),
+                content=str(row.content),
+                lexical_score=float(row.lexical_score),
+                exact_match=bool(row.exact_match),
+            )
+            for row in rows
+        ]
+
+    def lexical_note_search(
+        self,
+        *,
+        user_id: int,
+        query: LexicalQuery,
+        top_k: int = 20,
+        note_ids: Sequence[int] | None = None,
+    ) -> list[LexicalNoteSearchResult]:
+        if not query.phrase:
+            return []
+
+        where_clauses = ["n.user_id = :user_id", "n.is_deleted = FALSE"]
+        params: dict[str, object] = {
+            "user_id": user_id,
+            "phrase": query.phrase,
+            "phrase_pattern": f"%{query.phrase}%",
+            "compact_pattern": f"%{query.compact_phrase}%",
+            "top_k": max(1, top_k),
+        }
+        if note_ids:
+            where_clauses.append("n.id = ANY(CAST(:note_ids AS int[]))")
+            params["note_ids"] = list(note_ids)
+
+        rows = (
+            self.session.connection()
+            .execute(
+                text(
+                    f"""
+                    WITH lexical_matches AS (
+                        SELECT
+                            n.id AS note_id,
+                            n.title,
+                            n.content,
+                            (
+                                lower(n.title) LIKE :phrase_pattern
+                                OR lower(n.title) LIKE :compact_pattern
+                                OR lower(n.content) LIKE :phrase_pattern
+                                OR lower(n.content) LIKE :compact_pattern
+                            ) AS exact_match,
+                            ts_rank_cd(
+                                to_tsvector('english', n.title || ' ' || n.content),
+                                websearch_to_tsquery('english', :phrase)
+                            ) AS text_rank
+                        FROM notes n
+                        WHERE {" AND ".join(where_clauses)}
+                    )
+                    SELECT
+                        note_id,
+                        title,
+                        content,
+                        exact_match,
+                        CASE
+                            WHEN exact_match THEN 1.0
+                            ELSE LEAST(1.0, text_rank * 4.0)
+                        END AS lexical_score
+                    FROM lexical_matches
+                    WHERE exact_match OR text_rank > 0
+                    ORDER BY exact_match DESC, lexical_score DESC, note_id
+                    LIMIT :top_k
+                    """
+                ),
+                parameters=params,
+            )
+            .all()
+        )
+        return [
+            LexicalNoteSearchResult(
+                note_id=int(row.note_id),
+                title=str(row.title),
+                content=str(row.content),
+                lexical_score=float(row.lexical_score),
+                exact_match=bool(row.exact_match),
             )
             for row in rows
         ]

@@ -235,7 +235,9 @@ export interface ChatSourceDocument {
 	document_id: number;
 	title: string;
 	chunk_count: number;
-	max_score: number;
+	max_score: number | null;
+	citation_ids: number[];
+	origin: "vector" | "inventory" | "lexical" | "hybrid";
 }
 
 export interface ChatSourceChunk {
@@ -243,15 +245,22 @@ export interface ChatSourceChunk {
 	document_id: number;
 	document_title: string;
 	chunk_index: number;
-	score: number;
+	chunk_end_index?: number | null;
+	score: number | null;
+	hybrid_score?: number | null;
 	preview: string;
+	citation_id?: number | null;
+	origin: "vector" | "inventory" | "lexical" | "hybrid";
 }
 
 export interface ChatSourceNote {
 	note_id: number;
 	title: string;
-	score: number;
+	score: number | null;
+	hybrid_score?: number | null;
 	preview: string;
+	citation_id?: number | null;
+	origin: "vector" | "inventory" | "lexical" | "hybrid";
 }
 
 export interface ChatSources {

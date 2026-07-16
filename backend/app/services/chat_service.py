@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import func, text
@@ -128,6 +129,7 @@ def send_message_and_get_response(
                         else str(message.role)
                     ),
                     "content": message.content,
+                    "sources": message.sources,
                 }
                 for message in getattr(chat_session, "messages", [])[-6:]
             ],
@@ -249,7 +251,7 @@ def _invoke_rag(
     session: Session,
     current_user: User,
     query: str,
-    conversation_history: list[dict[str, str]] | None = None,
+    conversation_history: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict]:
     if current_user.id is None:
         raise HTTPException(status_code=400, detail="Invalid user context")

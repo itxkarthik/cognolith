@@ -86,6 +86,11 @@ class DocumentChunks(TimestampMixin, SQLModel, table=True):
             postgresql_using="gin",
         ),
         UniqueConstraint("document_id", "chunk_index", name="uix_document_chunks"),
+        Index(
+            "ix_document_chunks_content_trgm",
+            text("lower(content) gin_trgm_ops"),
+            postgresql_using="gin",
+        ),
     )
     id: int | None = Field(default=None, primary_key=True, index=True)
     document_id: int | None = Field(foreign_key="documents.id", nullable=False)

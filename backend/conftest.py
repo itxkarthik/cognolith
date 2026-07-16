@@ -5,6 +5,7 @@ import os
 import psycopg
 import pytest
 from psycopg import sql
+from sqlalchemy import text
 from sqlmodel import Session, SQLModel
 
 TEST_DATABASE = os.getenv("POSTGRES_TEST_DB", "knowledge_assistant_test")
@@ -40,6 +41,9 @@ os.environ["DATABASE_URL"] = (
 from app.core.database import create_db_and_tables, engine  # noqa: E402
 from app.models import chat, document, note, user  # noqa: E402, F401
 
+with engine.begin() as connection:
+    connection.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+
 create_db_and_tables()
 
 
@@ -50,3 +54,5 @@ def session():
     SQLModel.metadata.create_all(engine)
     with Session(engine) as database_session:
         yield database_session
+    SQLModel.metadata.drop_all(engine)
+    SQLModel.metadata.create_all(engine)

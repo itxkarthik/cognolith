@@ -1,0 +1,125 @@
+[
+  {
+    "name": "exact deadline lookup",
+    "category": "exact",
+    "query": "What is the Atlas launch deadline?",
+    "similarity_threshold": 0.7,
+    "limit": 3,
+    "candidates": [
+      {"source_key": "note:1", "source_type": "note", "source_id": 1, "title": "Atlas launch plan", "content": "The Atlas launch deadline is Friday morning.", "vector_score": 0.9},
+      {"source_key": "note:2", "source_type": "note", "source_id": 2, "title": "Meal plan", "content": "Dinner is Friday evening.", "vector_score": 0.71}
+    ],
+    "relevant_source_keys": ["note:1"],
+    "cited_source_keys": ["note:1"],
+    "exposed_source_keys": ["note:1"]
+  },
+  {
+    "name": "semantic release lookup",
+    "category": "semantic",
+    "query": "When will the new version become available?",
+    "similarity_threshold": 0.7,
+    "limit": 3,
+    "candidates": [
+      {"source_key": "document:4", "source_type": "document", "source_id": 4, "title": "Atlas delivery", "content": "The release is scheduled for Friday morning.", "vector_score": 0.86},
+      {"source_key": "note:5", "source_type": "note", "source_id": 5, "title": "Meeting notes", "content": "The team discussed routine maintenance.", "vector_score": 0.69}
+    ],
+    "relevant_source_keys": ["document:4"],
+    "cited_source_keys": ["document:4"],
+    "exposed_source_keys": ["document:4"]
+  },
+  {
+    "name": "multi-project overview",
+    "category": "overview",
+    "query": "List all my projects",
+    "similarity_threshold": 0.7,
+    "limit": 5,
+    "candidates": [
+      {"source_key": "note:10", "source_type": "note", "source_id": 10, "title": "Atlas project", "content": "A release automation project.", "vector_score": 0.88},
+      {"source_key": "note:11", "source_type": "note", "source_id": 11, "title": "Beacon project", "content": "A reporting project.", "vector_score": 0.86},
+      {"source_key": "document:12", "source_type": "document", "source_id": 12, "title": "Cedar project", "content": "A research project.", "vector_score": 0.84},
+      {"source_key": "note:13", "source_type": "note", "source_id": 13, "title": "Shopping list", "content": "Groceries for the week.", "vector_score": 0.7}
+    ],
+    "relevant_source_keys": ["note:10", "note:11", "document:12"],
+    "cited_source_keys": ["note:10", "note:11", "document:12"],
+    "exposed_source_keys": ["note:10", "note:11", "document:12"]
+  },
+  {
+    "name": "expanded follow-up",
+    "category": "follow-up",
+    "query": "Tell me about the Atlas launch. When is it?",
+    "similarity_threshold": 0.7,
+    "limit": 3,
+    "candidates": [
+      {"source_key": "note:20", "source_type": "note", "source_id": 20, "title": "Atlas launch", "content": "The launch is Friday morning.", "vector_score": 0.87},
+      {"source_key": "note:21", "source_type": "note", "source_id": 21, "title": "Beacon review", "content": "The review is Monday.", "vector_score": 0.71}
+    ],
+    "relevant_source_keys": ["note:20"],
+    "cited_source_keys": ["note:20"],
+    "exposed_source_keys": ["note:20"]
+  },
+  {
+    "name": "spaced exact project name rescue",
+    "category": "exact-name-rescue",
+    "query": "Explain the project go torrent",
+    "similarity_threshold": 0.7,
+    "limit": 3,
+    "candidates": [
+      {"source_key": "document:22", "source_type": "document", "source_id": 22, "title": "Karthik Das P CV", "content": "GoTorrent is a BitTorrent client written in Go.", "vector_score": 0.646, "lexical_score": 1.0, "exact_match": true},
+      {"source_key": "note:23", "source_type": "note", "source_id": 23, "title": "Go language", "content": "General notes about Go projects.", "vector_score": 0.58, "lexical_score": 0.25}
+    ],
+    "relevant_source_keys": ["document:22"],
+    "cited_source_keys": ["document:22"],
+    "exposed_source_keys": ["document:22"]
+  },
+  {
+    "name": "grounded project follow-up",
+    "category": "grounded-follow-up",
+    "query": "GoTorrent give more details about the project",
+    "similarity_threshold": 0.7,
+    "limit": 1,
+    "candidates": [
+      {"source_key": "document:22", "source_type": "document", "source_id": 22, "title": "Karthik Das P CV", "content": "GoTorrent includes tracker communication and peer wire protocol support.", "vector_score": 0.72, "lexical_score": 1.0, "exact_match": true, "prior_source": true},
+      {"source_key": "document:24", "source_type": "document", "source_id": 24, "title": "Torrent glossary", "content": "A glossary of torrent terminology.", "vector_score": 0.73, "lexical_score": 0.4}
+    ],
+    "relevant_source_keys": ["document:22"],
+    "cited_source_keys": ["document:22"],
+    "exposed_source_keys": ["document:22"]
+  },
+  {
+    "name": "irrelevant lexical overlap",
+    "category": "irrelevant-lexical",
+    "query": "Explain GoTorrent",
+    "similarity_threshold": 0.7,
+    "limit": 3,
+    "candidates": [
+      {"source_key": "note:31", "source_type": "note", "source_id": 31, "title": "Travel", "content": "Go to the torrent overlook while travelling.", "vector_score": 0.41, "lexical_score": 0.67}
+    ],
+    "relevant_source_keys": [],
+    "cited_source_keys": [],
+    "exposed_source_keys": []
+  },
+  {
+    "name": "irrelevant workspace content",
+    "category": "irrelevant",
+    "query": "How far is the moon?",
+    "similarity_threshold": 0.7,
+    "limit": 3,
+    "candidates": [
+      {"source_key": "note:30", "source_type": "note", "source_id": 30, "title": "Atlas", "content": "A software release plan.", "vector_score": 0.42}
+    ],
+    "relevant_source_keys": [],
+    "cited_source_keys": [],
+    "exposed_source_keys": []
+  },
+  {
+    "name": "casual conversation",
+    "category": "casual",
+    "query": "What's up?",
+    "similarity_threshold": 0.7,
+    "limit": 3,
+    "candidates": [],
+    "relevant_source_keys": [],
+    "cited_source_keys": [],
+    "exposed_source_keys": []
+  }
+]

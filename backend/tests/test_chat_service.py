@@ -93,6 +93,42 @@ class ChatServiceTests(TestCase):
         self.assertEqual(session.rollback_count, 0)
         self.assertEqual(session.added, [user_message, assistant_message, chat_session])
 
+    def test_chat_history_passes_assistant_source_metadata_to_rag(self) -> None:
+        session, current_user, chat_session = _chat_context()
+        chat_session.messages = [
+            SimpleNamespace(role="user", content="What are my projects?", sources=None),
+            SimpleNamespace(
+                role="assistant",
+                content="GoTorrent [1]",
+                sources={
+                    "documents": [{"document_id": 22}],
+                    "chunks": [],
+                    "notes": [],
+                },
+            ),
+        ]
+
+        with (
+            patch(
+                "app.services.chat_service.get_chat_session_by_id",
+                return_value=chat_session,
+            ),
+            patch(
+                "app.services.chat_service._invoke_rag",
+                return_value=("Grounded answer", {"documents": [], "chunks": [], "notes": []}),
+            ) as invoke_rag,
+            patch("app.services.chat_service._acquire_chat_generation_lock"),
+        ):
+            send_message_and_get_response(
+                session=cast(Session, session),
+                current_user=cast(User, current_user),
+                chat_session_id=chat_session.id,
+                payload=ChatMessageCreate(content="Tell me more about the project", role="user"),
+            )
+
+        history = invoke_rag.call_args.kwargs["conversation_history"]
+        self.assertEqual(history[-1]["sources"]["documents"][0]["document_id"], 22)
+
     def test_concurrent_send_is_rejected_before_rag_runs(self) -> None:
         session, current_user, chat_session = _chat_context()
 

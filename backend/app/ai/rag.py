@@ -5,7 +5,7 @@ import hashlib
 import re
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -13,8 +13,22 @@ from sqlmodel import Session, col, select
 
 from app.ai.embeddings import generate_embedding, generate_embeddings
 from app.ai.llm import LLMService, build_chat_messages
-from app.ai.vectorstore import NoteVectorSearchResult, PgVectorStore, VectorSearchResult
-from app.models.document import Document
+from app.ai.reranking import (
+    LexicalQuery,
+    RerankCandidate,
+    RerankedCandidate,
+    build_lexical_query,
+    normalized_terms,
+    rerank_candidates,
+)
+from app.ai.vectorstore import (
+    LexicalChunkSearchResult,
+    LexicalNoteSearchResult,
+    NoteVectorSearchResult,
+    PgVectorStore,
+    VectorSearchResult,
+)
+from app.models.document import Document, DocumentChunks
 from app.models.note import Notes
 from app.models.user import UserSettings
 from app.utils.text_processing import create_content_preview
@@ -50,6 +64,30 @@ class WorkspaceInventoryEntry:
     source_id: int
     title: str
     description: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalContext:
+    retrieval_query: str
+    is_follow_up: bool
+    prior_document_ids: tuple[int, ...]
+    prior_note_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RAGContextSource:
+    citation_id: int
+    source_type: str
+    source_id: int
+    title: str
+    content: str
+    vector_score: float | None
+    hybrid_score: float | None
+    chunk_id: int | None = None
+    chunk_index: int | None = None
+    chunk_end_index: int | None = None
+    supporting_chunk_ids: tuple[int, ...] = ()
+    origin: str = "vector"
 
 
 _CASUAL_QUERIES = {
@@ -118,12 +156,82 @@ def _needs_history_for_retrieval(query: str) -> bool:
     )
 
 
+def _resolve_retrieval_context(
+    *,
+    query: str,
+    conversation_history: Sequence[dict[str, Any]] | None,
+) -> RetrievalContext:
+    normalized = _normalize_query(query)
+    is_follow_up = _needs_history_for_retrieval(query) or bool(
+        re.search(
+            r"\b(?:more details?|the|this|that)\s+(?:project|document|note|one)s?\b",
+            normalized,
+        )
+    )
+    if not is_follow_up:
+        return RetrievalContext(query, False, (), ())
+
+    history = list(conversation_history or [])
+    prior_document_ids: tuple[int, ...] = ()
+    prior_note_ids: tuple[int, ...] = ()
+    for message in reversed(history):
+        if message.get("role") != "assistant":
+            continue
+        sources = message.get("sources")
+        if not isinstance(sources, dict):
+            continue
+        documents = sources.get("documents")
+        notes = sources.get("notes")
+        document_ids = (
+            tuple(
+                int(item["document_id"])
+                for item in documents
+                if isinstance(item, dict) and isinstance(item.get("document_id"), int)
+            )
+            if isinstance(documents, list)
+            else ()
+        )
+        note_ids = (
+            tuple(
+                int(item["note_id"])
+                for item in notes
+                if isinstance(item, dict) and isinstance(item.get("note_id"), int)
+            )
+            if isinstance(notes, list)
+            else ()
+        )
+        if document_ids or note_ids:
+            prior_document_ids = tuple(dict.fromkeys(document_ids))
+            prior_note_ids = tuple(dict.fromkeys(note_ids))
+            break
+
+    previous_subject = ""
+    for message in reversed(history):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        lexical_query = build_lexical_query(content)
+        if lexical_query.phrase:
+            previous_subject = lexical_query.phrase
+            break
+
+    retrieval_query = f"{previous_subject}\n{query}" if previous_subject else query
+    return RetrievalContext(
+        retrieval_query=retrieval_query,
+        is_follow_up=True,
+        prior_document_ids=prior_document_ids,
+        prior_note_ids=prior_note_ids,
+    )
+
+
 def _generate_general_response(
     *,
     session: Session,
     user_id: int,
     query: str,
-    conversation_history: Sequence[dict[str, str]] | None,
+    conversation_history: Sequence[dict[str, Any]] | None,
     casual: bool,
 ) -> RAGResult:
     if casual:
@@ -162,7 +270,7 @@ def run_rag_pipeline(
     session: Session,
     user_id: int,
     query: str,
-    conversation_history: Sequence[dict[str, str]] | None = None,
+    conversation_history: Sequence[dict[str, Any]] | None = None,
 ) -> RAGResult:
     if not query.strip():
         return RAGResult(
@@ -180,14 +288,11 @@ def run_rag_pipeline(
             casual=True,
         )
 
-    recent_user_context = [
-        message["content"]
-        for message in (conversation_history or [])[-4:]
-        if message.get("role") == "user" and message.get("content")
-    ]
-    retrieval_query = (
-        "\n".join([*recent_user_context, query]) if _needs_history_for_retrieval(query) else query
+    retrieval_context = _resolve_retrieval_context(
+        query=query,
+        conversation_history=conversation_history,
     )
+    retrieval_query = retrieval_context.retrieval_query
 
     query_embedding, embedding_model = _run_async(
         generate_embedding(
@@ -201,10 +306,7 @@ def run_rag_pipeline(
     top_k = user_settings.top_k_results if user_settings else 5
     similarity_threshold = user_settings.similarity_threshold if user_settings else 0.7
     needs_inventory = _needs_workspace_inventory(retrieval_query)
-    retrieval_limit = max(top_k, 12 if needs_inventory else 6)
-    effective_threshold = (
-        min(similarity_threshold, 0.4) if needs_inventory else similarity_threshold
-    )
+    retrieval_limit = max(20, top_k * 4)
 
     vector_store = PgVectorStore(session=session)
     vector_store.ensure_schema(embedding_dimensions=len(query_embedding))
@@ -215,60 +317,54 @@ def run_rag_pipeline(
         embedding_model=embedding_model,
     )
 
-    chunk_hits = vector_store.similarity_search(
+    lexical_query = build_lexical_query(retrieval_query)
+    has_prior_scope = bool(retrieval_context.prior_document_ids or retrieval_context.prior_note_ids)
+    context_sources = _search_ranked_sources(
+        session=session,
+        vector_store=vector_store,
         user_id=user_id,
         query_embedding=query_embedding,
-        top_k=retrieval_limit,
-        similarity_threshold=effective_threshold,
+        query=retrieval_query,
+        lexical_query=lexical_query,
+        retrieval_limit=retrieval_limit,
+        similarity_threshold=similarity_threshold,
+        limit=top_k,
+        document_ids=(retrieval_context.prior_document_ids if has_prior_scope else None),
+        note_ids=(retrieval_context.prior_note_ids if has_prior_scope else None),
+        prior_document_ids=set(retrieval_context.prior_document_ids),
+        prior_note_ids=set(retrieval_context.prior_note_ids),
     )
-    note_hits = vector_store.note_similarity_search(
-        user_id=user_id,
-        query_embedding=query_embedding,
-        top_k=retrieval_limit,
-        similarity_threshold=effective_threshold,
-    )
-
-    adaptive_threshold = 0.4
-    if not chunk_hits and not note_hits and effective_threshold > adaptive_threshold:
-        chunk_hits = vector_store.similarity_search(
+    if not context_sources and has_prior_scope:
+        context_sources = _search_ranked_sources(
+            session=session,
+            vector_store=vector_store,
             user_id=user_id,
             query_embedding=query_embedding,
-            top_k=retrieval_limit,
-            similarity_threshold=adaptive_threshold,
+            query=retrieval_query,
+            lexical_query=lexical_query,
+            retrieval_limit=retrieval_limit,
+            similarity_threshold=similarity_threshold,
+            limit=top_k,
+            document_ids=None,
+            note_ids=None,
+            prior_document_ids=set(retrieval_context.prior_document_ids),
+            prior_note_ids=set(retrieval_context.prior_note_ids),
         )
-        note_hits = vector_store.note_similarity_search(
-            user_id=user_id,
-            query_embedding=query_embedding,
-            top_k=retrieval_limit,
-            similarity_threshold=adaptive_threshold,
-        )
-
-    ranked_hits = sorted(
-        [(hit.score, "document", hit) for hit in chunk_hits]
-        + [(hit.score, "note", hit) for hit in note_hits],
-        key=lambda item: item[0],
-        reverse=True,
-    )
-    if ranked_hits:
-        score_window = 0.18 if needs_inventory else 0.12
-        result_limit = min(retrieval_limit, 10 if needs_inventory else 6)
-        relevance_floor = max(adaptive_threshold, ranked_hits[0][0] - score_window)
-        ranked_hits = [item for item in ranked_hits if item[0] >= relevance_floor][:result_limit]
-    ranked_chunk_hits: list[VectorSearchResult] = []
-    ranked_note_hits: list[NoteVectorSearchResult] = []
-    for _, source_type, hit in ranked_hits:
-        if source_type == "document" and isinstance(hit, VectorSearchResult):
-            ranked_chunk_hits.append(hit)
-        elif source_type == "note" and isinstance(hit, NoteVectorSearchResult):
-            ranked_note_hits.append(hit)
-    chunk_hits = ranked_chunk_hits
-    note_hits = ranked_note_hits
 
     inventory_entries = (
         _load_workspace_inventory(session=session, user_id=user_id) if needs_inventory else []
     )
 
-    if not chunk_hits and not note_hits and not inventory_entries:
+    context_sources = _append_inventory_sources(
+        sources=context_sources,
+        inventory_entries=inventory_entries,
+    )
+    context_sources = _expand_document_context_sources(
+        session=session,
+        sources=context_sources,
+    )
+
+    if not context_sources:
         return _generate_general_response(
             session=session,
             user_id=user_id,
@@ -277,16 +373,7 @@ def run_rag_pipeline(
             casual=False,
         )
 
-    document_map = _load_document_map(
-        session=session, document_ids=[item.document_id for item in chunk_hits]
-    )
-    context_chunks = _build_context_chunks(
-        chunk_hits=chunk_hits,
-        note_hits=note_hits,
-        document_map=document_map,
-    )
-    if inventory_entries:
-        context_chunks.insert(0, _format_workspace_inventory(inventory_entries))
+    context_chunks = _format_citation_context(context_sources)
 
     system_prompt = (
         "You are Cognolith, a knowledge assistant with normal conversational and general-knowledge "
@@ -298,7 +385,9 @@ def run_rag_pipeline(
         "user asks for source attribution. Synthesize across relevant sources instead of relying on "
         "exact word overlap. For list, overview, comparison, or count questions, include all "
         "distinct supported items. Preserve exact names, codes, dates, and phrases, and do not "
-        "repeat the raw context."
+        "repeat the raw context. Every factual claim taken from workspace context must end with "
+        "the matching numeric citation marker, such as [1]. Use only source numbers present in "
+        "the reference context. Do not cite general-knowledge or conversational statements."
     )
 
     messages = build_chat_messages(
@@ -318,12 +407,18 @@ def run_rag_pipeline(
     )
     answer = _repair_exact_terms(answer.strip(), context_chunks)
 
-    sources = _build_sources_payload(
-        chunk_hits=chunk_hits,
-        note_hits=note_hits,
-        document_map=document_map,
+    cited_ids = _extract_citation_ids(
+        answer,
+        valid_ids={source.citation_id for source in context_sources},
     )
-    _merge_inventory_sources(sources=sources, inventory_entries=inventory_entries)
+    if not cited_ids:
+        cited_ids = _infer_citation_ids(answer, sources=context_sources)
+        answer = _insert_inferred_citations(
+            answer,
+            sources=context_sources,
+            cited_ids=cited_ids,
+        )
+    sources = _build_cited_sources_payload(sources=context_sources, cited_ids=cited_ids)
     return RAGResult(answer=answer, sources=sources)
 
 
@@ -389,25 +484,32 @@ def _load_workspace_inventory(*, session: Session, user_id: int) -> list[Workspa
     for document in documents:
         if document.id is None:
             continue
-        description = document.summary or document.content_preview or "No summary available."
+        description = (
+            document.content
+            or document.summary
+            or document.content_preview
+            or "No extracted content available."
+        )
         entries.append(
             WorkspaceInventoryEntry(
                 source_type="document",
                 source_id=document.id,
                 title=document.title,
-                description=create_content_preview(description, max_length=700),
+                description=description,
             )
         )
     for note in notes:
         if note.id is None:
             continue
-        description = note.summary or note.content_preview or note.content
+        description = (
+            note.content or note.summary or note.content_preview or "No content available."
+        )
         entries.append(
             WorkspaceInventoryEntry(
                 source_type="note",
                 source_id=note.id,
                 title=note.title,
-                description=create_content_preview(description, max_length=700),
+                description=description,
             )
         )
     return entries
@@ -502,6 +604,508 @@ def _build_context_chunks(
     for hit in note_hits:
         context_chunks.append(f"[Note: {hit.title} | score={hit.score:.3f}]\n{hit.content[:6000]}")
     return context_chunks
+
+
+def _format_citation_context(sources: Sequence[RAGContextSource]) -> list[str]:
+    context_chunks: list[str] = []
+    for source in sources:
+        label = "Document" if source.source_type == "document" else "Note"
+        if source.chunk_index is None:
+            chunk_label = ""
+        elif source.chunk_end_index is not None and source.chunk_end_index != source.chunk_index:
+            chunk_label = f" | Chunks #{source.chunk_index}-#{source.chunk_end_index}"
+        else:
+            chunk_label = f" | Chunk #{source.chunk_index}"
+        context_chunks.append(
+            f"[Source {source.citation_id} | {label}: {source.title}{chunk_label}]\n"
+            f"{source.content}"
+        )
+    return context_chunks
+
+
+def _merge_overlapping_content(parts: Sequence[str]) -> str:
+    if not parts:
+        return ""
+    merged = parts[0]
+    for part in parts[1:]:
+        overlap = 0
+        maximum = min(len(merged), len(part), 500)
+        for size in range(maximum, 9, -1):
+            if merged.endswith(part[:size]):
+                overlap = size
+                break
+        separator = "" if overlap else "\n"
+        merged = f"{merged}{separator}{part[overlap:]}"
+    return merged
+
+
+def _expand_document_context_sources(
+    *,
+    session: Session,
+    sources: Sequence[RAGContextSource],
+    max_chars: int = 24000,
+) -> list[RAGContextSource]:
+    expanded: list[RAGContextSource] = []
+    used_ranges: dict[int, list[tuple[int, int]]] = {}
+    consumed_chars = 0
+
+    for source in sources:
+        expanded_source = source
+        chunk_index = source.chunk_index
+        if source.source_type == "document" and chunk_index is not None:
+            start_index = max(0, chunk_index - 1)
+            end_index = chunk_index + 1
+            ranges = used_ranges.setdefault(source.source_id, [])
+            if any(
+                start_index <= used_end and end_index >= used_start
+                for used_start, used_end in ranges
+            ):
+                continue
+            chunks = session.exec(
+                select(DocumentChunks)
+                .where(
+                    DocumentChunks.document_id == source.source_id,
+                    col(DocumentChunks.chunk_index) >= start_index,
+                    col(DocumentChunks.chunk_index) <= end_index,
+                )
+                .order_by(col(DocumentChunks.chunk_index).asc())
+            ).all()
+            if chunks:
+                chunk_ids = tuple(chunk.id for chunk in chunks if chunk.id is not None)
+                first_index = chunks[0].chunk_index
+                last_index = chunks[-1].chunk_index
+                expanded_source = replace(
+                    source,
+                    content=_merge_overlapping_content([chunk.content for chunk in chunks]),
+                    chunk_index=first_index,
+                    chunk_end_index=last_index,
+                    supporting_chunk_ids=chunk_ids,
+                )
+                if first_index is not None and last_index is not None:
+                    ranges.append((first_index, last_index))
+
+        source_chars = len(expanded_source.content)
+        if expanded and consumed_chars + source_chars > max_chars:
+            continue
+        if not expanded and source_chars > max_chars:
+            expanded_source = replace(
+                expanded_source,
+                content=expanded_source.content[:max_chars].rstrip(),
+            )
+            source_chars = len(expanded_source.content)
+        expanded.append(expanded_source)
+        consumed_chars += source_chars
+
+    return [replace(source, citation_id=index) for index, source in enumerate(expanded, start=1)]
+
+
+def _extract_citation_ids(answer: str, *, valid_ids: set[int]) -> list[int]:
+    citation_ids: list[int] = []
+    seen: set[int] = set()
+    for match in re.finditer(r"\[(\d+)\]", answer):
+        citation_id = int(match.group(1))
+        if citation_id not in valid_ids or citation_id in seen:
+            continue
+        citation_ids.append(citation_id)
+        seen.add(citation_id)
+    return citation_ids
+
+
+def _normalized_phrase(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+
+
+def _infer_citation_ids(
+    answer: str,
+    *,
+    sources: Sequence[RAGContextSource],
+) -> list[int]:
+    answer_phrase = _normalized_phrase(answer)
+    answer_terms = normalized_terms(answer)
+    if not answer_terms:
+        return []
+
+    cited_ids: list[int] = []
+    for source in sources:
+        title_phrase = _normalized_phrase(source.title)
+        title_terms = normalized_terms(source.title)
+        title_is_named = len(title_terms) >= 2 and title_phrase in answer_phrase
+        source_terms = normalized_terms(f"{source.title} {source.content}")
+        overlap_count = len(answer_terms.intersection(source_terms))
+        answer_coverage = overlap_count / len(answer_terms)
+        content_supports_answer = overlap_count >= 3 and answer_coverage >= 0.30
+        if title_is_named or content_supports_answer:
+            cited_ids.append(source.citation_id)
+    return cited_ids
+
+
+def _insert_inferred_citations(
+    answer: str,
+    *,
+    sources: Sequence[RAGContextSource],
+    cited_ids: Sequence[int],
+) -> str:
+    source_map = {source.citation_id: source for source in sources}
+    enriched = answer
+    trailing_ids: list[int] = []
+    for citation_id in cited_ids:
+        source = source_map.get(citation_id)
+        if source is None:
+            continue
+        title_pattern = re.compile(re.escape(source.title), flags=re.IGNORECASE)
+        if title_pattern.search(enriched):
+            enriched = title_pattern.sub(
+                lambda match: f"{match.group(0)} [{citation_id}]",
+                enriched,
+                count=1,
+            )
+        else:
+            trailing_ids.append(citation_id)
+
+    if trailing_ids:
+        markers = " ".join(f"[{citation_id}]" for citation_id in trailing_ids)
+        enriched = f"{enriched.rstrip()} {markers}"
+    return enriched
+
+
+def _search_ranked_sources(
+    *,
+    session: Session,
+    vector_store: PgVectorStore,
+    user_id: int,
+    query_embedding: Sequence[float],
+    query: str,
+    lexical_query: LexicalQuery,
+    retrieval_limit: int,
+    similarity_threshold: float,
+    limit: int,
+    document_ids: Sequence[int] | None,
+    note_ids: Sequence[int] | None,
+    prior_document_ids: set[int],
+    prior_note_ids: set[int],
+) -> list[RAGContextSource]:
+    chunk_hits = (
+        vector_store.similarity_search(
+            user_id=user_id,
+            query_embedding=query_embedding,
+            top_k=retrieval_limit,
+            similarity_threshold=None,
+            document_ids=document_ids,
+        )
+        if document_ids is None or document_ids
+        else []
+    )
+    note_hits = (
+        vector_store.note_similarity_search(
+            user_id=user_id,
+            query_embedding=query_embedding,
+            top_k=retrieval_limit,
+            similarity_threshold=None,
+            note_ids=note_ids,
+        )
+        if note_ids is None or note_ids
+        else []
+    )
+    lexical_chunk_hits = (
+        vector_store.lexical_chunk_search(
+            user_id=user_id,
+            query=lexical_query,
+            top_k=retrieval_limit,
+            document_ids=document_ids,
+        )
+        if document_ids is None or document_ids
+        else []
+    )
+    lexical_note_hits = (
+        vector_store.lexical_note_search(
+            user_id=user_id,
+            query=lexical_query,
+            top_k=retrieval_limit,
+            note_ids=note_ids,
+        )
+        if note_ids is None or note_ids
+        else []
+    )
+    document_map = _load_document_map(
+        session=session,
+        document_ids=[
+            *[item.document_id for item in chunk_hits],
+            *[item.document_id for item in lexical_chunk_hits],
+        ],
+    )
+    return _rerank_vector_sources(
+        query=query,
+        chunk_hits=chunk_hits,
+        note_hits=note_hits,
+        lexical_chunk_hits=lexical_chunk_hits,
+        lexical_note_hits=lexical_note_hits,
+        document_map=document_map,
+        similarity_threshold=similarity_threshold,
+        limit=limit,
+        prior_document_ids=prior_document_ids,
+        prior_note_ids=prior_note_ids,
+    )
+
+
+def _rerank_vector_sources(
+    *,
+    query: str,
+    chunk_hits: Sequence[VectorSearchResult],
+    note_hits: Sequence[NoteVectorSearchResult],
+    lexical_chunk_hits: Sequence[LexicalChunkSearchResult],
+    lexical_note_hits: Sequence[LexicalNoteSearchResult],
+    document_map: dict[int, Document],
+    similarity_threshold: float,
+    limit: int,
+    prior_document_ids: set[int],
+    prior_note_ids: set[int],
+) -> list[RAGContextSource]:
+    candidates: list[RerankCandidate] = []
+    chunk_lookup: dict[str, VectorSearchResult | LexicalChunkSearchResult] = {}
+    note_lookup: dict[str, NoteVectorSearchResult | LexicalNoteSearchResult] = {}
+    lexical_chunks = {hit.chunk_id: hit for hit in lexical_chunk_hits}
+    lexical_notes = {hit.note_id: hit for hit in lexical_note_hits}
+    seen_chunks: set[int] = set()
+    seen_notes: set[int] = set()
+
+    for hit in chunk_hits:
+        source_key = f"document:{hit.chunk_id}"
+        document = document_map.get(hit.document_id)
+        title = document.title if document else f"Document {hit.document_id}"
+        lexical_hit = lexical_chunks.get(hit.chunk_id)
+        candidates.append(
+            RerankCandidate(
+                source_key=source_key,
+                source_type="document",
+                source_id=hit.chunk_id,
+                title=title,
+                content=hit.content,
+                vector_score=hit.score,
+                lexical_score=lexical_hit.lexical_score if lexical_hit else 0.0,
+                exact_match=lexical_hit.exact_match if lexical_hit else False,
+                prior_source=hit.document_id in prior_document_ids,
+            )
+        )
+        chunk_lookup[source_key] = hit
+        seen_chunks.add(hit.chunk_id)
+
+    for hit in lexical_chunk_hits:
+        if hit.chunk_id in seen_chunks:
+            continue
+        source_key = f"document:{hit.chunk_id}"
+        document = document_map.get(hit.document_id)
+        title = document.title if document else f"Document {hit.document_id}"
+        candidates.append(
+            RerankCandidate(
+                source_key=source_key,
+                source_type="document",
+                source_id=hit.chunk_id,
+                title=title,
+                content=hit.content,
+                vector_score=None,
+                lexical_score=hit.lexical_score,
+                exact_match=hit.exact_match,
+                prior_source=hit.document_id in prior_document_ids,
+            )
+        )
+        chunk_lookup[source_key] = hit
+
+    for hit in note_hits:
+        source_key = f"note:{hit.note_id}"
+        lexical_hit = lexical_notes.get(hit.note_id)
+        candidates.append(
+            RerankCandidate(
+                source_key=source_key,
+                source_type="note",
+                source_id=hit.note_id,
+                title=hit.title,
+                content=hit.content,
+                vector_score=hit.score,
+                lexical_score=lexical_hit.lexical_score if lexical_hit else 0.0,
+                exact_match=lexical_hit.exact_match if lexical_hit else False,
+                prior_source=hit.note_id in prior_note_ids,
+            )
+        )
+        note_lookup[source_key] = hit
+        seen_notes.add(hit.note_id)
+
+    for hit in lexical_note_hits:
+        if hit.note_id in seen_notes:
+            continue
+        source_key = f"note:{hit.note_id}"
+        candidates.append(
+            RerankCandidate(
+                source_key=source_key,
+                source_type="note",
+                source_id=hit.note_id,
+                title=hit.title,
+                content=hit.content,
+                vector_score=None,
+                lexical_score=hit.lexical_score,
+                exact_match=hit.exact_match,
+                prior_source=hit.note_id in prior_note_ids,
+            )
+        )
+        note_lookup[source_key] = hit
+
+    ranked = rerank_candidates(
+        query=query,
+        candidates=candidates,
+        similarity_threshold=similarity_threshold,
+        limit=limit,
+        hybrid_score_window=0.10,
+    )
+    return [
+        _context_source_from_ranked(
+            citation_id=index,
+            ranked=item,
+            chunk_lookup=chunk_lookup,
+            note_lookup=note_lookup,
+            similarity_threshold=similarity_threshold,
+        )
+        for index, item in enumerate(ranked, start=1)
+    ]
+
+
+def _context_source_from_ranked(
+    *,
+    citation_id: int,
+    ranked: RerankedCandidate,
+    chunk_lookup: dict[str, VectorSearchResult | LexicalChunkSearchResult],
+    note_lookup: dict[str, NoteVectorSearchResult | LexicalNoteSearchResult],
+    similarity_threshold: float,
+) -> RAGContextSource:
+    if ranked.source_type == "document":
+        hit = chunk_lookup[ranked.source_key]
+        return RAGContextSource(
+            citation_id=citation_id,
+            source_type="document",
+            source_id=hit.document_id,
+            title=ranked.title,
+            content=hit.content,
+            vector_score=(
+                ranked.vector_score
+                if ranked.vector_score is not None and ranked.vector_score >= similarity_threshold
+                else None
+            ),
+            hybrid_score=ranked.hybrid_score,
+            chunk_id=hit.chunk_id,
+            chunk_index=hit.chunk_index,
+            origin=ranked.match_type,
+        )
+
+    hit = note_lookup[ranked.source_key]
+    return RAGContextSource(
+        citation_id=citation_id,
+        source_type="note",
+        source_id=hit.note_id,
+        title=hit.title,
+        content=hit.content,
+        vector_score=(
+            ranked.vector_score
+            if ranked.vector_score is not None and ranked.vector_score >= similarity_threshold
+            else None
+        ),
+        hybrid_score=ranked.hybrid_score,
+        origin=ranked.match_type,
+    )
+
+
+def _append_inventory_sources(
+    *,
+    sources: Sequence[RAGContextSource],
+    inventory_entries: Sequence[WorkspaceInventoryEntry],
+) -> list[RAGContextSource]:
+    combined = list(sources)
+    existing_entities = {(source.source_type, source.source_id) for source in sources}
+    next_citation_id = len(combined) + 1
+    for entry in inventory_entries:
+        entity_key = (entry.source_type, entry.source_id)
+        if entity_key in existing_entities:
+            continue
+        combined.append(
+            RAGContextSource(
+                citation_id=next_citation_id,
+                source_type=entry.source_type,
+                source_id=entry.source_id,
+                title=entry.title,
+                content=entry.description,
+                vector_score=None,
+                hybrid_score=None,
+                origin="inventory",
+            )
+        )
+        existing_entities.add(entity_key)
+        next_citation_id += 1
+    return combined
+
+
+def _build_cited_sources_payload(
+    *,
+    sources: Sequence[RAGContextSource],
+    cited_ids: Sequence[int],
+) -> dict[str, Any]:
+    source_map = {source.citation_id: source for source in sources}
+    documents: list[dict[str, Any]] = []
+    document_map: dict[int, dict[str, Any]] = {}
+    chunks: list[dict[str, Any]] = []
+    notes: list[dict[str, Any]] = []
+
+    for citation_id in cited_ids:
+        source = source_map.get(citation_id)
+        if source is None:
+            continue
+
+        if source.source_type == "document":
+            document = document_map.get(source.source_id)
+            if document is None:
+                document = {
+                    "document_id": source.source_id,
+                    "title": source.title,
+                    "chunk_count": 0,
+                    "max_score": source.vector_score,
+                    "citation_ids": [],
+                    "origin": source.origin,
+                }
+                document_map[source.source_id] = document
+                documents.append(document)
+            document["citation_ids"].append(citation_id)
+            if source.chunk_id is not None:
+                document["chunk_count"] += max(1, len(source.supporting_chunk_ids))
+                current_max = document["max_score"]
+                if current_max is None or (
+                    source.vector_score is not None and source.vector_score > current_max
+                ):
+                    document["max_score"] = source.vector_score
+                chunks.append(
+                    {
+                        "chunk_id": source.chunk_id,
+                        "document_id": source.source_id,
+                        "document_title": source.title,
+                        "chunk_index": source.chunk_index or 0,
+                        "chunk_end_index": source.chunk_end_index,
+                        "score": source.vector_score,
+                        "hybrid_score": source.hybrid_score,
+                        "preview": create_content_preview(source.content, max_length=200),
+                        "citation_id": citation_id,
+                        "origin": source.origin,
+                    }
+                )
+            continue
+
+        notes.append(
+            {
+                "note_id": source.source_id,
+                "title": source.title,
+                "score": source.vector_score,
+                "hybrid_score": source.hybrid_score,
+                "preview": create_content_preview(source.content, max_length=200),
+                "citation_id": citation_id,
+                "origin": source.origin,
+            }
+        )
+
+    return {"documents": documents, "chunks": chunks, "notes": notes}
 
 
 def ensure_workspace_embeddings(
