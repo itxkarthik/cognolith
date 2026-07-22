@@ -223,6 +223,7 @@ class UserSettings(TimestampMixin, SQLModel, table=True):
     default_note_folder_id: int | None = Field(default=None, foreign_key="note_folders.id")
     email_notifications: bool = Field(default=True)
     processing_notifications: bool = Field(default=True)
+    rag_diagnostics_enabled: bool = Field(default=False)
 
     # Relationships
     user: User = Relationship(back_populates="settings")

@@ -16,6 +16,8 @@ COPY frontend/ ./
 # Use relative path for browser requests (will proxy to backend)
 ARG NEXT_PUBLIC_API_URL=/api/v1
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ARG NEXT_PUBLIC_STREAM_API_URL=http://localhost:3000/api/v1
+ENV NEXT_PUBLIC_STREAM_API_URL=${NEXT_PUBLIC_STREAM_API_URL}
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN pnpm build

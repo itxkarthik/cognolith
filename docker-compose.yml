@@ -6,10 +6,12 @@ services:
       dockerfile: frontend/Dockerfile
       args:
         NEXT_PUBLIC_API_URL: /api/v1
+        NEXT_PUBLIC_STREAM_API_URL: http://localhost:3000/api/v1
     container_name: cognolith-frontend
     environment:
       # Relative path for browser-side requests (proxied by Next.js)
       NEXT_PUBLIC_API_URL: /api/v1
+      NEXT_PUBLIC_STREAM_API_URL: http://localhost:3000/api/v1
       NEXT_PUBLIC_FRONTEND_URL: ${NEXT_PUBLIC_FRONTEND_URL:-http://localhost:8080}
       # Backend URL for Next.js server-side rewrites (internal Docker network)
       BACKEND_URL: http://backend:3000

@@ -41,6 +41,8 @@ export default function ChatSessionPage() {
     error,
     fetchSessionById,
     sendMessage,
+    cancelMessage,
+    retryMessage,
     saveSessionAsNote,
     clearError,
   } = useChat();
@@ -136,10 +138,12 @@ export default function ChatSessionPage() {
 
       {savedStatus ? <p className="rounded-sm border border-border bg-muted p-3 text-sm text-foreground">{savedStatus}</p> : null}
 
-      <ChatHistory messages={activeSession ? renderedMessages : []} isLoading={isLoading} streamingMessageId={streamingMessageId} />
+      <ChatHistory messages={activeSession ? renderedMessages : []} isLoading={isLoading} streamingMessageId={streamingMessageId} onRetry={(messageId) => retryMessage(sessionId, messageId).then(() => undefined)} />
 
       <ChatInput
-        disabled={isSendingMessage || !activeSession || aiStatus !== "ready"}
+        disabled={!activeSession || aiStatus !== "ready"}
+        isGenerating={isSendingMessage}
+        onCancel={() => cancelMessage(sessionId)}
         onSend={async (content) => {
           setSavedStatus(null);
           await sendMessage(sessionId, content);

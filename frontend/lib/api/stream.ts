@@ -1,127 +1,107 @@
-/**
- * Server-Sent Events (SSE) stream parser for chat responses.
- *
- * Handles streaming text from backend /messages/stream endpoint
- * with proper error handling and chunk parsing.
- */
+import { apiConfig, tokenKeys } from "../../config/api";
+import type { ChatMessageResponse } from "../../types";
+
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const prefix = `${encodeURIComponent(name)}=`;
+  const value = document.cookie.split("; ").find((item) => item.startsWith(prefix));
+  return value ? decodeURIComponent(value.slice(prefix.length)) : null;
+}
+
+export type ChatStreamEvent =
+  | { type: "generation_started"; session_id: number; user_message: ChatMessageResponse; assistant_message: ChatMessageResponse }
+  | { type: "retrieval_complete"; message_id: number; diagnostics: Record<string, unknown> | null }
+  | { type: "token"; message_id: number; delta: string }
+  | { type: "answer_reset"; message_id: number; reason: "grounding_repair" }
+  | { type: "sources"; message_id: number; sources: ChatMessageResponse["sources"] }
+  | { type: "completed"; message: ChatMessageResponse }
+  | { type: "cancelled"; message: ChatMessageResponse }
+  | { type: "error"; code: string; message: string; retryable: boolean; assistant_message_id: number };
 
 export interface StreamOptions {
-	signal?: AbortSignal;
-	onChunk?: (chunk: string) => void;
-	onError?: (error: Error) => void;
-	onComplete?: () => void;
+  signal?: AbortSignal;
+  onEvent?: (event: ChatStreamEvent) => void;
+  onError?: (error: Error) => void;
+  onComplete?: () => void;
 }
 
-/**
- * Parse Server-Sent Events stream from chat endpoint
- *
- * @param response - Fetch Response object with text/event-stream content
- * @param options - Configuration and callbacks for stream processing
- * @throws Error if stream parsing fails or network error occurs
- */
-export async function parseSSEStream(
-	response: Response,
-	options: StreamOptions = {}
-): Promise<void> {
-	const { signal, onChunk, onError, onComplete } = options;
-
-	if (!response.body) {
-		throw new Error("Response body is empty");
-	}
-
-	if (!response.ok) {
-		const text = await response.text();
-		throw new Error(`HTTP ${response.status}: ${text}`);
-	}
-
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = "";
-
-	try {
-		while (true) {
-			// Check for abort signal
-			if (signal?.aborted) {
-				reader.cancel();
-				throw new Error("Stream aborted by user");
-			}
-
-			const { done, value } = await reader.read();
-			if (done) break;
-
-			// Decode chunk and add to buffer
-			buffer += decoder.decode(value, { stream: true });
-
-			// Process complete SSE messages (separated by \n\n)
-			const lines = buffer.split("\n\n");
-
-			// Keep the last incomplete message in buffer
-			buffer = lines[lines.length - 1];
-
-			// Process all complete messages
-			for (let i = 0; i < lines.length - 1; i++) {
-				const message = lines[i].trim();
-				if (!message) continue;
-
-				// Parse SSE format: "data: <content>"
-				if (message.startsWith("data: ")) {
-					const data = message.slice(6).trim();
-
-					// Check for completion marker
-					if (data === "[DONE]") {
-						onComplete?.();
-						return;
-					}
-
-					// Unescape newlines and yield chunk
-					const unescaped = data.replace(/\\n/g, "\n");
-					onChunk?.(unescaped);
-				}
-			}
-		}
-
-		// Process any remaining buffer
-		if (buffer.trim()) {
-			const message = buffer.trim();
-			if (message.startsWith("data: ")) {
-				const data = message.slice(6).trim();
-				if (data !== "[DONE]") {
-					const unescaped = data.replace(/\\n/g, "\n");
-					onChunk?.(unescaped);
-				}
-			}
-		}
-
-		onComplete?.();
-	} catch (error) {
-		const err = error instanceof Error ? error : new Error(String(error));
-		onError?.(err);
-		throw err;
-	} finally {
-		reader.releaseLock();
-	}
+function parseFrame(frame: string): ChatStreamEvent | null {
+  const lines = frame.replace(/\r\n/g, "\n").split("\n");
+  let eventName = "message";
+  const data: string[] = [];
+  for (const line of lines) {
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+  }
+  if (!data.length || eventName === "message") return null;
+  const payload = JSON.parse(data.join("\n")) as Record<string, unknown>;
+  return { type: eventName, ...payload } as ChatStreamEvent;
 }
 
-/**
- * Stream chat message to backend with SSE parsing
- *
- * @param url - API endpoint URL (e.g., "/api/v1/chat/sessions/1/messages/stream")
- * @param payload - Chat message payload
- * @param options - Stream options with callbacks
- */
-export async function streamChatMessage(
-	url: string,
-	payload: { content: string },
-	options: StreamOptions = {}
-): Promise<void> {
-	const response = await fetch(url, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-		},
-		body: JSON.stringify(payload),
-		signal: options.signal,
-	});
+export async function parseSSEStream(response: Response, options: StreamOptions = {}): Promise<void> {
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+  if (!response.body) throw new Error("Response body is empty");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      if (options.signal?.aborted) throw new DOMException("Stream aborted", "AbortError");
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      buffer = buffer.replace(/\r\n/g, "\n");
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() ?? "";
+      for (const frame of frames) {
+        const event = parseFrame(frame);
+        if (event) options.onEvent?.(event);
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) {
+      const event = parseFrame(buffer);
+      if (event) options.onEvent?.(event);
+    }
+    options.onComplete?.();
+  } catch (value) {
+    const error = value instanceof Error ? value : new Error(String(value));
+    options.onError?.(error);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
 
-	await parseSSEStream(response, options);
+async function postStream(url: string, body: unknown, options: StreamOptions): Promise<void> {
+  const csrf = readCookie(tokenKeys.csrf);
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrf) headers[apiConfig.csrfHeaderName] = csrf;
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    credentials: "include",
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+  await parseSSEStream(response, options);
+}
+
+export function streamChatMessage(sessionId: number, content: string, options: StreamOptions): Promise<void> {
+  return postStream(`${apiConfig.streamBaseUrl}/chat/sessions/${sessionId}/messages/stream`, { content, role: "user" }, options);
+}
+
+export function retryChatMessage(sessionId: number, messageId: number, options: StreamOptions): Promise<void> {
+  return postStream(`${apiConfig.streamBaseUrl}/chat/sessions/${sessionId}/messages/${messageId}/retry/stream`, {}, options);
+}
+
+export async function cancelStreamingMessage(sessionId: number, messageId: number): Promise<void> {
+  const csrf = readCookie(tokenKeys.csrf);
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (csrf) headers[apiConfig.csrfHeaderName] = csrf;
+  const response = await fetch(
+    `${apiConfig.streamBaseUrl}/chat/sessions/${sessionId}/messages/${messageId}/cancel`,
+    { method: "POST", headers, credentials: "include", body: "{}" }
+  );
+  if (!response.ok) throw new Error(`Cancellation failed with HTTP ${response.status}`);
 }

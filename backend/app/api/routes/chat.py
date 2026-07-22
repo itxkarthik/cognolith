@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
@@ -6,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 import jwt
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from jwt.exceptions import InvalidTokenError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -17,7 +16,7 @@ from app.core import security
 from app.core.config import settings
 from app.core.database import engine
 from app.core.websocket import manager
-from app.models.chat import ChatMessages, ChatRole, ChatSession
+from app.models.chat import ChatGenerationStatus, ChatMessages, ChatRole, ChatSession
 from app.models.user import TokenBlacklist, TokenPayload, User
 from app.schemas.chat import (
     ChatCreate,
@@ -28,54 +27,33 @@ from app.schemas.chat import (
 )
 from app.schemas.error import StandardErrorResponse
 from app.schemas.note import NoteResponse
+from app.services.chat_generation import (
+    create_generation_messages,
+    create_retry_message,
+    generation_coordinator,
+    stream_chat_generation,
+)
 from app.services.chat_service import (
     convert_chat_to_note,
     create_chat_session,
     get_chat_session_by_id,
     list_chat_sessions,
     send_message_and_get_response,
-    stream_message_response,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _generate_chat_response_in_worker(
-    *, user_id: int, session_id: int, body: ChatMessageCreate
-) -> ChatMessages:
-    with Session(engine) as worker_session:
-        user = worker_session.get(User, user_id)
-        if user is None:
-            raise ValueError("Authenticated user no longer exists")
-        _, assistant_message = send_message_and_get_response(
-            session=worker_session,
-            current_user=user,
-            chat_session_id=session_id,
-            payload=body,
-        )
-        return assistant_message
-
-
 async def _stream_generated_chat_response(
-    *, user_id: int, session_id: int, body: ChatMessageCreate
+    *, user_id: int, session_id: int, user_message_id: int, assistant_message_id: int
 ) -> AsyncGenerator[str, None]:
     yield ": connected\n\n"
-    generation = asyncio.create_task(
-        asyncio.to_thread(
-            _generate_chat_response_in_worker,
-            user_id=user_id,
-            session_id=session_id,
-            body=body,
-        )
-    )
-    while not generation.done():
-        try:
-            await asyncio.wait_for(asyncio.shield(generation), timeout=10)
-        except TimeoutError:
-            yield ": keep-alive\n\n"
-
-    assistant_message = await generation
-    async for event in stream_message_response(assistant_message=assistant_message):
+    async for event in stream_chat_generation(
+        user_id=user_id,
+        session_id=session_id,
+        user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
+    ):
         yield event
 
 
@@ -178,6 +156,15 @@ def _to_chat_message_response(message: ChatMessages) -> ChatMessageResponse:
         tokens_used=message.tokens_used,
         response_time_ms=message.response_time_ms,
         sources=ChatSources.model_validate(message.sources) if message.sources else None,
+        generation_status=(
+            message.generation_status.value
+            if isinstance(message.generation_status, ChatGenerationStatus)
+            else message.generation_status
+        ),
+        generation_error=message.generation_error,
+        generation_metadata=message.generation_metadata,
+        generation_started_at=message.generation_started_at,
+        generation_completed_at=message.generation_completed_at,
         created_at=message.created_at,
         updated_at=message.updated_at,
     )
@@ -368,17 +355,71 @@ async def stream_message_endpoint(
     """
     if current_user.id is None:
         raise ValueError("Authenticated user has no id")
+    chat_session = get_chat_session_by_id(
+        session=session, current_user=current_user, chat_session_id=session_id
+    )
+    user_message, assistant_message, _ = create_generation_messages(
+        session=session,
+        user=current_user,
+        chat_session=chat_session,
+        content=body.content,
+    )
+    if user_message.id is None or assistant_message.id is None:
+        raise RuntimeError("Streaming messages were not persisted")
     return StreamingResponse(
         _stream_generated_chat_response(
             user_id=current_user.id,
             session_id=session_id,
-            body=body,
+            user_message_id=user_message.id,
+            assistant_message_id=assistant_message.id,
         ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",  # Disable proxy buffering for Nginx/Apache
         },
+    )
+
+
+@router.post(path="/sessions/{session_id}/messages/{message_id}/cancel")
+def cancel_message_endpoint(
+    *, session: SessionDep, current_user: CurrentUser, session_id: int, message_id: int
+) -> dict[str, str]:
+    get_chat_session_by_id(session=session, current_user=current_user, chat_session_id=session_id)
+    message = session.get(ChatMessages, message_id)
+    if message is None or message.session_id != session_id or message.role != ChatRole.assistant:
+        raise HTTPException(status_code=404, detail="Assistant message not found")
+    if not generation_coordinator.cancel(message_id):
+        raise HTTPException(status_code=409, detail="This reply is not currently generating.")
+    return {"message": "Cancellation requested."}
+
+
+@router.post(path="/sessions/{session_id}/messages/{message_id}/retry/stream")
+async def retry_message_endpoint(
+    *, session: SessionDep, current_user: CurrentUser, session_id: int, message_id: int
+) -> StreamingResponse:
+    if current_user.id is None:
+        raise ValueError("Authenticated user has no id")
+    chat_session = get_chat_session_by_id(
+        session=session, current_user=current_user, chat_session_id=session_id
+    )
+    user_message, assistant_message, _ = create_retry_message(
+        session=session,
+        user=current_user,
+        chat_session=chat_session,
+        failed_message_id=message_id,
+    )
+    if user_message.id is None or assistant_message.id is None:
+        raise RuntimeError("Retry messages were not persisted")
+    return StreamingResponse(
+        _stream_generated_chat_response(
+            user_id=current_user.id,
+            session_id=session_id,
+            user_message_id=user_message.id,
+            assistant_message_id=assistant_message.id,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

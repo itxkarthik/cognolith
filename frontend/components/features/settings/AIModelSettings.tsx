@@ -31,6 +31,7 @@ function formatModelSize(bytes: number): string {
 export function AIModelSettings() {
   const [settings, setSettings] = useState<UserAISettings | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
+  const [diagnosticsEnabled, setDiagnosticsEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export function AIModelSettings() {
       const response = await getUserAISettings();
       setSettings(response);
       setSelectedModel(response.llm_model);
+      setDiagnosticsEnabled(response.rag_diagnostics_enabled);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load AI settings.");
     } finally {
@@ -60,7 +62,10 @@ export function AIModelSettings() {
     [selectedModel, settings]
   );
 
-  const hasChanges = Boolean(settings && selectedModel && selectedModel !== settings.llm_model);
+  const hasChanges = Boolean(settings && selectedModel && (
+    selectedModel !== settings.llm_model ||
+    diagnosticsEnabled !== settings.rag_diagnostics_enabled
+  ));
 
   const savePreference = async () => {
     if (!selectedModel || !hasChanges) return;
@@ -68,7 +73,10 @@ export function AIModelSettings() {
     setError(null);
     setSavedMessage(null);
     try {
-      const response = await updateUserAISettings(selectedModel);
+      const response = await updateUserAISettings({
+        llm_model: selectedModel,
+        rag_diagnostics_enabled: diagnosticsEnabled,
+      });
       setSettings(response);
       setSelectedModel(response.llm_model);
       setSavedMessage(`Using ${response.llm_model} for new chat responses.`);
@@ -134,6 +142,26 @@ export function AIModelSettings() {
                 </div>
                 <p className="text-xs text-muted-foreground">Used for document and note retrieval.</p>
               </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-4 border-t border-border pt-4">
+              <div>
+                <p className="text-sm font-medium text-foreground">Retrieval diagnostics</p>
+                <p className="text-xs text-muted-foreground">Show developer details for grounded chat responses.</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={diagnosticsEnabled}
+                onClick={() => {
+                  setDiagnosticsEnabled((value) => !value);
+                  setSavedMessage(null);
+                }}
+                className={`relative h-6 w-11 rounded-full border transition-colors ${diagnosticsEnabled ? "border-primary bg-primary" : "border-border bg-muted"}`}
+              >
+                <span className={`absolute top-0.5 h-[18px] w-[18px] rounded-full bg-background transition-[left] ${diagnosticsEnabled ? "left-[21px]" : "left-0.5"}`} />
+                <span className="sr-only">Toggle retrieval diagnostics</span>
+              </button>
             </div>
 
             {error ? <p className="border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}

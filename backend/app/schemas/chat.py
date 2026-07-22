@@ -82,6 +82,11 @@ class ChatMessageResponse(BaseModel):
     tokens_used: int | None = None
     response_time_ms: int | None = None
     sources: ChatSources | None = None
+    generation_status: str | None = None
+    generation_error: str | None = None
+    generation_metadata: dict | None = None
+    generation_started_at: datetime | None = None
+    generation_completed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

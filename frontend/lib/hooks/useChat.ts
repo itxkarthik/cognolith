@@ -23,6 +23,8 @@ export function useChat() {
 	const fetchSessionById = useChatStore((state) => state.fetchSessionById);
 	const createSession = useChatStore((state) => state.createSession);
 	const sendMessage = useChatStore((state) => state.sendMessage);
+	const cancelMessage = useChatStore((state) => state.cancelMessage);
+	const retryMessage = useChatStore((state) => state.retryMessage);
 	const saveSessionAsNote = useChatStore((state) => state.saveSessionAsNote);
 	const setSelectedSession = useChatStore((state) => state.setSelectedSession);
 	const clearError = useChatStore((state) => state.clearError);
@@ -62,6 +64,8 @@ export function useChat() {
 		fetchSessionById,
 		createSession,
 		sendMessage,
+		cancelMessage,
+		retryMessage,
 		saveSessionAsNote,
 		setSelectedSession,
 		clearError,

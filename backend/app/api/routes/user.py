@@ -251,6 +251,7 @@ async def read_user_ai_settings(
         embedding_model=preferences.embedding_model,
         ollama_available=ollama_available,
         available_models=models,
+        rag_diagnostics_enabled=preferences.rag_diagnostics_enabled,
     )
 
 
@@ -272,13 +273,16 @@ async def update_user_ai_settings(
     preferences = _resolve_user_ai_settings(session, _current_user_id(current_user))
     ollama_available, models = await _fetch_chat_models(preferences.embedding_model)
     installed_names = {model.name for model in models}
-    if not ollama_available:
+    if body.llm_model is not None and not ollama_available:
         raise HTTPException(status_code=503, detail="Ollama is unavailable")
-    if body.llm_model not in installed_names:
+    if body.llm_model is not None and body.llm_model not in installed_names:
         raise HTTPException(status_code=400, detail="Selected model is not installed")
 
-    preferences.llm_provider = LlmProvider.ollama
-    preferences.llm_model = body.llm_model
+    if body.llm_model is not None:
+        preferences.llm_provider = LlmProvider.ollama
+        preferences.llm_model = body.llm_model
+    if body.rag_diagnostics_enabled is not None:
+        preferences.rag_diagnostics_enabled = body.rag_diagnostics_enabled
     session.add(preferences)
     session.commit()
     session.refresh(preferences)
@@ -286,8 +290,9 @@ async def update_user_ai_settings(
     return UserAISettingsResponse(
         llm_model=preferences.llm_model,
         embedding_model=preferences.embedding_model,
-        ollama_available=True,
+        ollama_available=ollama_available,
         available_models=models,
+        rag_diagnostics_enabled=preferences.rag_diagnostics_enabled,
     )
 
 

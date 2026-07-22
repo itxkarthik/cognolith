@@ -59,6 +59,15 @@ class RAGResult:
 
 
 @dataclass(slots=True)
+class PreparedRAGResponse:
+    messages: list[dict[str, str]]
+    context_sources: list[RAGContextSource]
+    context_chunks: list[str]
+    grounded: bool
+    diagnostics: dict[str, Any]
+
+
+@dataclass(slots=True)
 class WorkspaceInventoryEntry:
     source_type: str
     source_id: int
@@ -420,6 +429,148 @@ def run_rag_pipeline(
         )
     sources = _build_cited_sources_payload(sources=context_sources, cited_ids=cited_ids)
     return RAGResult(answer=answer, sources=sources)
+
+
+def prepare_rag_pipeline(
+    *,
+    session: Session,
+    user_id: int,
+    query: str,
+    conversation_history: Sequence[dict[str, Any]] | None = None,
+) -> PreparedRAGResponse:
+    """Prepare retrieval and prompts without invoking the chat model."""
+    query = query.strip()
+    history = [
+        {"role": str(item.get("role", "user")), "content": str(item.get("content", ""))}
+        for item in (conversation_history or [])[-6:]
+    ]
+    if _is_casual_conversation(query):
+        prompt = (
+            "You are Cognolith, a friendly, capable knowledge assistant. Respond naturally and "
+            "briefly. Do not summarize workspace documents unless asked."
+        )
+        return PreparedRAGResponse(
+            messages=build_chat_messages(
+                user_prompt=query, system_prompt=prompt, conversation_history=history
+            ),
+            context_sources=[],
+            context_chunks=[],
+            grounded=False,
+            diagnostics={"mode": "casual"},
+        )
+
+    retrieval_context = _resolve_retrieval_context(
+        query=query, conversation_history=conversation_history
+    )
+    retrieval_query = retrieval_context.retrieval_query
+    query_embedding, embedding_model = _run_async(
+        generate_embedding(session=session, user_id=user_id, text=retrieval_query)
+    )
+    user_settings = session.get(UserSettings, user_id)
+    top_k = user_settings.top_k_results if user_settings else 5
+    threshold = user_settings.similarity_threshold if user_settings else 0.7
+    needs_inventory = _needs_workspace_inventory(retrieval_query)
+    vector_store = PgVectorStore(session=session)
+    vector_store.ensure_schema(embedding_dimensions=len(query_embedding))
+    ensure_workspace_embeddings(
+        session=session,
+        vector_store=vector_store,
+        user_id=user_id,
+        embedding_model=embedding_model,
+    )
+    lexical_query = build_lexical_query(retrieval_query)
+    has_prior_scope = bool(retrieval_context.prior_document_ids or retrieval_context.prior_note_ids)
+    sources = _search_ranked_sources(
+        session=session,
+        vector_store=vector_store,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        query=retrieval_query,
+        lexical_query=lexical_query,
+        retrieval_limit=max(20, top_k * 4),
+        similarity_threshold=threshold,
+        limit=top_k,
+        document_ids=retrieval_context.prior_document_ids if has_prior_scope else None,
+        note_ids=retrieval_context.prior_note_ids if has_prior_scope else None,
+        prior_document_ids=set(retrieval_context.prior_document_ids),
+        prior_note_ids=set(retrieval_context.prior_note_ids),
+    )
+    if not sources and has_prior_scope:
+        sources = _search_ranked_sources(
+            session=session,
+            vector_store=vector_store,
+            user_id=user_id,
+            query_embedding=query_embedding,
+            query=retrieval_query,
+            lexical_query=lexical_query,
+            retrieval_limit=max(20, top_k * 4),
+            similarity_threshold=threshold,
+            limit=top_k,
+            document_ids=None,
+            note_ids=None,
+            prior_document_ids=set(retrieval_context.prior_document_ids),
+            prior_note_ids=set(retrieval_context.prior_note_ids),
+        )
+    inventory = (
+        _load_workspace_inventory(session=session, user_id=user_id) if needs_inventory else []
+    )
+    sources = _append_inventory_sources(sources=sources, inventory_entries=inventory)
+    sources = _expand_document_context_sources(session=session, sources=sources)
+    if not sources:
+        prompt = (
+            "You are Cognolith, a helpful knowledge assistant. Answer general questions directly. "
+            "For personal workspace facts with no context, clearly say the information was not found."
+        )
+        return PreparedRAGResponse(
+            messages=build_chat_messages(
+                user_prompt=query, system_prompt=prompt, conversation_history=history
+            ),
+            context_sources=[],
+            context_chunks=[],
+            grounded=False,
+            diagnostics={"mode": "general", "retrieval_query": retrieval_query, "selected": 0},
+        )
+
+    context_chunks = _format_citation_context(sources)
+    prompt = (
+        "You are Cognolith. Answer using all relevant reference details. Every factual claim from "
+        "workspace context must end with a valid numeric citation such as [1]. Use only citation "
+        "numbers present in the context, preserve exact names and dates, and never invent details."
+    )
+    return PreparedRAGResponse(
+        messages=build_chat_messages(
+            user_prompt=query,
+            context_chunks=context_chunks,
+            system_prompt=prompt,
+            conversation_history=history,
+        ),
+        context_sources=list(sources),
+        context_chunks=context_chunks,
+        grounded=True,
+        diagnostics={
+            "mode": "hybrid",
+            "retrieval_query": retrieval_query,
+            "follow_up": retrieval_context.is_follow_up,
+            "selected": len(sources),
+            "context_characters": sum(len(item) for item in context_chunks),
+        },
+    )
+
+
+def finalize_prepared_answer(
+    answer: str, *, prepared: PreparedRAGResponse
+) -> tuple[str, dict[str, Any]]:
+    answer = _repair_exact_terms(answer.strip(), prepared.context_chunks)
+    valid_ids = {source.citation_id for source in prepared.context_sources}
+    cited_ids = _extract_citation_ids(answer, valid_ids=valid_ids)
+    if prepared.grounded and not cited_ids:
+        cited_ids = _infer_citation_ids(answer, sources=prepared.context_sources)
+        answer = _insert_inferred_citations(
+            answer, sources=prepared.context_sources, cited_ids=cited_ids
+        )
+    return answer, _build_cited_sources_payload(
+        sources=prepared.context_sources, cited_ids=cited_ids
+    )
 
 
 _INVENTORY_SUBJECTS = (

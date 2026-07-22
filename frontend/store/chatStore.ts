@@ -5,10 +5,10 @@ import {
 	createChatSession,
 	getChatSessionById,
 	listChatSessions,
-	sendChatMessage,
 	type ConvertChatToNotePayload,
 	type ListChatSessionsParams,
 } from "@/lib/api/chat";
+import { cancelStreamingMessage, retryChatMessage, streamChatMessage, type ChatStreamEvent } from "@/lib/api/stream";
 import type {
 	ChatCreate,
 	ChatMessageResponse,
@@ -39,6 +39,8 @@ interface ChatState {
 	fetchSessionById: (sessionId: number) => Promise<void>;
 	createSession: (payload?: ChatCreate) => Promise<ChatResponse>;
 	sendMessage: (sessionId: number, content: string) => Promise<ChatMessageResponse>;
+	cancelMessage: (sessionId: number) => Promise<void>;
+	retryMessage: (sessionId: number, messageId: number) => Promise<ChatMessageResponse>;
 	saveSessionAsNote: (sessionId: number, payload?: ConvertChatToNotePayload) => Promise<NoteResponse>;
 	setSelectedSession: (session: ChatResponse | null) => void;
 	clearError: () => void;
@@ -75,46 +77,11 @@ function createTemporaryUserMessage(sessionId: number, content: string): ChatMes
 	};
 }
 
-async function streamAssistantMessage(
-	messageId: number,
-	fullContent: string,
-	set: (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void
-): Promise<void> {
-	if (!fullContent) {
-		return;
-	}
+const activeControllers = new Map<number, AbortController>();
 
-	set((state) => ({
-		streamingMessageId: messageId,
-		streamedMessages: {
-			...state.streamedMessages,
-			[messageId]: "",
-		},
-	}));
-
-	const chunkSize = 16;
-	for (let pointer = chunkSize; pointer < fullContent.length + chunkSize; pointer += chunkSize) {
-		set((state) => ({
-			streamedMessages: {
-				...state.streamedMessages,
-				[messageId]: fullContent.slice(0, Math.min(pointer, fullContent.length)),
-			},
-		}));
-
-		await new Promise((resolve) => {
-			setTimeout(resolve, 18);
-		});
-	}
-
-	set((state) => {
-		const nextStreamed = { ...state.streamedMessages };
-		delete nextStreamed[messageId];
-
-		return {
-			streamedMessages: nextStreamed,
-			streamingMessageId: state.streamingMessageId === messageId ? null : state.streamingMessageId,
-		};
-	});
+function replaceMessage(messages: ChatMessageResponse[], message: ChatMessageResponse): ChatMessageResponse[] {
+	const found = messages.some((item) => item.id === message.id);
+	return found ? messages.map((item) => item.id === message.id ? message : item) : [...messages, message];
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -228,22 +195,55 @@ export const useChatStore = create<ChatState>((set, get) => ({
 			};
 		});
 
-		try {
-			const assistantMessage = await sendChatMessage(sessionId, {
-				content: normalizedContent,
-				role: "user",
+		let started = false;
+		let finalMessage: ChatMessageResponse | null = null;
+		const controller = new AbortController();
+		activeControllers.set(sessionId, controller);
+		const applyEvent = (event: ChatStreamEvent) => {
+			set((state) => {
+				if (!state.selectedSession || state.selectedSession.id !== sessionId) return {};
+				let messages = state.selectedSession.messages;
+				if (event.type === "generation_started") {
+					started = true;
+					messages = messages.filter((item) => item.id !== optimisticUserMessage.id);
+					messages = replaceMessage(replaceMessage(messages, event.user_message), event.assistant_message);
+					return { selectedSession: { ...state.selectedSession, messages }, streamingMessageId: event.assistant_message.id };
+				}
+				if (event.type === "token") {
+					messages = messages.map((item) => item.id === event.message_id ? { ...item, content: item.content + event.delta } : item);
+				}
+				if (event.type === "answer_reset") {
+					messages = messages.map((item) => item.id === event.message_id ? { ...item, content: "", generation_metadata: { ...(item.generation_metadata ?? {}), repairing: true } } : item);
+				}
+				if (event.type === "retrieval_complete" && event.diagnostics) {
+					messages = messages.map((item) => item.id === event.message_id ? { ...item, generation_metadata: { ...(item.generation_metadata ?? {}), retrieval: event.diagnostics } } : item);
+				}
+				if (event.type === "sources") {
+					messages = messages.map((item) => item.id === event.message_id ? { ...item, sources: event.sources } : item);
+				}
+				if (event.type === "completed" || event.type === "cancelled") {
+					finalMessage = event.message;
+					messages = replaceMessage(messages, event.message);
+					return { selectedSession: { ...state.selectedSession, messages }, streamingMessageId: null };
+				}
+				return { selectedSession: { ...state.selectedSession, messages } };
 			});
+		};
 
-			const refreshedSession = await getChatSessionById(sessionId);
-			set((state) => ({
-				sessions: upsertSession(state.sessions, refreshedSession),
-				selectedSession: refreshedSession,
-			}));
-
-			await streamAssistantMessage(assistantMessage.id, assistantMessage.content, set);
-
-			return assistantMessage;
+		try {
+			await streamChatMessage(sessionId, normalizedContent, { signal: controller.signal, onEvent: applyEvent });
+			if (!finalMessage) {
+				const refreshed = await getChatSessionById(sessionId);
+				finalMessage = [...refreshed.messages].reverse().find((item) => item.role === "assistant") ?? null;
+				set((state) => ({ sessions: upsertSession(state.sessions, refreshed), selectedSession: refreshed }));
+			}
+			if (!finalMessage) throw new Error("The assistant response was not persisted.");
+			return finalMessage;
 		} catch (error) {
+			if (controller.signal.aborted) {
+				const stopped = [...(get().selectedSession?.messages ?? [])].reverse().find((item) => item.role === "assistant");
+				if (stopped) return stopped;
+			}
 			const message = error instanceof Error ? error.message : "Failed to send message.";
 
 			set((state) => {
@@ -256,7 +256,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 				return {
 					selectedSession: {
 						...state.selectedSession,
-						messages: state.selectedSession.messages.filter(
+						messages: started ? state.selectedSession.messages : state.selectedSession.messages.filter(
 							(item) => item.id !== optimisticUserMessage.id
 						),
 					},
@@ -266,12 +266,63 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
 			throw new Error(message);
 		} finally {
+			activeControllers.delete(sessionId);
 			set((state) => ({
 				pendingMessageRequests: endChatRequest(
 					state.pendingMessageRequests,
 					sessionId
 				),
 			}));
+		}
+	},
+
+	cancelMessage: async (sessionId) => {
+		const messageId = get().streamingMessageId;
+		if (!messageId) return;
+		await cancelStreamingMessage(sessionId, messageId);
+		set((state) => {
+			if (!state.selectedSession || state.selectedSession.id !== sessionId) return { streamingMessageId: null };
+			return {
+				streamingMessageId: null,
+				selectedSession: {
+					...state.selectedSession,
+					messages: state.selectedSession.messages.map((message) =>
+						message.id === messageId
+							? { ...message, generation_status: "cancelled" as const }
+							: message
+					),
+				},
+			};
+		});
+		activeControllers.get(sessionId)?.abort();
+	},
+
+	retryMessage: async (sessionId, messageId) => {
+		if (isChatRequestPending(get().pendingMessageRequests, sessionId)) throw new Error("A message is already being processed for this session.");
+		const controller = new AbortController();
+		activeControllers.set(sessionId, controller);
+		let finalMessage: ChatMessageResponse | null = null;
+		set((state) => ({ pendingMessageRequests: beginChatRequest(state.pendingMessageRequests, sessionId), error: null }));
+		try {
+			await retryChatMessage(sessionId, messageId, {
+				signal: controller.signal,
+				onEvent: (event) => {
+					set((state) => {
+						if (!state.selectedSession || state.selectedSession.id !== sessionId) return {};
+						let messages = state.selectedSession.messages;
+						if (event.type === "generation_started") messages = replaceMessage(messages, event.assistant_message);
+						if (event.type === "token") messages = messages.map((item) => item.id === event.message_id ? { ...item, content: item.content + event.delta } : item);
+						if (event.type === "answer_reset") messages = messages.map((item) => item.id === event.message_id ? { ...item, content: "" } : item);
+						if (event.type === "completed" || event.type === "cancelled") { finalMessage = event.message; messages = replaceMessage(messages, event.message); }
+						return { selectedSession: { ...state.selectedSession, messages }, streamingMessageId: event.type === "generation_started" ? event.assistant_message.id : (event.type === "completed" || event.type === "cancelled" ? null : state.streamingMessageId) };
+					});
+				},
+			});
+			if (!finalMessage) throw new Error("The retried response was not persisted.");
+			return finalMessage;
+		} finally {
+			activeControllers.delete(sessionId);
+			set((state) => ({ pendingMessageRequests: endChatRequest(state.pendingMessageRequests, sessionId) }));
 		}
 	},
 

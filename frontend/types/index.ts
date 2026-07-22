@@ -65,6 +65,7 @@ export interface UserAISettings {
 	embedding_model: string;
 	ollama_available: boolean;
 	available_models: OllamaModelOption[];
+	rag_diagnostics_enabled: boolean;
 }
 
 export interface FolderCreate {
@@ -280,6 +281,11 @@ export interface ChatMessageResponse {
 	sources?: ChatSources | null;
 	created_at: string;
 	updated_at: string;
+	generation_status?: "streaming" | "completed" | "cancelled" | "failed" | null;
+	generation_error?: string | null;
+	generation_metadata?: Record<string, unknown> | null;
+	generation_started_at?: string | null;
+	generation_completed_at?: string | null;
 }
 
 export interface ChatResponse {

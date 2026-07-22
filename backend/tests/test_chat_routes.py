@@ -1,5 +1,4 @@
 from datetime import UTC, datetime, timedelta
-from threading import Event
 from typing import cast
 from unittest import TestCase
 
@@ -18,9 +17,9 @@ from app.api.routes.chat import (
 )
 from app.core import security
 from app.core.config import settings
-from app.models.chat import ChatMessages, ChatRole, ChatSession
+from app.models.chat import ChatGenerationStatus, ChatMessages, ChatRole, ChatSession
 from app.models.user import UserCreate
-from app.schemas.chat import ChatMessageCreate
+from app.services.chat_generation import encode_sse
 
 
 class FakeWebSocket:
@@ -49,36 +48,56 @@ class ChatRouteSerializationTests(TestCase):
 
         self.assertEqual(response.role, "user")
 
-
-@pytest.mark.asyncio
-async def test_generated_chat_stream_opens_before_worker_finishes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    release_worker = Event()
-
-    def delayed_generation(**_: object) -> ChatMessages:
-        release_worker.wait(timeout=2)
+    def test_serializes_assistant_generation_lifecycle(self) -> None:
         now = datetime.now(UTC)
-        return ChatMessages(
-            id=2,
-            session_id=1,
+        message = ChatMessages(
+            id=3,
+            session_id=2,
             role=ChatRole.assistant,
-            content="Ready",
+            content="Partial",
+            generation_status=ChatGenerationStatus.cancelled,
+            generation_error=None,
+            generation_metadata={"repair_attempted": False},
+            generation_started_at=now,
+            generation_completed_at=now,
             created_at=now,
             updated_at=now,
         )
 
-    monkeypatch.setattr("app.api.routes.chat._generate_chat_response_in_worker", delayed_generation)
+        response = _to_chat_message_response(message)
+
+        assert response.generation_status == "cancelled"
+        assert response.generation_metadata == {"repair_attempted": False}
+
+
+def test_structured_sse_uses_named_json_event() -> None:
+    event = encode_sse("token", {"message_id": 2, "delta": "hello\nworld"})
+
+    assert event.startswith("event: token\n")
+    assert '"delta":"hello\\nworld"' in event
+    assert event.endswith("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_generated_chat_stream_opens_before_generation_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def generated_events(**_: object):
+        yield encode_sse("token", {"message_id": 2, "delta": "Ready"})
+        yield encode_sse("completed", {"message": {"id": 2}})
+
+    monkeypatch.setattr("app.api.routes.chat.stream_chat_generation", generated_events)
     stream = _stream_generated_chat_response(
         user_id=1,
         session_id=1,
-        body=ChatMessageCreate(content="Hi"),
+        user_message_id=1,
+        assistant_message_id=2,
     )
 
     assert await anext(stream) == ": connected\n\n"
-    release_worker.set()
     remaining = [event async for event in stream]
-    assert remaining[-1] == "data: [DONE]\n\n"
+    assert remaining[0].startswith("event: token")
+    assert remaining[-1].startswith("event: completed")
 
 
 def test_websocket_origin_must_match_configured_frontend() -> None:

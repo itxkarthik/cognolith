@@ -106,6 +106,8 @@ The main settings are:
 | `SMTP_PASSWORD` | SMTP password; for Gmail this is a Google app password |
 | `EMAILS_FROM_EMAIL` | Sender address for verification emails |
 | `OLLAMA_BASE_URL` | Optional Ollama endpoint |
+| `NEXT_PUBLIC_API_URL` | Browser API base URL for standard requests |
+| `NEXT_PUBLIC_STREAM_API_URL` | SSE-capable public backend URL; local Docker uses `http://localhost:3000/api/v1` |
 
 Local Docker uses Mailpit, so verification emails stay on the machine and can be read at `http://localhost:8025`. Production deployments must provide a real SMTP host and sender address.
 
@@ -212,6 +214,8 @@ Chat uses three response paths:
 - Casual conversation is answered directly without searching the workspace.
 - General knowledge questions use the selected chat model when workspace context is unnecessary.
 - Questions about personal notes, documents, or projects remain grounded in retrieved workspace context.
+
+Answers stream from Ollama as they are generated. **Stop response** cancels generation and preserves the partial answer; **Retry** regenerates from the same user turn without duplicating it. Grounded answers receive one citation-repair pass when needed. Retrieval diagnostics are disabled by default and can be enabled under **Settings > Local AI model**.
 
 If the correct source appears but the answer is weak, use a stronger chat model. If the correct source does not appear, review the embedding model, chunking settings, and similarity threshold.
 

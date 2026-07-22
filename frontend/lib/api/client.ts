@@ -79,7 +79,7 @@ function normalizeErrorMessage(data: ApiError | undefined, fallback: string): st
 	return fallback;
 }
 
-function readCookie(name: string): string | null {
+export function readCookie(name: string): string | null {
 	if (typeof document === "undefined") {
 		return null;
 	}

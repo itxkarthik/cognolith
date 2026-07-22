@@ -1,14 +1,16 @@
 "use client";
 
-import { ArrowUp, Loader2 } from "lucide-react";
+import { ArrowUp, Square } from "lucide-react";
 import { useRef, useState } from "react";
 
 interface ChatInputProps {
   onSend: (content: string) => Promise<void>;
   disabled?: boolean;
+  isGenerating?: boolean;
+  onCancel?: () => Promise<void>;
 }
 
-export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
+export function ChatInput({ onSend, disabled = false, isGenerating = false, onCancel }: ChatInputProps) {
   const [content, setContent] = useState("");
   const isSubmittingRef = useRef(false);
 
@@ -47,14 +49,12 @@ export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
 
         <button
           type="button"
-          onClick={() => {
-            void handleSubmit();
-          }}
-          disabled={disabled || !content.trim()}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-sm border border-border bg-primary text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-          aria-label="Send message"
+          onClick={() => { void (isGenerating ? onCancel?.() : handleSubmit()); }}
+          disabled={isGenerating ? !onCancel : disabled || !content.trim()}
+          className={`inline-flex h-10 w-10 items-center justify-center rounded-sm border text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50 ${isGenerating ? "border-destructive bg-destructive hover:bg-destructive/90" : "border-border bg-primary hover:bg-primary/90"}`}
+          aria-label={isGenerating ? "Stop response" : "Send message"}
         >
-          {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+          {isGenerating ? <Square className="h-3.5 w-3.5 fill-current" /> : <ArrowUp className="h-4 w-4" />}
         </button>
       </div>
     </section>

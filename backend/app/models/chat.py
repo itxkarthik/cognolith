@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, ClassVar
 from pydantic import ConfigDict
 from sqlalchemy import desc
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Column, Field, Index, Relationship, SQLModel
+from sqlmodel import Column, Field, Index, Relationship, SQLModel, String
 
 if TYPE_CHECKING:
     from .note import Notes
@@ -54,6 +54,13 @@ class ChatRole(StrEnum):
     system = "system"
 
 
+class ChatGenerationStatus(StrEnum):
+    streaming = "streaming"
+    completed = "completed"
+    cancelled = "cancelled"
+    failed = "failed"
+
+
 class ChatMessages(TimestampMixin, SQLModel, table=True):
     __tablename__: ClassVar[str] = "chat_messages"  # pyright: ignore
     __table_args__ = (Index("ix_chat_messages_session_created", "session_id", desc("created_at")),)
@@ -68,6 +75,12 @@ class ChatMessages(TimestampMixin, SQLModel, table=True):
     response_time_ms: int | None = Field(default=None)
     rating: int | None = Field(default=None)
     feedback: str | None = Field(default=None)
-
+    generation_status: ChatGenerationStatus | None = Field(
+        default=None, sa_column=Column(String(20), nullable=True)
+    )
+    generation_error: str | None = Field(default=None)
+    generation_metadata: dict | None = Field(default=None, sa_column=Column(JSONB))
+    generation_started_at: datetime | None = Field(default=None)
+    generation_completed_at: datetime | None = Field(default=None)
     # Relationships
     session: ChatSession = Relationship(back_populates="messages")

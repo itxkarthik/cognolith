@@ -1,17 +1,19 @@
 "use client";
 
-import { Bot, UserRound } from "lucide-react";
+import { Bot, RefreshCw, UserRound } from "lucide-react";
 
 import type { ChatMessageResponse } from "@/types";
 
 import { SourceReference } from "./SourceReference";
+import { RetrievalDiagnostics } from "./RetrievalDiagnostics";
 
 interface ChatMessageProps {
   message: ChatMessageResponse;
   isStreaming?: boolean;
+  onRetry?: (messageId: number) => Promise<void>;
 }
 
-export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) {
+export function ChatMessage({ message, isStreaming = false, onRetry }: ChatMessageProps) {
   const isUser = message.role === "user";
   const timestamp = new Date(message.created_at).toLocaleTimeString([], {
     hour: "2-digit",
@@ -35,6 +37,14 @@ export function ChatMessage({ message, isStreaming = false }: ChatMessageProps) 
         </p>
 
         {!isUser ? <SourceReference sources={message.sources} /> : null}
+        {!isUser && message.generation_metadata?.repairing && isStreaming ? <p className="mt-2 text-xs text-muted-foreground">Improving grounding...</p> : null}
+        {!isUser && (message.generation_status === "cancelled" || message.generation_status === "failed") ? (
+          <div className="mt-2 flex items-center gap-2 border-t border-border pt-2 text-xs text-muted-foreground">
+            <span>{message.generation_status === "cancelled" ? "Stopped" : "Response failed"}</span>
+            {onRetry ? <button type="button" onClick={() => void onRetry(message.id)} className="inline-flex items-center gap-1 text-foreground hover:underline"><RefreshCw className="h-3 w-3" /> Retry</button> : null}
+          </div>
+        ) : null}
+        {!isUser ? <RetrievalDiagnostics metadata={message.generation_metadata} /> : null}
       </div>
     </div>
   );

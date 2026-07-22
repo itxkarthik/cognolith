@@ -1,5 +1,6 @@
 const API_BASE_URL =
 	process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
+const STREAM_API_BASE_URL = process.env.NEXT_PUBLIC_STREAM_API_URL ?? API_BASE_URL;
 
 // Endpoint-specific timeout configurations (in milliseconds)
 // Different operations need different timeout durations based on expected processing time
@@ -26,6 +27,7 @@ const ENDPOINT_TIMEOUTS = {
 
 export const apiConfig = {
 	baseUrl: API_BASE_URL,
+	streamBaseUrl: STREAM_API_BASE_URL,
 	timeoutMs: 15000, // Default timeout
 	csrfHeaderName: "X-CSRF-Token",
 	endpointTimeouts: ENDPOINT_TIMEOUTS,

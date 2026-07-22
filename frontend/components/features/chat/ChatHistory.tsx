@@ -10,9 +10,10 @@ interface ChatHistoryProps {
   messages: ChatMessageResponse[];
   isLoading?: boolean;
   streamingMessageId?: number | null;
+  onRetry?: (messageId: number) => Promise<void>;
 }
 
-export function ChatHistory({ messages, isLoading = false, streamingMessageId = null }: ChatHistoryProps) {
+export function ChatHistory({ messages, isLoading = false, streamingMessageId = null, onRetry }: ChatHistoryProps) {
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -38,7 +39,7 @@ export function ChatHistory({ messages, isLoading = false, streamingMessageId = 
       ) : (
         <div className="space-y-3">
           {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} isStreaming={streamingMessageId === message.id} />
+            <ChatMessage key={message.id} message={message} isStreaming={streamingMessageId === message.id} onRetry={onRetry} />
           ))}
           <div ref={bottomAnchorRef} />
         </div>
