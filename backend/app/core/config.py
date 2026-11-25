@@ -243,6 +243,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_WINDOW: int = 60  # seconds
     RATE_LIMIT_MAX_REQUESTS: int = 100
     SIGNUP_RATE_LIMIT: str = "5/hour"
+    LOGIN_RATE_LIMIT: str = "5/minute"  # per client IP
+    LOGIN_EMAIL_RATE_LIMIT: str = "10/15minutes"  # per account, across all IPs
+    # Proxies (IPs or CIDRs, comma-separated) whose X-Forwarded-For header is trusted
+    # for the client address. In Docker this is the network the Next.js frontend runs on.
+    FORWARDED_ALLOW_IPS: str = "127.0.0.1"
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -254,10 +259,15 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_CHAT_MODEL: str = "llama3.2:1b"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
+    # Vector size of the embedding tables; must match the embedding model
+    # (nomic-embed-text: 768). HNSW indexes support at most 2000.
+    EMBEDDING_DIMENSIONS: int = Field(default=768, ge=1, le=2000)
 
     # Redis for distributed rate limiting (required in multi-worker deployments)
     # Set via REDIS_URL environment variable, e.g., redis://localhost:6379/0
     REDIS_URL: str | None = None
+    # Uploads processed at once in the background; extraction is CPU-bound
+    DOCUMENT_PROCESSING_CONCURRENCY: int = Field(default=2, ge=1)
 
     def get_database_url(self) -> str:
         if self.DATABASE_URL:

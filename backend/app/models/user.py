@@ -296,12 +296,17 @@ class RefreshToken(TimestampMixin, SQLModel, table=True):
         Index("ix_refresh_tokens_user_id", "user_id"),
         Index("ix_refresh_tokens_hashed_token", "hashed_token", unique=True),
         Index("ix_refresh_tokens_expires_at", "expires_at"),
+        Index("ix_refresh_tokens_family_id", "family_id"),
     )
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="users.id", nullable=False)
     hashed_token: str = Field(nullable=False, max_length=64)
     expires_at: datetime = Field(nullable=False)
     revoked: bool = Field(default=False)
+    # All tokens rotated from one login share a family, so reuse of a rotated
+    # token can revoke every descendant of it.
+    family_id: str = Field(default_factory=lambda: uuid4().hex, nullable=False, max_length=32)
+    revoked_at: datetime | None = Field(default=None)
 
     user: User = Relationship()
 

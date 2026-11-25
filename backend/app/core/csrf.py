@@ -6,6 +6,8 @@ This module provides CSRF protection by:
 2. Validating CSRF tokens on state-changing requests (POST, PUT, PATCH, DELETE)
 3. Excluding safe endpoints (health checks, login, logout)
 4. Using double-submit cookie pattern with token in header validation
+5. Checking Origin / Sec-Fetch-Site on the exempt auth endpoints, which set or
+   clear session cookies and so must not accept cross-site form posts
 """
 
 import logging
@@ -35,8 +37,35 @@ CSRF_EXEMPT_PATHS: set[str] = {
     "/api/v1/auth/refresh",
 }
 
+# Exempt endpoints that set or clear auth cookies. A browser has no CSRF token
+# before signing in, so these are protected by an Origin check instead.
+ORIGIN_CHECKED_PATHS: set[str] = {
+    "/api/v1/login/access-token",
+    "/api/v1/users/signup",
+    "/api/v1/users/verify-email",
+    "/api/v1/users/resend-verification",
+    "/api/v1/auth/logout",
+    "/api/v1/auth/refresh",
+}
+
 # HTTP methods that require CSRF protection
 CSRF_PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def is_trusted_origin(request: Request) -> bool:
+    """
+    Reject cross-site browser requests.
+
+    Browsers always send Origin on cross-site POSTs, and modern ones send
+    Sec-Fetch-Site. Requests carrying neither come from non-browser clients,
+    which can't ride on a victim's cookies, so they are allowed.
+    """
+    origin = request.headers.get("origin")
+    if origin is not None:
+        own_origin = f"{request.url.scheme}://{request.url.netloc}"
+        return origin.rstrip("/") in {own_origin, *settings.all_cors_origins}
+
+    return request.headers.get("sec-fetch-site") != "cross-site"
 
 
 def generate_csrf_token() -> str:
@@ -105,20 +134,23 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         Returns:
             Response with CSRF token cookie if applicable
         """
-        # Skip CSRF check for exempt paths
+        # Exempt auth endpoints skip the token check but still refuse cross-site posts
         if request.url.path in CSRF_EXEMPT_PATHS:
+            if (
+                request.method in CSRF_PROTECTED_METHODS
+                and request.url.path in ORIGIN_CHECKED_PATHS
+                and not is_trusted_origin(request)
+            ):
+                logger.error(f"Cross-site request refused for {request.method} {request.url.path}")
+                return self._forbidden("Cross-site request refused", "cross_site_request")
             return await call_next(request)
 
         # Skip CSRF check for safe methods (GET, HEAD, OPTIONS)
         if request.method not in CSRF_PROTECTED_METHODS:
-            # For safe methods, still provide a new CSRF token
             response = await call_next(request)
-
-            # Add CSRF token to response cookie for safe methods
-            # Client will read this and send it back in next non-safe request
-            csrf_token = generate_csrf_token()
-            self._set_csrf_cookie(response, csrf_token)
-
+            # Issue a token only when the client has none. Rotating on every
+            # response races with parallel requests that already read the old one.
+            self._ensure_csrf_cookie(request, response)
             return response
 
         # For state-changing methods, validate CSRF token
@@ -126,28 +158,37 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         if not csrf_valid:
             logger.error(f"CSRF validation failed for {request.method} {request.url.path}")
-            return JSONResponse(
-                status_code=status.HTTP_403_FORBIDDEN,
-                content={
-                    "status": "error",
-                    "error": "authorization_error",
-                    "message": "CSRF token validation failed",
-                },
-                headers={
-                    "X-CSRF-Error": "invalid_token",
-                    "Pragma": "no-cache",
-                    "Cache-Control": "no-cache, no-store, must-revalidate",
-                },
-            )
+            return self._forbidden("CSRF token validation failed", "invalid_token")
 
-        # CSRF valid, process request
-        response = await call_next(request)
+        # CSRF valid, process request. The token stays the same until login/logout.
+        return await call_next(request)
 
-        # Generate new CSRF token for next request
-        csrf_token = generate_csrf_token()
-        self._set_csrf_cookie(response, csrf_token)
+    @staticmethod
+    def _forbidden(message: str, error_header: str) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={
+                "status": "error",
+                "error": "authorization_error",
+                "message": message,
+            },
+            headers={
+                "X-CSRF-Error": error_header,
+                "Pragma": "no-cache",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+            },
+        )
 
-        return response
+    def _ensure_csrf_cookie(self, request: Request, response: Response) -> None:
+        if request.cookies.get(settings.CSRF_COOKIE_NAME):
+            return
+        cookie_prefix = f"{settings.CSRF_COOKIE_NAME}=".encode()
+        if any(
+            name == b"set-cookie" and value.startswith(cookie_prefix)
+            for name, value in response.raw_headers
+        ):
+            return
+        self._set_csrf_cookie(response, generate_csrf_token())
 
     async def _validate_csrf(self, request: Request) -> bool:
         """
@@ -173,24 +214,20 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return validate_csrf_token(token_from_cookie, token_from_header)
 
     def _set_csrf_cookie(self, response: Response, token: str) -> None:
-        """
-        Set CSRF token cookie in response.
+        set_csrf_cookie(response, token)
 
-        Args:
-            response: The HTTP response
-            token: The CSRF token to set
-        """
-        secure = settings.ENVIRONMENT != "local"
 
-        response.set_cookie(
-            key=settings.CSRF_COOKIE_NAME,
-            value=token,
-            httponly=False,  # Must be readable by JavaScript to send in header
-            secure=secure,  # HTTPS only in production
-            samesite="lax",  # Prevent cross-site cookie sending
-            max_age=60 * 60 * 24,  # 24 hours
-            path="/",
-        )
+def set_csrf_cookie(response: Response, token: str) -> None:
+    """Set the CSRF cookie; it lives as long as the session it protects."""
+    response.set_cookie(
+        key=settings.CSRF_COOKIE_NAME,
+        value=token,
+        httponly=False,  # Must be readable by JavaScript to send in header
+        secure=settings.ENVIRONMENT != "local",  # HTTPS only in production
+        samesite="lax",  # Prevent cross-site cookie sending
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        path="/",
+    )
 
 
 class CSRFTokenResponse:
@@ -209,30 +246,23 @@ class CSRFTokenResponse:
         }
 
 
-async def get_csrf_token(request: Request) -> dict:
+async def get_csrf_token(request: Request, response: Response) -> dict:
     """
     Get current CSRF token from request or generate new one.
 
-    This is designed to be used as a route handler.
+    This is designed to be used as a route handler. The returned token is always
+    the one in the cookie, so the header and cookie match.
 
     Args:
         request: The HTTP request
+        response: The response that carries the cookie
 
     Returns:
         Dictionary with CSRF token information
     """
-    # Try to get existing token from cookie
-    existing_token = request.cookies.get(settings.CSRF_COOKIE_NAME)
-
-    if existing_token:
-        return {
-            "csrf_token": existing_token,
-            "header_name": settings.CSRF_HEADER_NAME,
-        }
-
-    # Generate new token if not present
-    new_token = generate_csrf_token()
+    token = request.cookies.get(settings.CSRF_COOKIE_NAME) or generate_csrf_token()
+    set_csrf_cookie(response, token)
     return {
-        "csrf_token": new_token,
+        "csrf_token": token,
         "header_name": settings.CSRF_HEADER_NAME,
     }

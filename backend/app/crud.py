@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -63,13 +64,20 @@ def authenticate(*, session: Session, email: str, password: str) -> User | None:
 
 # Refresh Token CRUD
 def create_refresh_token(
-    *, session: Session, user_id: int, raw_token: str, expires_delta: timedelta
+    *,
+    session: Session,
+    user_id: int,
+    raw_token: str,
+    expires_delta: timedelta,
+    family_id: str | None = None,
 ) -> RefreshToken:
     db_token = RefreshToken(
         user_id=user_id,
         hashed_token=hash_refresh_token(raw_token),
         expires_at=datetime.now(UTC) + expires_delta,
     )
+    if family_id is not None:
+        db_token.family_id = family_id
     session.add(db_token)
     session.commit()
     session.refresh(db_token)
@@ -85,21 +93,42 @@ def get_refresh_token_by_hash(*, session: Session, hashed_token: str) -> Refresh
     return session.exec(statement).first()
 
 
+def lock_refresh_token_by_hash(*, session: Session, hashed_token: str) -> RefreshToken | None:
+    """Fetch a refresh token in any state, row-locked so concurrent refreshes serialize."""
+    statement = (
+        select(RefreshToken).where(RefreshToken.hashed_token == hashed_token).with_for_update()
+    )
+    return session.exec(statement).first()
+
+
 def revoke_refresh_token(*, session: Session, db_token: RefreshToken) -> None:
     db_token.revoked = True
+    db_token.revoked_at = datetime.now(UTC)
     session.add(db_token)
     session.commit()
+
+
+def _revoke_refresh_tokens(*, session: Session, tokens: Sequence[RefreshToken]) -> None:
+    revoked_at = datetime.now(UTC)
+    for token in tokens:
+        token.revoked = True
+        token.revoked_at = revoked_at
+        session.add(token)
+    session.commit()
+
+
+def revoke_refresh_token_family(*, session: Session, family_id: str) -> None:
+    statement = select(RefreshToken).where(
+        RefreshToken.family_id == family_id, col(RefreshToken.revoked).is_(False)
+    )
+    _revoke_refresh_tokens(session=session, tokens=session.exec(statement).all())
 
 
 def revoke_all_user_refresh_tokens(*, session: Session, user_id: int) -> None:
     statement = select(RefreshToken).where(
         RefreshToken.user_id == user_id, col(RefreshToken.revoked).is_(False)
     )
-    tokens = session.exec(statement).all()
-    for token in tokens:
-        token.revoked = True
-        session.add(token)
-    session.commit()
+    _revoke_refresh_tokens(session=session, tokens=session.exec(statement).all())
 
 
 # Token Blacklist CRUD for Access Token Revocation

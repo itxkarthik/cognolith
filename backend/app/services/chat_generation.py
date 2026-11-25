@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from threading import Event, Lock
+from threading import Event
 from typing import Any
 
 from fastapi import HTTPException
@@ -13,58 +14,62 @@ from sqlmodel import Session, col, select
 
 from app.ai.grounding import build_grounding_repair_messages, validate_grounded_answer
 from app.ai.llm import LLMService
-from app.ai.rag import finalize_prepared_answer, prepare_rag_pipeline
+from app.ai.rag import PreparedRAGResponse, finalize_prepared_answer, prepare_rag_pipeline
 from app.core.database import engine
 from app.models.chat import ChatGenerationStatus, ChatMessages, ChatRole, ChatSession
 from app.models.user import User, UserSettings
+from app.services.generation_coordinator import generation_coordinator
+
+logger = logging.getLogger(__name__)
+
+GENERATION_FAILED_MESSAGE = "The AI response could not be completed."
+REPLY_TO_KEY = "reply_to_message_id"
 
 
 def encode_sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
-class GenerationCoordinator:
-    def __init__(self) -> None:
-        self._lock = Lock()
-        self._by_message: dict[int, Event] = {}
-        self._by_session: dict[int, int] = {}
-
-    def start(self, *, session_id: int, message_id: int) -> Event:
-        with self._lock:
-            if session_id in self._by_session:
-                raise HTTPException(
-                    status_code=409,
-                    detail="A reply is already being generated for this chat session.",
-                )
-            event = Event()
-            self._by_session[session_id] = message_id
-            self._by_message[message_id] = event
-            return event
-
-    def is_session_active(self, session_id: int) -> bool:
-        with self._lock:
-            return session_id in self._by_session
-
-    def cancel(self, message_id: int) -> bool:
-        with self._lock:
-            event = self._by_message.get(message_id)
-            if event is None:
-                return False
-            event.set()
-            return True
-
-    def cancellation_event(self, message_id: int) -> Event | None:
-        with self._lock:
-            return self._by_message.get(message_id)
-
-    def finish(self, *, session_id: int, message_id: int) -> None:
-        with self._lock:
-            self._by_message.pop(message_id, None)
-            if self._by_session.get(session_id) == message_id:
-                self._by_session.pop(session_id, None)
+SSE_KEEPALIVE = ": keepalive\n\n"
+SSE_KEEPALIVE_INTERVAL_SECONDS = 15.0
 
 
-generation_coordinator = GenerationCoordinator()
+async def with_sse_keepalive(
+    events: AsyncGenerator[str, None],
+    *,
+    interval: float = SSE_KEEPALIVE_INTERVAL_SECONDS,
+) -> AsyncGenerator[str, None]:
+    """
+    Emit an SSE comment whenever no event arrives for `interval` seconds.
+
+    Proxies (the Next.js rewrite included) drop connections that sit idle, and
+    retrieval or model warm-up can be silent for longer than their timeout.
+    """
+    pending: asyncio.Future[str] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(anext(events))
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                yield SSE_KEEPALIVE
+                continue
+            step, pending = pending, None
+            try:
+                event = step.result()
+            except StopAsyncIteration:
+                return
+            yield event
+    finally:
+        # Client went away: cancel the in-flight step so the generator records the
+        # reply as cancelled, then close it
+        if pending is not None and not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
+        await events.aclose()
 
 
 def _message_payload(message: ChatMessages) -> dict[str, Any]:
@@ -112,6 +117,9 @@ def create_generation_messages(
         generation_started_at=now,
     )
     session.add(user_message)
+    session.flush()
+    # Retry binds to this, not to whichever user message happens to be newest
+    assistant.generation_metadata = {REPLY_TO_KEY: user_message.id}
     session.add(assistant)
     chat_session.last_message_at = now
     if not chat_session.title:
@@ -150,16 +158,10 @@ def create_retry_message(
         raise HTTPException(
             status_code=409, detail="Only stopped or failed replies can be retried."
         )
-    user_message = session.exec(
-        select(ChatMessages)
-        .where(
-            ChatMessages.session_id == chat_session.id,
-            ChatMessages.role == ChatRole.user,
-            col(ChatMessages.created_at) <= failed.created_at,
-        )
-        .order_by(col(ChatMessages.created_at).desc())
-    ).first()
-    if user_message is None:
+    if chat_session.id is None or generation_coordinator.is_session_active(chat_session.id):
+        raise HTTPException(status_code=409, detail="A reply is already being generated.")
+    user_message = _original_user_message(session=session, failed=failed)
+    if user_message is None or user_message.id is None:
         raise HTTPException(status_code=409, detail="The original user message was not found.")
     now = datetime.now(UTC)
     assistant = ChatMessages(
@@ -169,15 +171,80 @@ def create_retry_message(
         model_used="rag-v2-stream",
         generation_status=ChatGenerationStatus.streaming,
         generation_started_at=now,
-        generation_metadata={"retry_of": failed_message_id},
+        generation_metadata={"retry_of": failed_message_id, REPLY_TO_KEY: user_message.id},
     )
     session.add(assistant)
     session.commit()
     session.refresh(assistant)
-    if assistant.id is None or chat_session.id is None:
+    if assistant.id is None:
         raise RuntimeError("Retry message was not persisted")
-    cancellation = generation_coordinator.start(session_id=chat_session.id, message_id=assistant.id)
+    try:
+        cancellation = generation_coordinator.start(
+            session_id=chat_session.id, message_id=assistant.id
+        )
+    except Exception:
+        assistant.generation_status = ChatGenerationStatus.failed
+        assistant.generation_error = "Generation could not be started."
+        assistant.generation_completed_at = datetime.now(UTC)
+        session.add(assistant)
+        session.commit()
+        raise
     return user_message, assistant, cancellation
+
+
+def _original_user_message(*, session: Session, failed: ChatMessages) -> ChatMessages | None:
+    reply_to = (failed.generation_metadata or {}).get(REPLY_TO_KEY)
+    if isinstance(reply_to, int):
+        message = session.get(ChatMessages, reply_to)
+        if (
+            message is not None
+            and message.session_id == failed.session_id
+            and message.role == ChatRole.user
+        ):
+            return message
+        return None
+
+    # Replies created before reply_to was recorded: follow retries back to the
+    # first attempt, then take the user message just before it.
+    origin = failed
+    seen: set[int] = set()
+    while (origin.generation_metadata or {}).get("retry_of") is not None:
+        previous_id = (origin.generation_metadata or {})["retry_of"]
+        if previous_id in seen:
+            break
+        seen.add(previous_id)
+        previous = session.get(ChatMessages, previous_id)
+        if previous is None or previous.session_id != failed.session_id:
+            break
+        origin = previous
+    return session.exec(
+        select(ChatMessages)
+        .where(
+            ChatMessages.session_id == failed.session_id,
+            ChatMessages.role == ChatRole.user,
+            col(ChatMessages.created_at) <= origin.created_at,
+        )
+        .order_by(col(ChatMessages.created_at).desc())
+    ).first()
+
+
+def _prepare_rag_in_own_session(
+    *, user_id: int, query: str, conversation_history: list[dict[str, Any]]
+) -> PreparedRAGResponse:
+    """
+    Run retrieval in a worker thread with its own DB session. A cancelled stream
+    stops awaiting the thread but can't stop it, so the two must not share a session.
+    """
+    with Session(engine) as rag_session:
+        prepared = prepare_rag_pipeline(
+            session=rag_session,
+            user_id=user_id,
+            query=query,
+            conversation_history=conversation_history,
+        )
+        # Persist workspace embeddings refreshed during retrieval
+        rag_session.commit()
+        return prepared
 
 
 async def stream_chat_generation(
@@ -222,8 +289,10 @@ async def stream_chat_generation(
                 }
                 for row in reversed(history_rows)
             ]
-            prepared = prepare_rag_pipeline(
-                session=session,
+            # Retrieval is synchronous (DB queries + embedding calls); keep it off the
+            # event loop so other users' streams aren't stalled while it runs
+            prepared = await asyncio.to_thread(
+                _prepare_rag_in_own_session,
                 user_id=user_id,
                 query=user_message.content,
                 conversation_history=history,
@@ -303,7 +372,8 @@ async def stream_chat_generation(
                 }
                 if diagnostics_enabled:
                     metadata["retrieval"] = prepared.diagnostics
-                assistant.generation_metadata = metadata
+                # Keep reply_to / retry_of recorded when the message was created
+                assistant.generation_metadata = {**(assistant.generation_metadata or {}), **metadata}
             assistant.generation_completed_at = datetime.now(UTC)
             session.add(assistant)
             session.commit()
@@ -324,10 +394,15 @@ async def stream_chat_generation(
             session.add(assistant)
             session.commit()
             raise
-        except Exception as exc:
+        except Exception:
+            # The exception text can carry SQL, hostnames or paths; keep it server-side.
+            logger.exception(
+                "Streaming chat generation failed",
+                extra={"session_id": session_id, "assistant_message_id": assistant_message_id},
+            )
             assistant.content = draft or original_draft
             assistant.generation_status = ChatGenerationStatus.failed
-            assistant.generation_error = "The AI response could not be completed."
+            assistant.generation_error = GENERATION_FAILED_MESSAGE
             assistant.generation_completed_at = datetime.now(UTC)
             session.add(assistant)
             session.commit()
@@ -335,7 +410,7 @@ async def stream_chat_generation(
                 "error",
                 {
                     "code": "GENERATION_FAILED",
-                    "message": str(exc),
+                    "message": GENERATION_FAILED_MESSAGE,
                     "retryable": True,
                     "assistant_message_id": assistant_message_id,
                 },

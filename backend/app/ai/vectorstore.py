@@ -4,12 +4,62 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 from sqlmodel import Session, col, select
 
 from app.ai.reranking import LexicalQuery
+from app.core.config import settings
 from app.models.chat import ChatMessages, ChatRole, ChatSession
 from app.models.document import Document, DocumentChunks
+from app.models.embedding import EMBEDDING_TABLES
+
+# HNSW needs no training data, so unlike ivfflat it has good recall even when it is
+# built on an empty table. ef_search is the candidate list size per query.
+HNSW_EF_SEARCH = 100
+
+_supports_iterative_scan: bool | None = None
+
+REINDEX_HINT = (
+    "Set EMBEDDING_DIMENSIONS to the embedding model's vector size and run "
+    "`python -m scripts.reindex_embeddings` to rebuild the embedding tables."
+)
+
+
+class EmbeddingDimensionMismatchError(ValueError):
+    """The embedding model's vector size differs from the stored embedding columns."""
+
+
+def check_embedding_dimensions(embedding_dimensions: int) -> None:
+    if embedding_dimensions <= 0:
+        raise ValueError("Embedding dimensions must be greater than zero")
+    if embedding_dimensions != settings.EMBEDDING_DIMENSIONS:
+        raise EmbeddingDimensionMismatchError(
+            f"The embedding model produced {embedding_dimensions}-dimensional vectors, but "
+            f"the embedding tables store {settings.EMBEDDING_DIMENSIONS}. {REINDEX_HINT}"
+        )
+
+
+def stored_embedding_dimensions(connection: Connection) -> dict[str, int | None]:
+    """Vector size of each embedding table's column; None when the table is missing."""
+    names = [table.name for table in EMBEDDING_TABLES]
+    rows = connection.execute(
+        text(
+            """
+			SELECT c.relname AS table_name, a.atttypmod AS dimensions
+			FROM pg_attribute a
+			JOIN pg_class c ON c.oid = a.attrelid
+			WHERE c.relname = ANY(CAST(:tables AS text[]))
+			AND c.relkind = 'r'
+			AND a.attname = 'embedding'
+			AND NOT a.attisdropped
+			"""
+        ),
+        {"tables": names},
+    ).all()
+    found: dict[str, int | None] = {name: None for name in names}
+    for row in rows:
+        found[str(row.table_name)] = int(row.dimensions)
+    return found
 
 
 @dataclass(slots=True)
@@ -69,116 +119,28 @@ class PgVectorStore:
         return "[" + ",".join(str(float(value)) for value in vector) + "]"
 
     def ensure_schema(self, *, embedding_dimensions: int) -> None:
-        if embedding_dimensions <= 0:
-            raise ValueError("Embedding dimensions must be greater than zero")
+        """
+        Fail clearly when vectors don't fit the embedding columns.
 
-        self.session.connection().execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        The tables are created by migrations at settings.EMBEDDING_DIMENSIONS and the
+        stored size is checked at startup, so no query is needed here.
+        """
+        check_embedding_dimensions(embedding_dimensions)
 
-        self.session.connection().execute(
-            text(
-                f"""
-				CREATE TABLE IF NOT EXISTS chunk_embeddings (
-					chunk_id INTEGER PRIMARY KEY REFERENCES document_chunks(id) ON DELETE CASCADE,
-					document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-					user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-					model VARCHAR(100) NOT NULL,
-					embedding vector({embedding_dimensions}) NOT NULL,
-					created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-					updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-				)
-				"""
-            )
-        )
-
-        self.session.connection().execute(
-            text(
-                f"""
-				CREATE TABLE IF NOT EXISTS note_embeddings (
-					note_id INTEGER PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
-					user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-					model VARCHAR(100) NOT NULL,
-					content_hash VARCHAR(64) NOT NULL,
-					embedding vector({embedding_dimensions}) NOT NULL,
-					created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-					updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-				)
-				"""
-            )
-        )
-
-        self.session.connection().execute(
-            text(
-                f"""
-				CREATE TABLE IF NOT EXISTS chat_message_embeddings (
-					message_id INTEGER PRIMARY KEY REFERENCES chat_messages(id) ON DELETE CASCADE,
-					session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-					user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-					model VARCHAR(100) NOT NULL,
-					content_hash VARCHAR(64) NOT NULL,
-					embedding vector({embedding_dimensions}) NOT NULL,
-					created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-					updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-				)
-				"""
-            )
-        )
-
-        self.session.connection().execute(
-            text(
-                """
-				CREATE INDEX IF NOT EXISTS ix_chunk_embeddings_user_document
-				ON chunk_embeddings (user_id, document_id)
-				"""
-            )
-        )
-
-        self.session.connection().execute(
-            text(
-                """
-				CREATE INDEX IF NOT EXISTS ix_chunk_embeddings_embedding_cosine
-				ON chunk_embeddings USING ivfflat (embedding vector_cosine_ops)
-				WITH (lists = 100)
-				"""
-            )
-        )
-
-        self.session.connection().execute(
-            text(
-                """
-				CREATE INDEX IF NOT EXISTS ix_note_embeddings_user
-				ON note_embeddings (user_id, note_id)
-				"""
-            )
-        )
-
-        self.session.connection().execute(
-            text(
-                """
-				CREATE INDEX IF NOT EXISTS ix_note_embeddings_embedding_cosine
-				ON note_embeddings USING ivfflat (embedding vector_cosine_ops)
-				WITH (lists = 100)
-				"""
-            )
-        )
-
-        self.session.connection().execute(
-            text(
-                """
-				CREATE INDEX IF NOT EXISTS ix_chat_message_embeddings_user_session
-				ON chat_message_embeddings (user_id, session_id)
-				"""
-            )
-        )
-
-        self.session.connection().execute(
-            text(
-                """
-				CREATE INDEX IF NOT EXISTS ix_chat_message_embeddings_embedding_cosine
-				ON chat_message_embeddings USING ivfflat (embedding vector_cosine_ops)
-				WITH (lists = 100)
-				"""
-            )
-        )
+    def _tune_vector_search(self) -> None:
+        """Per-transaction HNSW settings for a filtered nearest-neighbour query."""
+        global _supports_iterative_scan
+        connection = self.session.connection()
+        connection.execute(text(f"SET LOCAL hnsw.ef_search = {HNSW_EF_SEARCH}"))
+        if _supports_iterative_scan is None:
+            version = connection.execute(
+                text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+            ).scalar()
+            _supports_iterative_scan = _version_at_least(str(version or "0"), (0, 8))
+        if _supports_iterative_scan:
+            # Keep scanning when the user/document filter discards candidates, instead
+            # of returning fewer than top_k rows
+            connection.execute(text("SET LOCAL hnsw.iterative_scan = strict_order"))
 
     def indexed_document_chunk_ids(self, *, user_id: int, model: str) -> set[int]:
         rows = (
@@ -477,6 +439,7 @@ class PgVectorStore:
         if not query_embedding:
             return []
 
+        self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
         where_clauses = ["ce.user_id = :user_id"]
         params: dict[str, object] = {
@@ -536,6 +499,7 @@ class PgVectorStore:
         if not query_embedding:
             return []
 
+        self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
         where_clauses = ["ne.user_id = :user_id", "n.is_deleted = FALSE"]
         params: dict[str, object] = {
@@ -752,6 +716,7 @@ class PgVectorStore:
         if not query_embedding:
             return []
 
+        self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
         where_clauses = ["cme.user_id = :user_id"]
         params: dict[str, object] = {
@@ -810,3 +775,13 @@ class PgVectorStore:
             )
             for row in rows
         ]
+
+
+def _version_at_least(version: str, minimum: tuple[int, int]) -> bool:
+    parts: list[int] = []
+    for piece in version.split(".")[:2]:
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 2:
+        parts.append(0)
+    return (parts[0], parts[1]) >= minimum

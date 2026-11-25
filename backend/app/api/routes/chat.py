@@ -32,6 +32,7 @@ from app.services.chat_generation import (
     create_retry_message,
     generation_coordinator,
     stream_chat_generation,
+    with_sse_keepalive,
 )
 from app.services.chat_service import (
     convert_chat_to_note,
@@ -48,14 +49,22 @@ async def _stream_generated_chat_response(
     *, user_id: int, session_id: int, user_message_id: int, assistant_message_id: int
 ) -> AsyncGenerator[str, None]:
     yield ": connected\n\n"
-    async for event in stream_chat_generation(
+    events = stream_chat_generation(
         user_id=user_id,
         session_id=session_id,
         user_message_id=user_message_id,
         assistant_message_id=assistant_message_id,
-    ):
+    )
+    async for event in with_sse_keepalive(events):
         yield event
 
+
+# no-transform stops gzip compression in the Next.js proxy from buffering the stream;
+# X-Accel-Buffering does the same for nginx.
+SSE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, no-transform",
+    "X-Accel-Buffering": "no",
+}
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -374,10 +383,7 @@ async def stream_message_endpoint(
             assistant_message_id=assistant_message.id,
         ),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Disable proxy buffering for Nginx/Apache
-        },
+        headers=SSE_RESPONSE_HEADERS,
     )
 
 
@@ -419,7 +425,7 @@ async def retry_message_endpoint(
             assistant_message_id=assistant_message.id,
         ),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=SSE_RESPONSE_HEADERS,
     )
 
 

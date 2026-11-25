@@ -13,6 +13,7 @@ import pytest
 from sqlmodel import Session, select
 
 from app.ai.vectorstore import PgVectorStore
+from app.core.config import settings
 from app.models.chat import ChatRole, ChatSession
 from app.models.document import Document, DocumentChunks
 from app.models.note import Notes, NoteTags
@@ -20,6 +21,9 @@ from app.models.user import User
 from app.services.chat_service import list_chat_sessions
 from app.services.document_service import list_documents
 from app.services.note_service import list_notes
+
+# Embedding columns are fixed at the configured vector size
+DIMENSIONS = settings.EMBEDDING_DIMENSIONS
 
 
 def _persisted_user_id(user: User) -> int:
@@ -345,7 +349,7 @@ class TestBulkEmbeddingInsert:
             session.refresh(chunk)
 
         # Create embeddings (mock vectors)
-        embeddings = [[0.1 * j for j in range(10)] for _ in range(5)]  # 10-dimensional vectors
+        embeddings = [[0.1 * j for j in range(DIMENSIONS)] for _ in range(5)]
 
         # Store using bulk insert
         vector_store = PgVectorStore(session=session)
@@ -394,7 +398,7 @@ class TestBulkEmbeddingInsert:
         session.refresh(chunk)
 
         # First insert
-        embeddings1 = [[0.1 * j for j in range(8)]]
+        embeddings1 = [[0.1 * j for j in range(DIMENSIONS)]]
         vector_store = PgVectorStore(session=session)
         vector_store.store_document_chunk_embeddings(
             chunks=[chunk],
@@ -404,7 +408,7 @@ class TestBulkEmbeddingInsert:
         )
 
         # Second insert (upsert) with different model
-        embeddings2 = [[0.2 * j for j in range(8)]]
+        embeddings2 = [[0.2 * j for j in range(DIMENSIONS)]]
         vector_store.store_document_chunk_embeddings(
             chunks=[chunk],
             embeddings=embeddings2,
@@ -496,10 +500,10 @@ class TestBulkEmbeddingInsert:
         session.refresh(chunk1)
         session.refresh(chunk2)
 
-        # Mixed dimensions - one 8D, one 10D
+        # Mixed dimensions - the configured size, then a longer vector
         embeddings = [
-            [0.1 * j for j in range(8)],
-            [0.1 * j for j in range(10)],
+            [0.1 * j for j in range(DIMENSIONS)],
+            [0.1 * j for j in range(DIMENSIONS + 2)],
         ]
 
         vector_store = PgVectorStore(session=session)

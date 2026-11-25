@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, File, Form, Query, UploadFile
+from fastapi import APIRouter, File, Form, Query, Response, UploadFile
 
 from app.api.deps import CurrentUser, SessionDep
 from app.models.user import Message
@@ -27,6 +27,10 @@ router = APIRouter(prefix="/documents", tags=["documents"])
     path="/upload",
     response_model=DocumentResponse,
     responses={
+        202: {
+            "model": DocumentResponse,
+            "description": "Uploaded and queued; poll the document until processing ends",
+        },
         400: {
             "model": StandardErrorResponse,
             "description": "Validation error - invalid file or parameters",
@@ -38,6 +42,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 )
 async def upload_document(
     *,
+    response: Response,
     session: SessionDep,
     current_user: CurrentUser,
     file: UploadFile = File(...),
@@ -54,6 +59,8 @@ async def upload_document(
         tags=parsed_tags,
         language=language,
     )
+    if document.status == "processing":
+        response.status_code = 202
     return document
 
 

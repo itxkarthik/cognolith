@@ -24,6 +24,11 @@ class ETagAndCacheMiddleware(BaseHTTPMiddleware):
         """Process request and add caching headers."""
         response = await call_next(request)
 
+        # Event streams must not be compressed or buffered by intermediaries
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            response.headers["Cache-Control"] = "no-cache, no-store, no-transform"
+            return response
+
         # Only process GET requests
         if request.method != "GET":
             # Add no-cache for POST, PUT, DELETE, PATCH

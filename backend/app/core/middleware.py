@@ -3,9 +3,12 @@ import logging
 import time
 import uuid
 
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import settings
 
@@ -49,9 +52,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Prevent clickjacking — deny all iframe embedding
         response.headers["X-Frame-Options"] = "DENY"
 
-        # Enable browser XSS filter
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-
         # Control referrer information
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
@@ -71,8 +71,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "Strict-Transport-Security"
             ] = "max-age=63072000; includeSubDomains; preload"
 
-        # Prevent caching of API responses
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        # Prevent caching of API responses (event streams also forbid transformation)
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            response.headers["Cache-Control"] = "no-cache, no-store, no-transform"
+        else:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
 
         return response
@@ -99,23 +102,83 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class MaxRequestBodySizeMiddleware(BaseHTTPMiddleware):
+def _body_too_large_detail() -> str:
+    return f"Request body too large. Maximum: {settings.MAX_REQUEST_BODY_SIZE // (1024 * 1024)} MB"
+
+
+class RequestBodyTooLarge(HTTPException):
     """
-    Rejects requests whose Content-Length header exceeds the configured limit.
-    Prevents oversized payloads from consuming server resources.
+    Raised from the wrapped ASGI receive channel once the body exceeds the limit.
+
+    Subclassing HTTPException keeps FastAPI's body parser from turning it into a 400.
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > settings.MAX_REQUEST_BODY_SIZE:
-            return JSONResponse(
-                status_code=413,
-                content={
-                    "detail": f"Request body too large. "
-                    f"Maximum: {settings.MAX_REQUEST_BODY_SIZE // (1024 * 1024)} MB"
-                },
-            )
-        return await call_next(request)
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail=_body_too_large_detail())
+
+
+def _body_too_large_response() -> JSONResponse:
+    return JSONResponse(status_code=413, content={"detail": _body_too_large_detail()})
+
+
+class MaxRequestBodySizeMiddleware:
+    """
+    Rejects requests whose body exceeds the configured limit.
+
+    The declared Content-Length is checked up front, and the streamed body is
+    counted as it is received so chunked requests without a Content-Length are
+    capped as well.
+    """
+
+    def __init__(self, app: ASGIApp, max_body_size: int | None = None) -> None:
+        self.app = app
+        self.max_body_size = max_body_size or settings.MAX_REQUEST_BODY_SIZE
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        content_length = headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except ValueError:
+                declared_size = -1
+            if declared_size < 0:
+                response = JSONResponse(
+                    status_code=400, content={"detail": "Invalid Content-Length header"}
+                )
+                await response(scope, receive, send)
+                return
+            if declared_size > self.max_body_size:
+                await _body_too_large_response()(scope, receive, send)
+                return
+
+        received = 0
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body_size:
+                    raise RequestBodyTooLarge
+            return message
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except RequestBodyTooLarge:
+            if not response_started:
+                await _body_too_large_response()(scope, receive, send)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):

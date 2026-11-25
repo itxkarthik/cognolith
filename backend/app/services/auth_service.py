@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -8,6 +9,11 @@ from app.core import security
 from app.core.config import settings
 from app.models.user import RefreshToken, TokenBlacklist, User
 
+logger = logging.getLogger(__name__)
+
+# A rotated token presented again within this window is a concurrent refresh, not theft.
+REFRESH_REUSE_GRACE_SECONDS = 30
+
 
 class TokenPair(NamedTuple):
     """Response model for token creation - contains both JWT and refresh token."""
@@ -17,7 +23,7 @@ class TokenPair(NamedTuple):
     token_type: str = "bearer"
 
 
-def create_token_pair(session: Session, user: User) -> TokenPair:
+def create_token_pair(session: Session, user: User, family_id: str | None = None) -> TokenPair:
     """
     Create a new access token + refresh token pair for a user.
 
@@ -26,6 +32,7 @@ def create_token_pair(session: Session, user: User) -> TokenPair:
     Args:
         session: Database session
         user: User model instance
+        family_id: Refresh-token family to continue (rotation); a new family when None
 
     Returns:
         TokenPair with access_token (JWT) and refresh_token (opaque)
@@ -48,6 +55,7 @@ def create_token_pair(session: Session, user: User) -> TokenPair:
         user_id=user_id,
         raw_token=raw_refresh_token,
         expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        family_id=family_id,
     )
 
     return TokenPair(
@@ -57,7 +65,6 @@ def create_token_pair(session: Session, user: User) -> TokenPair:
 
 def refresh_access_token_from_refresh(
     session: Session,
-    user_id: int,
     refresh_token: str,
 ) -> TokenPair:
     """
@@ -70,10 +77,14 @@ def refresh_access_token_from_refresh(
     4. Return new tokens
 
     This prevents replay attacks by ensuring each refresh token can only be used once.
+    The user is always the refresh token's owner; no other credential is consulted.
+
+    Presenting an already-rotated token is treated as theft and the whole token
+    family is revoked. A token rotated moments ago is exempt, so two tabs
+    refreshing at the same time don't log each other out.
 
     Args:
         session: Database session
-        user_id: User ID (validated externally)
         refresh_token: Raw refresh token from request
 
     Returns:
@@ -82,22 +93,48 @@ def refresh_access_token_from_refresh(
     Raises:
         ValueError: If token is invalid, revoked, or expired
     """
-    # Hash and lookup the refresh token
     hashed = security.hash_refresh_token(refresh_token)
-    db_token = crud.get_refresh_token_by_hash(session=session, hashed_token=hashed)
+    db_token = crud.lock_refresh_token_by_hash(session=session, hashed_token=hashed)
 
     if not db_token:
+        session.rollback()
         raise ValueError("Invalid or expired refresh token")
 
-    # Revoke the old token (single-use pattern)
+    now = datetime.now(UTC)
+    if db_token.revoked:
+        if _within_reuse_grace(db_token.revoked_at, now):
+            session.rollback()
+        else:
+            logger.warning(
+                "Refresh token reuse detected; revoking token family",
+                extra={
+                    "event": "refresh_token_reuse",
+                    "user_id": db_token.user_id,
+                    "family_id": db_token.family_id,
+                },
+            )
+            crud.revoke_refresh_token_family(session=session, family_id=db_token.family_id)
+        raise ValueError("Invalid or expired refresh token")
+
+    user = session.get(User, db_token.user_id)
+    if _as_utc(db_token.expires_at) <= now or not user or not user.is_active:
+        session.rollback()
+        raise ValueError("Invalid or expired refresh token")
+
+    # Revoke the old token (single-use pattern); the commit releases the row lock
     crud.revoke_refresh_token(session=session, db_token=db_token)
 
-    # Issue new token pair
-    user = session.get(User, user_id)
-    if not user:
-        raise ValueError("User not found")
+    return create_token_pair(session=session, user=user, family_id=db_token.family_id)
 
-    return create_token_pair(session=session, user=user)
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+def _within_reuse_grace(revoked_at: datetime | None, now: datetime) -> bool:
+    if revoked_at is None:
+        return False
+    return now - _as_utc(revoked_at) < timedelta(seconds=REFRESH_REUSE_GRACE_SECONDS)
 
 
 def revoke_access_token(

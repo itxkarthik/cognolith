@@ -235,45 +235,6 @@ def _resolve_retrieval_context(
     )
 
 
-def _generate_general_response(
-    *,
-    session: Session,
-    user_id: int,
-    query: str,
-    conversation_history: Sequence[dict[str, Any]] | None,
-    casual: bool,
-) -> RAGResult:
-    if casual:
-        system_prompt = (
-            "You are Cognolith, a friendly, capable knowledge assistant. Respond to ordinary "
-            "conversation naturally and briefly. Do not mention, quote, or summarize workspace "
-            "documents unless the user explicitly asks about them. You can answer general "
-            "questions and help users work with their notes and documents."
-        )
-    else:
-        system_prompt = (
-            "You are Cognolith, a helpful knowledge assistant with general knowledge. Answer general "
-            "questions directly and naturally. If the user asks about their own notes, documents, "
-            "projects, or personal facts and no workspace context is available, say you could not "
-            "find that information rather than inventing it. Do not claim to cite or use documents "
-            "that were not provided."
-        )
-
-    messages = build_chat_messages(
-        user_prompt=query,
-        system_prompt=system_prompt,
-        conversation_history=(conversation_history or [])[-6:],
-    )
-    answer = _run_async(
-        LLMService(session=session, user_id=user_id).generate_response(
-            messages=messages,
-            temperature=0.4,
-            max_tokens=300,
-        )
-    )
-    return RAGResult(answer=answer.strip(), sources=_empty_sources())
-
-
 def run_rag_pipeline(
     *,
     session: Session,
@@ -281,153 +242,31 @@ def run_rag_pipeline(
     query: str,
     conversation_history: Sequence[dict[str, Any]] | None = None,
 ) -> RAGResult:
+    """
+    Non-streaming RAG: the same retrieval and prompts as the streaming path
+    (prepare_rag_pipeline), followed by one generation and citation finalization.
+    """
     if not query.strip():
         return RAGResult(
             answer="Please provide a non-empty question.",
             sources=_empty_sources(),
         )
 
-    query = query.strip()
-    if _is_casual_conversation(query):
-        return _generate_general_response(
-            session=session,
-            user_id=user_id,
-            query=query,
-            conversation_history=conversation_history,
-            casual=True,
-        )
-
-    retrieval_context = _resolve_retrieval_context(
+    prepared = prepare_rag_pipeline(
+        session=session,
+        user_id=user_id,
         query=query,
         conversation_history=conversation_history,
     )
-    retrieval_query = retrieval_context.retrieval_query
-
-    query_embedding, embedding_model = _run_async(
-        generate_embedding(
-            session=session,
-            user_id=user_id,
-            text=retrieval_query,
-        )
-    )
-
-    user_settings = session.get(UserSettings, user_id)
-    top_k = user_settings.top_k_results if user_settings else 5
-    similarity_threshold = user_settings.similarity_threshold if user_settings else 0.7
-    needs_inventory = _needs_workspace_inventory(retrieval_query)
-    retrieval_limit = max(20, top_k * 4)
-
-    vector_store = PgVectorStore(session=session)
-    vector_store.ensure_schema(embedding_dimensions=len(query_embedding))
-    ensure_workspace_embeddings(
-        session=session,
-        vector_store=vector_store,
-        user_id=user_id,
-        embedding_model=embedding_model,
-    )
-
-    lexical_query = build_lexical_query(retrieval_query)
-    has_prior_scope = bool(retrieval_context.prior_document_ids or retrieval_context.prior_note_ids)
-    context_sources = _search_ranked_sources(
-        session=session,
-        vector_store=vector_store,
-        user_id=user_id,
-        query_embedding=query_embedding,
-        query=retrieval_query,
-        lexical_query=lexical_query,
-        retrieval_limit=retrieval_limit,
-        similarity_threshold=similarity_threshold,
-        limit=top_k,
-        document_ids=(retrieval_context.prior_document_ids if has_prior_scope else None),
-        note_ids=(retrieval_context.prior_note_ids if has_prior_scope else None),
-        prior_document_ids=set(retrieval_context.prior_document_ids),
-        prior_note_ids=set(retrieval_context.prior_note_ids),
-    )
-    if not context_sources and has_prior_scope:
-        context_sources = _search_ranked_sources(
-            session=session,
-            vector_store=vector_store,
-            user_id=user_id,
-            query_embedding=query_embedding,
-            query=retrieval_query,
-            lexical_query=lexical_query,
-            retrieval_limit=retrieval_limit,
-            similarity_threshold=similarity_threshold,
-            limit=top_k,
-            document_ids=None,
-            note_ids=None,
-            prior_document_ids=set(retrieval_context.prior_document_ids),
-            prior_note_ids=set(retrieval_context.prior_note_ids),
-        )
-
-    inventory_entries = (
-        _load_workspace_inventory(session=session, user_id=user_id) if needs_inventory else []
-    )
-
-    context_sources = _append_inventory_sources(
-        sources=context_sources,
-        inventory_entries=inventory_entries,
-    )
-    context_sources = _expand_document_context_sources(
-        session=session,
-        sources=context_sources,
-    )
-
-    if not context_sources:
-        return _generate_general_response(
-            session=session,
-            user_id=user_id,
-            query=query,
-            conversation_history=conversation_history,
-            casual=False,
-        )
-
-    context_chunks = _format_citation_context(context_sources)
-
-    system_prompt = (
-        "You are Cognolith, a knowledge assistant with normal conversational and general-knowledge "
-        "ability. First decide whether the reference context is relevant to the current question. "
-        "For questions about the user's workspace or personal information, use only relevant "
-        "document and note context and never invent missing details. For ordinary conversation or "
-        "general-knowledge questions, ignore irrelevant reference context and answer naturally. "
-        "Do not preface answers with phrases such as 'Based on the provided document' unless the "
-        "user asks for source attribution. Synthesize across relevant sources instead of relying on "
-        "exact word overlap. For list, overview, comparison, or count questions, include all "
-        "distinct supported items. Preserve exact names, codes, dates, and phrases, and do not "
-        "repeat the raw context. Every factual claim taken from workspace context must end with "
-        "the matching numeric citation marker, such as [1]. Use only source numbers present in "
-        "the reference context. Do not cite general-knowledge or conversational statements."
-    )
-
-    messages = build_chat_messages(
-        user_prompt=query,
-        context_chunks=context_chunks,
-        system_prompt=system_prompt,
-        conversation_history=(conversation_history or [])[-6:],
-    )
-
-    llm_service = LLMService(session=session, user_id=user_id)
     answer = _run_async(
-        llm_service.generate_response(
-            messages=messages,
-            temperature=0.1,
-            max_tokens=500 if needs_inventory else 300,
+        LLMService(session=session, user_id=user_id).generate_response(
+            messages=prepared.messages
         )
-    )
-    answer = _repair_exact_terms(answer.strip(), context_chunks)
+    ).strip()
+    if not prepared.grounded:
+        return RAGResult(answer=answer, sources=_empty_sources())
 
-    cited_ids = _extract_citation_ids(
-        answer,
-        valid_ids={source.citation_id for source in context_sources},
-    )
-    if not cited_ids:
-        cited_ids = _infer_citation_ids(answer, sources=context_sources)
-        answer = _insert_inferred_citations(
-            answer,
-            sources=context_sources,
-            cited_ids=cited_ids,
-        )
-    sources = _build_cited_sources_payload(sources=context_sources, cited_ids=cited_ids)
+    answer, sources = finalize_prepared_answer(answer, prepared=prepared)
     return RAGResult(answer=answer, sources=sources)
 
 

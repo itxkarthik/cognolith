@@ -1,2 +1,2 @@
-from . import backup, chat, document, note, user
+from . import backup, chat, document, embedding, note, user
 from .backup import BackupSchedule, GoogleDriveConnection, OAuthState, WorkspaceBackup

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import func, text
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select
 
@@ -16,25 +17,21 @@ from app.models.chat import ChatMessages, ChatRole, ChatSession
 from app.models.note import Notes
 from app.models.user import User
 from app.schemas.chat import ChatCreate, ChatMessageCreate
+from app.services.chat_generation import generation_coordinator
 from app.utils.text_processing import create_content_preview
 
 logger = logging.getLogger(__name__)
 
 
-def _acquire_chat_generation_lock(*, session: Session, chat_session_id: int) -> None:
-    result = (
-        session.connection()
-        .execute(
-            text("SELECT pg_try_advisory_xact_lock(:namespace, :chat_session_id)"),
-            parameters={"namespace": 5262145, "chat_session_id": chat_session_id},
-        )
-        .one()
-    )
-    if not bool(result[0]):
-        raise HTTPException(
-            status_code=409,
-            detail="A reply is already being generated for this chat session.",
-        )
+def _acquire_chat_generation_lock(
+    *, session: Session, chat_session_id: int
+) -> AbstractContextManager[None]:
+    """
+    Reserve the chat session through the same coordinator the streaming path uses,
+    so a streaming and a non-streaming reply can never run in one session at once.
+    Raises 409 immediately when another reply is in progress.
+    """
+    return generation_coordinator.exclusive(session_id=chat_session_id)
 
 
 def create_chat_session(
@@ -114,8 +111,24 @@ def send_message_and_get_response(
     )
     if chat_session.id is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
-    _acquire_chat_generation_lock(session=session, chat_session_id=chat_session.id)
+    with _acquire_chat_generation_lock(session=session, chat_session_id=chat_session.id):
+        return _generate_and_store_reply(
+            session=session,
+            current_user=current_user,
+            chat_session=chat_session,
+            payload=payload,
+        )
 
+
+def _generate_and_store_reply(
+    *,
+    session: Session,
+    current_user: User,
+    chat_session: ChatSession,
+    payload: ChatMessageCreate,
+) -> tuple[ChatMessages, ChatMessages]:
+    if chat_session.id is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
     try:
         rag_answer, rag_sources = _invoke_rag(
             session=session,

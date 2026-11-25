@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import uuid
@@ -16,8 +17,9 @@ from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
 from app.core.exceptions import AIServiceUnavailableError
 from app.models.document import Document, DocumentChunks
-from app.models.user import User
+from app.models.user import User, UserSettings
 from app.schemas.document import DocumentUpdate
+from app.services.document_processing import document_processor
 from app.utils.file_processing import extract_text_from_file
 from app.utils.file_validation import validate_upload_file
 from app.utils.text_processing import clean_text, create_content_preview, split_text_into_chunks
@@ -87,28 +89,28 @@ async def upload_and_process_document(
         language=language,
         status="processing",
     )
-    session.add(document)
-    session.commit()
-    session.refresh(document)
-
     try:
-        if document.id is None:
-            raise RuntimeError("Uploaded document was not persisted")
-        return await process_existing_document(
-            session=session,
-            user_id=current_user.id,
-            document_id=document.id,
-        )
-    except HTTPException:
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+    except Exception:
         _remove_uploaded_file(saved_path)
         raise
-    except Exception:
-        logger.exception(
-            "Document processing failed",
-            extra={"document_id": document.id, "user_id": current_user.id},
-        )
+    if document.id is None:
         _remove_uploaded_file(saved_path)
-        raise HTTPException(status_code=500, detail="Failed to process document")
+        raise HTTPException(status_code=500, detail="Failed to save document")
+
+    # Extraction, embedding and the summary run in the background; the client polls
+    # the document until its status leaves "processing"
+    document_processor.schedule(user_id=current_user.id, document_id=document.id)
+    return document
+
+
+def _chunking_preferences(session: Session, user_id: int) -> tuple[int, int]:
+    """The user's chunk size/overlap, with overlap kept below the size it slides over."""
+    preferences = session.get(UserSettings, user_id) or UserSettings(user_id=user_id)
+    chunk_size = preferences.chunk_size
+    return chunk_size, min(preferences.chunk_overlap, chunk_size // 2)
 
 
 async def process_existing_document(
@@ -138,8 +140,10 @@ async def process_existing_document(
     session.commit()
 
     try:
-        content = clean_text(extract_text_from_file(document.file_path))
-        chunks = split_text_into_chunks(content)
+        # PDF/DOCX parsing is CPU-bound and synchronous; keep it off the event loop
+        content = clean_text(await asyncio.to_thread(extract_text_from_file, document.file_path))
+        chunk_size, chunk_overlap = _chunking_preferences(session, user_id)
+        chunks = split_text_into_chunks(content, chunk_size=chunk_size, overlap=chunk_overlap)
         document.content = content
         document.content_preview = create_content_preview(content)
         document.word_count = len(content.split()) if content else 0
@@ -200,16 +204,19 @@ async def process_existing_document(
         session.commit()
         session.refresh(document)
         return document
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Document processing failed",
             extra={"document_id": document_id, "user_id": user_id},
         )
-        _mark_document_failed(
-            session=session,
-            document_id=document_id,
-            reason="Unexpected server error during document processing",
+        # Extraction raises HTTPException with a reason worth showing ("Failed to read
+        # PDF file"); anything else stays generic
+        reason = (
+            exc.detail
+            if isinstance(exc, HTTPException) and isinstance(exc.detail, str)
+            else "Unexpected server error during document processing"
         )
+        _mark_document_failed(session=session, document_id=document_id, reason=reason)
         raise
 
 

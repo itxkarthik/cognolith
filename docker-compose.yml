@@ -27,7 +27,8 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - cognolith-network
+      cognolith-network:
+        ipv4_address: 172.31.0.10
 
   # PostgreSQL Database
   db:
@@ -37,8 +38,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-knowledge_assistant}
+    # Bound to loopback: the default postgres/postgres credentials must not reach the LAN.
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -79,6 +81,8 @@ services:
       # Security
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       SIGNUP_RATE_LIMIT: ${SIGNUP_RATE_LIMIT:-5/hour}
+      # Only the frontend's rewrite proxy may set X-Forwarded-For (client IP for rate limits).
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.31.0.10}
 
       # Optional Google Drive backup; leave credentials blank to disable.
       # GOOGLE_DRIVE_REDIRECT_URI must exactly match the OAuth Web client.
@@ -108,8 +112,9 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2:1b}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
     ports:
-      - "${BACKEND_PORT:-3000}:3000"
+      - "127.0.0.1:${BACKEND_PORT:-3000}:3000"
     depends_on:
       db:
         condition: service_healthy
@@ -135,8 +140,8 @@ services:
     image: axllent/mailpit:latest
     container_name: cognolith-mailpit
     ports:
-      - "${MAILPIT_SMTP_PORT:-1025}:1025"
-      - "${MAILPIT_UI_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
     networks:
       - cognolith-network
 
@@ -145,8 +150,9 @@ services:
     image: ollama/ollama:latest
     container_name: cognolith-ollama
     profiles: ["ai"]
+    # Ollama has no authentication; keep it on loopback.
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -185,3 +191,6 @@ volumes:
 networks:
   cognolith-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

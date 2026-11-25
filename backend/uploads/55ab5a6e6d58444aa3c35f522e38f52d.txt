@@ -1,1 +1,0 @@
-Successful upload verification after vectorstore fix.

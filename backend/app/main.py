@@ -8,7 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
+from app.ai.embedding_validation import validate_embedding_setup
 from app.api.main import api_router
 from app.api.routes.test import router as test_router
 from app.core.cache_middleware import ETagAndCacheMiddleware
@@ -24,6 +26,7 @@ from app.core.middleware import (
 )
 from app.core.rate_limit import limiter
 from app.services.backup_scheduler import BackupScheduler
+from app.services.document_processing import document_processor
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,13 @@ async def lifespan(_: FastAPI):
         if not await test_db_connection():
             raise ConnectionError("Database connection test failed")
 
+        await validate_embedding_setup()
+
+        # Uploads interrupted by the last shutdown or crash are processed again
+        resumed = document_processor.resume_interrupted()
+        if resumed:
+            logger.info("Resumed processing of %s interrupted document(s)", resumed)
+
         await backup_scheduler.start()
 
         logger.info("✓ Application startup complete")
@@ -54,6 +64,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await backup_scheduler.stop()
+        await document_processor.shutdown()
         logger.info("Shutting down application...")
 
 
@@ -90,10 +101,13 @@ app.add_middleware(SecurityHeadersMiddleware)
 # 5. Max Request Body Size — reject oversized payloads early
 app.add_middleware(MaxRequestBodySizeMiddleware)
 
-# 6. ETag and Cache Control — adds ETag and cache headers for client-side caching
+# 6. Rate limiting — applies the limiter's default limit to every undecorated route
+app.add_middleware(SlowAPIMiddleware)
+
+# 7. ETag and Cache Control — adds ETag and cache headers for client-side caching
 app.add_middleware(ETagAndCacheMiddleware)
 
-# 7. CORS — locked down to specific methods and headers
+# 8. CORS — locked down to specific methods and headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.all_cors_origins,
@@ -121,6 +135,7 @@ def read_root():
 
 
 @app.get("/health")
+@limiter.exempt
 def health_check():
     """
     Backward-compatible health endpoint.
@@ -129,6 +144,7 @@ def health_check():
 
 
 @app.get("/health/live")
+@limiter.exempt
 def health_live():
     """Liveness probe: process is running and can serve requests."""
     return {"status": "alive"}
@@ -158,6 +174,7 @@ async def _check_ollama_connection() -> tuple[bool, list[str]]:
 
 
 @app.get("/health/ready")
+@limiter.exempt
 async def health_ready():
     """Readiness probe: verifies dependencies required to serve traffic."""
     db_ready = await test_db_connection()
@@ -186,5 +203,6 @@ async def health_ready():
 # API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
-# Test routes (for timeout verification and testing)
-app.include_router(test_router, prefix=settings.API_V1_STR)
+# Test routes (for timeout verification) are unauthenticated, so only mount them locally
+if settings.ENVIRONMENT == "local":
+    app.include_router(test_router, prefix=settings.API_V1_STR)

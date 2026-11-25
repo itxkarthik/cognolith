@@ -169,6 +169,21 @@ apiClient.interceptors.request.use((config) => {
 	return config;
 });
 
+// Refresh tokens are single-use, so concurrent 401s must share one refresh call.
+let refreshInFlight: Promise<void> | null = null;
+
+function refreshSession(): Promise<void> {
+	if (!refreshInFlight) {
+		refreshInFlight = refreshClient
+			.post(apiConfig.endpoints.refresh, {})
+			.then(() => undefined)
+			.finally(() => {
+				refreshInFlight = null;
+			});
+	}
+	return refreshInFlight;
+}
+
 apiClient.interceptors.response.use(
 	(response) => response,
 	async (error: AxiosError<ApiError>) => {
@@ -185,7 +200,7 @@ apiClient.interceptors.response.use(
 			const { clearAuth } = useAuthStore.getState();
 
 			try {
-				await refreshClient.post(apiConfig.endpoints.refresh, {});
+				await refreshSession();
 
 				return apiClient(originalRequest);
 			} catch {

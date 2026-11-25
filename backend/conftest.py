@@ -43,8 +43,18 @@ from app.models import chat, document, note, user  # noqa: E402, F401
 
 with engine.begin() as connection:
     connection.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+    connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
 create_db_and_tables()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limits():
+    """Every TestClient shares one client address, so limits must not leak across tests."""
+    from app.core.rate_limit import limiter
+
+    limiter.reset()
+    yield
 
 
 @pytest.fixture

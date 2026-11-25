@@ -21,6 +21,7 @@ interface DocumentState {
 	lastQuery: ListDocumentsParams;
 	fetchDocuments: (params?: ListDocumentsParams) => Promise<void>;
 	fetchDocumentById: (id: number) => Promise<void>;
+	refreshDocumentStatus: (id: number) => Promise<DocumentResponse | null>;
 	uploadDocumentFile: (payload: UploadDocumentPayload) => Promise<DocumentResponse>;
 	deleteDocumentById: (id: number) => Promise<void>;
 	clearSelectedDocument: () => void;
@@ -80,6 +81,21 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 						? error.message
 						: "Failed to fetch document.",
 			});
+		}
+	},
+
+	// Background poll while an upload is processing: no spinner, and a failed
+	// poll leaves the current view alone
+	refreshDocumentStatus: async (id) => {
+		try {
+			const document = await getDocumentById(id);
+			set((state) => ({
+				selectedDocument: state.selectedDocument?.id === id ? document : state.selectedDocument,
+				documents: state.documents.map((item) => (item.id === id ? document : item)),
+			}));
+			return document;
+		} catch {
+			return null;
 		}
 	},
 

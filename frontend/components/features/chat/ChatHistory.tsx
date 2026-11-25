@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
+import { orderChatThread } from "@/lib/chatThread";
 import type { ChatMessageResponse } from "@/types";
 
 import { ChatMessage } from "./ChatMessage";
@@ -15,10 +16,21 @@ interface ChatHistoryProps {
 
 export function ChatHistory({ messages, isLoading = false, streamingMessageId = null, onRetry }: ChatHistoryProps) {
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
+  // Retried replies sit next to their question, not at the end
+  const orderedMessages = useMemo(() => orderChatThread(messages), [messages]);
 
   useEffect(() => {
+    const last = orderedMessages[orderedMessages.length - 1];
+    if (streamingMessageId !== null && last?.id !== streamingMessageId) {
+      // A retry of an earlier reply streams mid-thread; follow it there
+      threadRef.current
+        ?.querySelector(`[data-message-id="${streamingMessageId}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, streamingMessageId]);
+  }, [orderedMessages, streamingMessageId]);
 
   if (isLoading && messages.length === 0) {
     return (
@@ -37,9 +49,11 @@ export function ChatHistory({ messages, isLoading = false, streamingMessageId = 
           Ask naturally. Workspace questions use your notes and documents when relevant.
         </div>
       ) : (
-        <div className="space-y-3">
-          {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} isStreaming={streamingMessageId === message.id} onRetry={onRetry} />
+        <div ref={threadRef} className="space-y-3">
+          {orderedMessages.map((message) => (
+            <div key={message.id} data-message-id={message.id}>
+              <ChatMessage message={message} isStreaming={streamingMessageId === message.id} onRetry={onRetry} />
+            </div>
           ))}
           <div ref={bottomAnchorRef} />
         </div>

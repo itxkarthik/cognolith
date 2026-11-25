@@ -61,6 +61,15 @@ export function DocumentViewer({
           </div>
         </div>
 
+        {document.status === "processing" ? (
+          <p className="mt-4 text-sm text-muted-foreground">Extracting text, embeddings and a summary in the background. This page updates when it finishes.</p>
+        ) : null}
+        {document.status === "failed" ? (
+          <p className="mt-4 rounded-sm border border-[#ff3b30] bg-[#ff3b30]/10 p-3 text-sm text-[#a50011]">
+            Processing failed: {document.processing_error || "an unexpected error occurred."}
+          </p>
+        ) : null}
+
         <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <div className="border border-border bg-muted p-3">
             <p className="text-xs text-muted-foreground">File Name</p>

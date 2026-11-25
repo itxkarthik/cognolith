@@ -7,6 +7,7 @@ from app.api.routes.search import (
     SEMANTIC_SIMILARITY_THRESHOLD,
     _chat_results_from_hits,
     _is_relevant_semantic_score,
+    _keep_best,
     _merge_result,
     router,
 )
@@ -112,6 +113,15 @@ class SearchRouteTests(TestCase):
         self.assertEqual(results[0].id, 4)
         self.assertEqual(results[0].snippet, "The Orion Habitat Study is active.")
         self.assertEqual(results[0].score, 0.82)
+
+    def test_exact_text_match_outranks_a_weaker_semantic_match(self) -> None:
+        best: dict[int, tuple[float, str]] = {}
+
+        _keep_best(best, 3, 0.66, "semantically close passage")
+        _keep_best(best, 3, 1.0, "passage containing the exact phrase")
+        _keep_best(best, 3, 0.4, "weak full-text match")
+
+        self.assertEqual(best[3], (1.0, "passage containing the exact phrase"))
 
     def test_vector_store_exposes_chat_embedding_contract(self) -> None:
         self.assertTrue(hasattr(PgVectorStore, "chat_embedding_hashes"))

@@ -177,7 +177,6 @@ class TestTokenRefresh:
         # Exchange refresh token for new pair
         new_pair = auth_service.refresh_access_token_from_refresh(
             session=db_session,
-            user_id=_persisted_user_id(test_user),
             refresh_token=initial_pair.refresh_token,
         )
 
@@ -192,7 +191,6 @@ class TestTokenRefresh:
         # First refresh should succeed
         new_pair1 = auth_service.refresh_access_token_from_refresh(
             session=db_session,
-            user_id=_persisted_user_id(test_user),
             refresh_token=refresh_token,
         )
         assert new_pair1 is not None
@@ -201,7 +199,6 @@ class TestTokenRefresh:
         with pytest.raises(ValueError, match="Invalid or expired refresh token"):
             auth_service.refresh_access_token_from_refresh(
                 session=db_session,
-                user_id=_persisted_user_id(test_user),
                 refresh_token=refresh_token,  # Same token, already revoked
             )
 
@@ -212,7 +209,6 @@ class TestTokenRefresh:
         # Refresh the token
         auth_service.refresh_access_token_from_refresh(
             session=db_session,
-            user_id=_persisted_user_id(test_user),
             refresh_token=initial_pair.refresh_token,
         )
 
@@ -234,7 +230,6 @@ class TestTokenRefresh:
         with pytest.raises(ValueError, match="Invalid or expired refresh token"):
             auth_service.refresh_access_token_from_refresh(
                 session=db_session,
-                user_id=_persisted_user_id(test_user),
                 refresh_token="invalid_token_xyz",
             )
 
@@ -257,7 +252,6 @@ class TestTokenRefresh:
         with pytest.raises(ValueError, match="Invalid or expired refresh token"):
             auth_service.refresh_access_token_from_refresh(
                 session=db_session,
-                user_id=_persisted_user_id(test_user),
                 refresh_token=raw_token,
             )
 
@@ -472,7 +466,6 @@ class TestTokenIntegration:
         # 3. Refresh token to get new pair
         token_pair2 = auth_service.refresh_access_token_from_refresh(
             session=db_session,
-            user_id=_persisted_user_id(test_user),
             refresh_token=token_pair1.refresh_token,
         )
         decoded2 = jwt.decode(
@@ -503,7 +496,6 @@ class TestTokenIntegration:
         # First use succeeds
         new_pair1 = auth_service.refresh_access_token_from_refresh(
             session=db_session,
-            user_id=_persisted_user_id(test_user),
             refresh_token=refresh_token,
         )
         assert new_pair1 is not None
@@ -512,9 +504,138 @@ class TestTokenIntegration:
         with pytest.raises(ValueError):
             auth_service.refresh_access_token_from_refresh(
                 session=db_session,
-                user_id=_persisted_user_id(test_user),
                 refresh_token=refresh_token,  # Same token - should fail
             )
+
+
+def _active_family_tokens(db_session: Session, family_id: str) -> list[RefreshToken]:
+    db_session.expire_all()
+    statement = select(RefreshToken).where(
+        RefreshToken.family_id == family_id, col(RefreshToken.revoked).is_(False)
+    )
+    return list(db_session.exec(statement).all())
+
+
+class TestRefreshTokenReuseDetection:
+    def test_rotation_keeps_the_token_family(self, db_session: Session, test_user: User):
+        initial_pair = auth_service.create_token_pair(session=db_session, user=test_user)
+        original = crud.get_refresh_token_by_hash(
+            session=db_session,
+            hashed_token=security.hash_refresh_token(initial_pair.refresh_token),
+        )
+        assert original is not None
+        family_id = original.family_id
+
+        new_pair = auth_service.refresh_access_token_from_refresh(
+            session=db_session, refresh_token=initial_pair.refresh_token
+        )
+
+        rotated = crud.get_refresh_token_by_hash(
+            session=db_session,
+            hashed_token=security.hash_refresh_token(new_pair.refresh_token),
+        )
+        assert rotated is not None
+        assert rotated.family_id == family_id
+
+    def test_reuse_after_grace_revokes_the_whole_family(
+        self, db_session: Session, test_user: User
+    ):
+        initial_pair = auth_service.create_token_pair(session=db_session, user=test_user)
+        new_pair = auth_service.refresh_access_token_from_refresh(
+            session=db_session, refresh_token=initial_pair.refresh_token
+        )
+        old_token = db_session.exec(
+            select(RefreshToken).where(
+                RefreshToken.hashed_token
+                == security.hash_refresh_token(initial_pair.refresh_token)
+            )
+        ).one()
+        old_token.revoked_at = datetime.now(UTC) - timedelta(
+            seconds=auth_service.REFRESH_REUSE_GRACE_SECONDS + 5
+        )
+        db_session.add(old_token)
+        db_session.commit()
+
+        with pytest.raises(ValueError):
+            auth_service.refresh_access_token_from_refresh(
+                session=db_session, refresh_token=initial_pair.refresh_token
+            )
+
+        assert _active_family_tokens(db_session, old_token.family_id) == []
+        with pytest.raises(ValueError):
+            auth_service.refresh_access_token_from_refresh(
+                session=db_session, refresh_token=new_pair.refresh_token
+            )
+
+    def test_concurrent_reuse_within_grace_keeps_the_new_token(
+        self, db_session: Session, test_user: User
+    ):
+        initial_pair = auth_service.create_token_pair(session=db_session, user=test_user)
+        new_pair = auth_service.refresh_access_token_from_refresh(
+            session=db_session, refresh_token=initial_pair.refresh_token
+        )
+
+        with pytest.raises(ValueError):
+            auth_service.refresh_access_token_from_refresh(
+                session=db_session, refresh_token=initial_pair.refresh_token
+            )
+
+        assert auth_service.refresh_access_token_from_refresh(
+            session=db_session, refresh_token=new_pair.refresh_token
+        )
+
+    def test_reuse_does_not_touch_other_sessions(self, db_session: Session, test_user: User):
+        stolen_pair = auth_service.create_token_pair(session=db_session, user=test_user)
+        other_device = auth_service.create_token_pair(session=db_session, user=test_user)
+        auth_service.refresh_access_token_from_refresh(
+            session=db_session, refresh_token=stolen_pair.refresh_token
+        )
+        old_token = db_session.exec(
+            select(RefreshToken).where(
+                RefreshToken.hashed_token == security.hash_refresh_token(stolen_pair.refresh_token)
+            )
+        ).one()
+        old_token.revoked_at = datetime.now(UTC) - timedelta(hours=1)
+        db_session.add(old_token)
+        db_session.commit()
+
+        with pytest.raises(ValueError):
+            auth_service.refresh_access_token_from_refresh(
+                session=db_session, refresh_token=stolen_pair.refresh_token
+            )
+
+        assert auth_service.refresh_access_token_from_refresh(
+            session=db_session, refresh_token=other_device.refresh_token
+        )
+
+
+class TestRefreshRoute:
+    def test_refresh_uses_the_refresh_token_owner_not_the_access_cookie(
+        self, db_session: Session, test_user: User
+    ):
+        other_user = crud.create_user(
+            session=db_session,
+            user_create=UserCreate(
+                email="other-refresh@example.com",
+                password="testpassword123",
+                full_name="Other User",
+            ),
+        )
+        owner_pair = auth_service.create_token_pair(session=db_session, user=test_user)
+        other_pair = auth_service.create_token_pair(session=db_session, user=other_user)
+
+        refresh_client = TestClient(app)
+        refresh_client.cookies.set(settings.ACCESS_TOKEN_COOKIE_NAME, other_pair.access_token)
+        response = refresh_client.post(
+            f"{settings.API_V1_STR}/auth/refresh",
+            json={"refresh_token": owner_pair.refresh_token},
+        )
+
+        assert response.status_code == 200
+        payload = jwt.decode(
+            response.json()["access_token"], settings.SECRET_KEY, algorithms=[security.ALGORITHM]
+        )
+        assert payload["sub"] == str(test_user.id)
 
 
 if __name__ == "__main__":

@@ -55,6 +55,8 @@ Open:
 
 The frontend runs on port `8080`; FastAPI and its documentation run on port `3000`. Therefore, `http://localhost:8080/docs` returns `404` by design. Use `http://localhost:3000/docs`.
 
+The development Compose file publishes the backend, PostgreSQL, Mailpit and Ollama on `127.0.0.1` only, because they use default credentials or have no authentication. Only the frontend is reachable from other machines on the network.
+
 Check service health:
 
 ```bash
@@ -115,8 +117,13 @@ The main settings are:
 | `GOOGLE_DRIVE_REDIRECT_URI` | Exact backend OAuth callback registered with Google |
 | `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` | Fernet key used to encrypt stored Google refresh tokens |
 | `OLLAMA_BASE_URL` | Optional Ollama endpoint |
+| `EMBEDDING_DIMENSIONS` | Vector size of the embedding tables; must match the embedding model (768 for `nomic-embed-text`) |
+| `DOCUMENT_PROCESSING_CONCURRENCY` | Uploads processed at once in the background (default `2`) |
+| `LOGIN_RATE_LIMIT` | Sign-in attempts allowed per client IP (default `5/minute`) |
+| `LOGIN_EMAIL_RATE_LIMIT` | Sign-in attempts allowed per account across all IPs (default `10/15minutes`) |
+| `FORWARDED_ALLOW_IPS` | Proxies trusted to report the client IP in `X-Forwarded-For`; Compose sets the frontend container's fixed address |
 | `NEXT_PUBLIC_API_URL` | Browser API base URL for standard requests |
-| `NEXT_PUBLIC_STREAM_API_URL` | SSE-capable public backend URL; local Docker uses `http://localhost:3000/api/v1` |
+| `NEXT_PUBLIC_STREAM_API_URL` | SSE-capable public backend URL; local Docker uses `http://localhost:3000/api/v1`, production streams through the frontend's `/api/v1` rewrite |
 
 Local Docker uses Mailpit, so verification emails stay on the machine and can be read at `http://localhost:8025`. Production deployments must provide a real SMTP host and sender address.
 
@@ -232,6 +239,13 @@ The preference is saved per account and applies to new chat responses. `qwen3:4b
 ```bash
 OLLAMA_CHAT_MODEL=qwen3:4b
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+EMBEDDING_DIMENSIONS=768
+```
+
+`EMBEDDING_DIMENSIONS` is the vector size of the embedding tables and must match the embedding model; the backend refuses to start when they differ. To switch to a model with a different size, set both variables and rebuild the embeddings:
+
+```bash
+docker compose --env-file .env.docker run --rm backend python -m scripts.reindex_embeddings --yes
 ```
 
 Start Compose with that environment file:
@@ -252,7 +266,7 @@ Then save the per-user preference by email:
 docker compose exec backend python -m scripts.set_user_model --email you@example.com --chat-model qwen3:4b
 ```
 
-The account preference overrides the Docker default. Omit `--embedding-model` to keep `nomic-embed-text`; changing embedding dimensions requires rebuilding the vector indexes. Confirm the active Docker defaults and installed models with:
+The account preference overrides the Docker default. Omit `--embedding-model` to keep `nomic-embed-text`; a model with a different vector size needs `EMBEDDING_DIMENSIONS` updated and the embeddings rebuilt with `scripts.reindex_embeddings`, as described above. Confirm the active Docker defaults and installed models with:
 
 ```bash
 curl http://localhost:3000/health/ready
@@ -306,6 +320,19 @@ python run.py
 ```
 
 The local frontend expects PostgreSQL and the backend to be available. Docker Compose is the recommended development path when working across the full stack.
+
+### Backend tests
+
+The tests create a scratch database, `knowledge_assistant_test`, on a PostgreSQL server that has the pgvector extension, which the embedding tables need. The `POSTGRES_*` environment variables select the server. The quickest route is a throwaway container:
+
+```bash
+docker run -d --rm --name cognolith-test-pg -p 127.0.0.1:55432:5432 -e POSTGRES_PASSWORD=cognolith-test pgvector/pgvector:pg16
+cd backend
+POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=55432 POSTGRES_PASSWORD=cognolith-test python -m pytest -q tests
+docker rm -f cognolith-test-pg
+```
+
+CI runs the same suite on Linux. A few backup tests rely on POSIX file semantics (replacing open files, creating symlinks) and fail when run natively on Windows; run them in the backend image instead.
 
 ## Verification
 
@@ -368,6 +395,19 @@ sh scripts/release/smoke.sh
 # Windows PowerShell
 ./scripts/release/smoke.ps1
 ```
+
+Confirm that chat answers stream token by token through your public URL. A buffering proxy would deliver the whole answer at once:
+
+```bash
+docker compose -f docker-compose.production.yml exec backend python -m scripts.check_sse_streaming --base-url https://your-host --email you@example.com
+```
+
+Deployment notes:
+
+- Run a single backend process (the default `python run.py`). Chat generation locks, cancel signals and rate limits are kept in memory.
+- The Compose network uses the fixed subnet `172.30.0.0/24` so the backend can trust the frontend's forwarded client IP. Recreate the stack with `down` and `up -d` after upgrading from a release without it.
+- If another reverse proxy (nginx, Caddy) sits in front of the frontend, add its address to `FORWARDED_ALLOW_IPS`, or every user shares one rate-limit bucket.
+- Use `scripts.reindex_embeddings` when changing to an embedding model with a different vector size; the backend refuses to start until the sizes match.
 
 For the bundled local PostgreSQL service, create a compressed backup with a checksum before migrations or upgrades:
 
@@ -474,7 +514,7 @@ flowchart LR
 
 The browser communicates with the Next.js application on port `8080`. API calls go through the `/api/v1` rewrite to FastAPI on port `3000`, where authentication, CSRF checks, email verification, and account ownership are enforced before any workspace data is touched.
 
-PostgreSQL stores users, sessions, notes, document metadata, chat history, graph links, full-text indexes, pgvector embeddings, encrypted Google refresh tokens, backup schedules, and operation history. Uploaded files live on the application filesystem. Google Drive snapshots are checksum-validated ZIP archives stored in the connected account's hidden application-data folder. Restore replaces the workspace from a verified snapshot, then rebuilds derived document text, chunks, summaries, and embeddings. Alembic runs before the backend starts so schema changes are versioned instead of inferred at runtime. Ollama is optional: Cognolith can run without local AI, while chat, semantic search, summaries, and embeddings become richer when the configured models are available.
+PostgreSQL stores users, sessions, notes, document metadata, chat history, graph links, full-text indexes, pgvector embeddings, encrypted Google refresh tokens, backup schedules, and operation history. Uploaded files live on the application filesystem. Google Drive snapshots are checksum-validated ZIP archives stored in the connected account's hidden application-data folder. Restore replaces the workspace from a verified snapshot, then rebuilds derived document text, chunks, summaries, and embeddings. Alembic runs before the backend starts so schema changes are versioned instead of inferred at runtime, including the pgvector embedding tables. The API runs as a single async process: model calls go to Ollama and database work runs off the event loop, so one process serves several users at once, and per-chat generation locks, cancel signals and rate limits stay exact in memory. An upload returns as soon as the file is stored; extraction, embedding and the summary then run as background tasks in the API (`DOCUMENT_PROCESSING_CONCURRENCY` at a time) while the document page polls its status. The `documents.status` column is the durable record: documents still `processing` when the API starts were interrupted by a restart and are processed again. Ollama is optional: Cognolith can run without local AI, while chat, semantic search, summaries, and embeddings become richer when the configured models are available.
 
 Key directories:
 

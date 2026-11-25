@@ -9,6 +9,7 @@ from sqlmodel import col, select
 
 from app.ai.embeddings import generate_embedding
 from app.ai.rag import ensure_workspace_embeddings
+from app.ai.reranking import build_lexical_query
 from app.ai.vectorstore import ChatVectorSearchResult, PgVectorStore
 from app.api.deps import CurrentUser, SessionDep
 from app.models.document import Document
@@ -20,8 +21,19 @@ from app.utils.text_processing import create_content_preview
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
 
+# Cut-off for showing a vector-only match. Chat retrieval has no hard cut-off (its
+# reranker orders candidates), so this is the one threshold search applies.
 SEMANTIC_SIMILARITY_THRESHOLD = 0.61
+# Full-text matches below this score are noise; exact phrase matches score 1.0.
+LEXICAL_MIN_SCORE = 0.2
+SEARCH_CANDIDATE_LIMIT = 100
 SUPPORTED_ENTITY_TYPES = {"document", "note", "chat"}
+
+
+def _keep_best(best: dict[int, tuple[float, str]], entity_id: int, score: float, text: str) -> None:
+    current = best.get(entity_id)
+    if current is None or score > current[0]:
+        best[entity_id] = (score, text)
 
 
 def _merge_result(
@@ -124,15 +136,26 @@ def unified_search(
         session.commit()
 
         results: list[SearchResultItem] = []
+        lexical_query = build_lexical_query(query)
 
         if "document" in enabled_types:
-            document_hits = vector_store.similarity_search(
+            # Hybrid: semantic chunk matches plus full-text/exact matches, best score per document
+            best_documents: dict[int, tuple[float, str]] = {}
+            for hit in vector_store.similarity_search(
                 user_id=current_user.id,
                 query_embedding=query_embedding,
-                top_k=100,
+                top_k=SEARCH_CANDIDATE_LIMIT,
                 similarity_threshold=SEMANTIC_SIMILARITY_THRESHOLD,
-            )
-            document_ids = sorted({hit.document_id for hit in document_hits})
+            ):
+                if _is_relevant_semantic_score(hit.score):
+                    _keep_best(best_documents, hit.document_id, hit.score, hit.content)
+            for hit in vector_store.lexical_chunk_search(
+                user_id=current_user.id, query=lexical_query, top_k=SEARCH_CANDIDATE_LIMIT
+            ):
+                if hit.exact_match or hit.lexical_score >= LEXICAL_MIN_SCORE:
+                    _keep_best(best_documents, hit.document_id, hit.lexical_score, hit.content)
+
+            document_ids = sorted(best_documents)
             document_map: dict[int, Document] = {}
             if document_ids:
                 statement = select(Document).where(
@@ -149,30 +172,39 @@ def unified_search(
                     for document in session.exec(statement).all()
                     if document.id is not None
                 }
-            for hit in document_hits:
-                document = document_map.get(hit.document_id)
-                if document is None or not _is_relevant_semantic_score(hit.score):
+            for document_id, (score, content) in best_documents.items():
+                document = document_map.get(document_id)
+                if document is None:
                     continue
                 results.append(
                     SearchResultItem(
-                        id=hit.document_id,
+                        id=document_id,
                         entity_type="document",
                         title=document.title,
-                        snippet=create_content_preview(hit.content, max_length=180),
-                        score=hit.score,
+                        snippet=create_content_preview(content, max_length=180),
+                        score=score,
                         created_at=document.created_at,
                         updated_at=document.updated_at,
                     )
                 )
 
         if "note" in enabled_types:
-            note_hits = vector_store.note_similarity_search(
+            best_notes: dict[int, tuple[float, str]] = {}
+            for hit in vector_store.note_similarity_search(
                 user_id=current_user.id,
                 query_embedding=query_embedding,
-                top_k=100,
+                top_k=SEARCH_CANDIDATE_LIMIT,
                 similarity_threshold=SEMANTIC_SIMILARITY_THRESHOLD,
-            )
-            note_ids = sorted({hit.note_id for hit in note_hits})
+            ):
+                if _is_relevant_semantic_score(hit.score):
+                    _keep_best(best_notes, hit.note_id, hit.score, hit.content)
+            for hit in vector_store.lexical_note_search(
+                user_id=current_user.id, query=lexical_query, top_k=SEARCH_CANDIDATE_LIMIT
+            ):
+                if hit.exact_match or hit.lexical_score >= LEXICAL_MIN_SCORE:
+                    _keep_best(best_notes, hit.note_id, hit.lexical_score, hit.content)
+
+            note_ids = sorted(best_notes)
             note_map: dict[int, Notes] = {}
             if note_ids:
                 statement = select(Notes).where(
@@ -189,17 +221,17 @@ def unified_search(
                 note_map = {
                     note.id: note for note in session.exec(statement).all() if note.id is not None
                 }
-            for hit in note_hits:
-                note = note_map.get(hit.note_id)
-                if note is None or not _is_relevant_semantic_score(hit.score):
+            for note_id, (score, content) in best_notes.items():
+                note = note_map.get(note_id)
+                if note is None:
                     continue
                 results.append(
                     SearchResultItem(
-                        id=hit.note_id,
+                        id=note_id,
                         entity_type="note",
                         title=note.title,
-                        snippet=create_content_preview(hit.content, max_length=180),
-                        score=hit.score,
+                        snippet=create_content_preview(content, max_length=180),
+                        score=score,
                         created_at=note.created_at,
                         updated_at=note.updated_at,
                     )
@@ -209,7 +241,7 @@ def unified_search(
             chat_hits = vector_store.chat_similarity_search(
                 user_id=current_user.id,
                 query_embedding=query_embedding,
-                top_k=100,
+                top_k=SEARCH_CANDIDATE_LIMIT,
                 similarity_threshold=SEMANTIC_SIMILARITY_THRESHOLD,
                 date_from=date_from,
                 date_to=date_to,

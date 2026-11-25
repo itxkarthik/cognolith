@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import func
@@ -18,6 +18,12 @@ from app.utils.text_processing import (
     markdown_to_plain_text,
     normalize_markdown,
 )
+
+# Autosave fires after every typing pause; one snapshot per window keeps history
+# useful without a row per keystroke burst.
+NOTE_VERSION_INTERVAL = timedelta(minutes=10)
+NOTE_VERSION_RETENTION = 50
+_VERSIONED_FIELDS = {"title", "content"}
 
 
 def create_note(*, session: Session, current_user: User, payload: NoteCreate) -> Notes:
@@ -192,7 +198,10 @@ def update_note(
         document_id=update_data.get("linked_document_id"),
     )
 
-    snapshot = _create_version_snapshot(session=session, note=note)
+    if _should_snapshot(session=session, note=note, update_data=update_data):
+        snapshot = _create_version_snapshot(session=session, note=note)
+        note.previous_version_id = snapshot.id
+        note.version = (note.version or 1) + 1
 
     for field_name, value in update_data.items():
         if field_name in {"tag_ids", "linked_note_ids"}:
@@ -215,11 +224,11 @@ def update_note(
             continue
         setattr(note, field_name, value)
 
-    note.previous_version_id = snapshot.id
-    note.version = (note.version or 1) + 1
     note.last_edited_at = datetime.now()
 
+    # Snapshot, pruning and update commit together, so a failed update leaves no orphan
     session.add(note)
+    _prune_version_history(session=session, note=note)
     session.commit()
     session.refresh(note)
     persisted_note_id = _require_persisted_id(note.id, "Note")
@@ -695,9 +704,57 @@ def _create_version_snapshot(*, session: Session, note: Notes) -> Notes:
         read_time_minutes=note.read_time_minutes,
     )
     session.add(snapshot)
-    session.commit()
-    session.refresh(snapshot)
+    session.flush()
     return snapshot
+
+
+def _should_snapshot(*, session: Session, note: Notes, update_data: dict[str, object]) -> bool:
+    """Snapshot only real title/content edits, and at most once per interval."""
+    changed = any(
+        field_name in update_data and update_data[field_name] != getattr(note, field_name)
+        for field_name in _VERSIONED_FIELDS
+    )
+    if not changed:
+        return False
+    if note.previous_version_id is None:
+        return True
+    previous = session.get(Notes, note.previous_version_id)
+    if previous is None or previous.created_at is None:
+        return True
+    created_at = previous.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return datetime.now(UTC) - created_at >= NOTE_VERSION_INTERVAL
+
+
+def _prune_version_history(*, session: Session, note: Notes) -> None:
+    """Drop snapshots beyond the retention limit from the end of the version chain."""
+    kept = 0
+    current: Notes = note
+    while current.previous_version_id is not None:
+        previous = session.get(Notes, current.previous_version_id)
+        if previous is None:
+            return
+        if kept == NOTE_VERSION_RETENTION:
+            current.previous_version_id = None
+            session.add(current)
+            session.flush()
+            _delete_version_chain(session=session, snapshot=previous)
+            return
+        kept += 1
+        current = previous
+
+
+def _delete_version_chain(*, session: Session, snapshot: Notes) -> None:
+    current: Notes | None = snapshot
+    while current is not None:
+        older_id = current.previous_version_id
+        # Only snapshots (archived + deleted copies) are removed, never live notes
+        if not (current.is_deleted and current.is_archived):
+            return
+        session.delete(current)
+        session.flush()
+        current = session.get(Notes, older_id) if older_id is not None else None
 
 
 def _require_persisted_id(value: int | None, entity_name: str) -> int:

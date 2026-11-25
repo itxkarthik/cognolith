@@ -1,1 +1,0 @@
-Successful upload verification document with pgvector and ollama model.

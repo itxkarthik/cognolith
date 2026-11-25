@@ -8,6 +8,8 @@ from sqlalchemy import String, inspect, text
 from sqlalchemy.engine import Connection
 from sqlmodel import SQLModel
 
+from app.ai.vectorstore import stored_embedding_dimensions
+from app.core.config import settings
 from app.core.database import engine
 
 PORTABLE_ID_TABLES = {
@@ -35,15 +37,48 @@ def _alembic_config() -> Config:
     return config
 
 
-def test_google_drive_subject_ownership_is_the_migration_head() -> None:
+def test_embedding_tables_is_the_migration_head() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_current_head() == "0006_unique_google_drive_subject"
+    assert script.get_current_head() == "0009_embedding_tables"
+    assert (
+        script.get_revision("0009_embedding_tables").down_revision
+        == "0008_hnsw_embedding_indexes"
+    )
+    assert (
+        script.get_revision("0008_hnsw_embedding_indexes").down_revision
+        == "0007_refresh_token_families"
+    )
+    assert (
+        script.get_revision("0007_refresh_token_families").down_revision
+        == "0006_unique_google_drive_subject"
+    )
     assert (
         script.get_revision("0006_unique_google_drive_subject").down_revision
         == "0005_google_drive_backup_foundation"
     )
     assert script.get_revision("0005_google_drive_backup_foundation").down_revision == "0004_streaming_chat"
+
+
+def test_upgrade_creates_embedding_tables_at_the_configured_size() -> None:
+    config = _alembic_config()
+    SQLModel.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        sizes = stored_embedding_dimensions(connection)
+        index_names = {
+            index["name"] for index in inspect(connection).get_indexes("chunk_embeddings")
+        }
+    assert sizes == {
+        "chunk_embeddings": settings.EMBEDDING_DIMENSIONS,
+        "note_embeddings": settings.EMBEDDING_DIMENSIONS,
+        "chat_message_embeddings": settings.EMBEDDING_DIMENSIONS,
+    }
+    assert "ix_chunk_embeddings_embedding_hnsw" in index_names
 
 
 def _seed_pre_backup_rows(connection: Connection) -> None:

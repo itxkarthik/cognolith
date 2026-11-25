@@ -1,5 +1,6 @@
 import logging
 
+from limits import parse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -58,3 +59,18 @@ limiter = Limiter(
     default_limits=[f"{settings.RATE_LIMIT_MAX_REQUESTS}/{settings.RATE_LIMIT_WINDOW}seconds"],
     storage_uri=get_storage_uri(),
 )
+
+
+_login_email_limit = parse(settings.LOGIN_EMAIL_RATE_LIMIT)
+
+
+def hit_login_email_limit(email: str) -> bool:
+    """
+    Count a login attempt against the account being targeted.
+
+    The per-IP decorator stops a single client from brute-forcing; this stops a
+    distributed attempt on one account. Returns False once the limit is exceeded.
+    """
+    if not limiter.enabled:
+        return True
+    return limiter.limiter.hit(_login_email_limit, "login-email", email.strip().lower())

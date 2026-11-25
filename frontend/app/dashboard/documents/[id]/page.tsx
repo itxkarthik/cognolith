@@ -10,6 +10,10 @@ import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { regenerateDocumentSummary } from "@/lib/api/documents";
 import { useDocumentStore } from "@/store/documentStore";
 
+// Uploads are processed in the background after the upload returns; poll until done
+const PROCESSING_POLL_MS = 2000;
+const PROCESSING_POLL_LIMIT_MS = 15 * 60 * 1000;
+
 export default function DocumentDetailsPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -22,6 +26,7 @@ export default function DocumentDetailsPage() {
   const error = useDocumentStore((state) => state.error);
   const fetchDocumentById = useDocumentStore((state) => state.fetchDocumentById);
   const clearSelectedDocument = useDocumentStore((state) => state.clearSelectedDocument);
+  const refreshDocumentStatus = useDocumentStore((state) => state.refreshDocumentStatus);
   const deleteDocumentById = useDocumentStore((state) => state.deleteDocumentById);
 
   const documentId = Number(params.id);
@@ -36,6 +41,32 @@ export default function DocumentDetailsPage() {
       clearSelectedDocument();
     };
   }, [clearSelectedDocument, documentId, fetchDocumentById, isValidId]);
+
+  const isProcessing = selectedDocument?.id === documentId && selectedDocument.status === "processing";
+
+  useEffect(() => {
+    if (!isProcessing) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+
+    const poll = async () => {
+      const document = await refreshDocumentStatus(documentId);
+      if (cancelled) return;
+      // null means the poll itself failed; keep trying until the time limit
+      if (document && document.status !== "processing") return;
+      if (Date.now() - startedAt < PROCESSING_POLL_LIMIT_MS) {
+        timer = setTimeout(poll, PROCESSING_POLL_MS);
+      }
+    };
+    timer = setTimeout(poll, PROCESSING_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [documentId, isProcessing, refreshDocumentStatus]);
 
   return (
     <div className="space-y-6">

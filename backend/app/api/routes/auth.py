@@ -1,4 +1,3 @@
-import secrets
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -11,9 +10,9 @@ from app import crud  # type: ignore[attr-defined]
 from app.api.deps import CurrentUser, SessionDep, TokenDep
 from app.core import security
 from app.core.config import settings
-from app.core.csrf import get_csrf_token
+from app.core.csrf import generate_csrf_token, get_csrf_token, set_csrf_cookie
 from app.core.exceptions import AppError
-from app.core.rate_limit import limiter
+from app.core.rate_limit import hit_login_email_limit, limiter
 from app.models.user import Message, Token, TokenPayload, User, UserPublic
 from app.schemas.error import ErrorCode, StandardErrorResponse
 from app.services import auth_service
@@ -28,7 +27,7 @@ router = APIRouter(tags=["login"])
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
-async def get_csrf_token_endpoint(request: Request) -> dict[str, Any]:
+async def get_csrf_token_endpoint(request: Request, response: Response) -> dict[str, Any]:
     """
     Get a CSRF token for use in subsequent state-changing requests.
 
@@ -37,12 +36,16 @@ async def get_csrf_token_endpoint(request: Request) -> dict[str, Any]:
 
     The token is set in a cookie and must also be sent back in the header for validation.
     """
-    return await get_csrf_token(request)  # type: ignore[no-any-return]
+    return await get_csrf_token(request, response)  # type: ignore[no-any-return]
 
 
-def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+def set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    csrf_token: str | None = None,
+) -> None:
     secure = settings.ENVIRONMENT != "local"
-    csrf_token = secrets.token_urlsafe(32)
 
     response.set_cookie(
         key=settings.ACCESS_TOKEN_COOKIE_NAME,
@@ -62,15 +65,9 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         path="/",
     )
-    response.set_cookie(
-        key=settings.CSRF_COOKIE_NAME,
-        value=csrf_token,
-        httponly=False,
-        secure=secure,
-        samesite="lax",
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        path="/",
-    )
+    # A fresh CSRF token per sign-in. Refresh passes the current one through, so
+    # requests already in flight with it don't fail.
+    set_csrf_cookie(response, csrf_token or generate_csrf_token())
 
 
 def clear_auth_cookies(response: Response) -> None:
@@ -90,7 +87,7 @@ def clear_auth_cookies(response: Response) -> None:
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
-@limiter.limit("5/minute")  # type: ignore[misc]
+@limiter.limit(settings.LOGIN_RATE_LIMIT)  # type: ignore[misc]
 def login_access_token(
     request: Request,
     response: Response,
@@ -99,8 +96,13 @@ def login_access_token(
 ) -> Token:
     """
     OAuth2 token login, get an access token for future requests.
-    Rate limited to 5 attempts per minute per IP.
+    Rate limited per client IP and per account.
     """
+    if not hit_login_email_limit(form_data.username):
+        raise HTTPException(
+            status_code=429, detail="Too many login attempts for this account. Try again later."
+        )
+
     user = crud.authenticate(session=session, email=form_data.username, password=form_data.password)
     if not user:
         raise HTTPException(status_code=400, detail="Incorrect Email or Password")
@@ -156,41 +158,19 @@ def refresh_access_token(
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Missing refresh token")
 
-    # Get user from token or request context
-    user_id = None
+    # Identity comes only from the refresh token's owner, never the access-token cookie
     try:
-        # Try to get user_id from current token if available
-        token = request.cookies.get(settings.ACCESS_TOKEN_COOKIE_NAME)
-        if token:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
-            user_id = payload.get("sub")
-    except Exception:
-        pass
-
-    # Use auth_service to refresh with token rotation
-    try:
-        if user_id:
-            token_pair = auth_service.refresh_access_token_from_refresh(
-                session=session, user_id=int(user_id), refresh_token=refresh_token
-            )
-        else:
-            # Lookup user by refresh token without knowing user_id first
-            hashed = security.hash_refresh_token(refresh_token)
-            db_token = crud.get_refresh_token_by_hash(session=session, hashed_token=hashed)
-            if not db_token:
-                raise ValueError("Invalid or expired refresh token")
-            token_pair = auth_service.refresh_access_token_from_refresh(
-                session=session, user_id=db_token.user_id, refresh_token=refresh_token
-            )
+        token_pair = auth_service.refresh_access_token_from_refresh(
+            session=session, refresh_token=refresh_token
+        )
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid refresh token")
 
     set_auth_cookies(
         response,
         access_token=token_pair.access_token,
         refresh_token=token_pair.refresh_token,
+        csrf_token=request.cookies.get(settings.CSRF_COOKIE_NAME),
     )
 
     return Token(
