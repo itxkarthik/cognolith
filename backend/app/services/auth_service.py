@@ -244,7 +244,7 @@ def cleanup_expired_tokens(session: Session) -> int:
     - Expired refresh tokens (revoked or not)
     - Expired blacklisted access tokens
 
-    Should be run periodically (e.g., daily via Celery job).
+    Run periodically by MaintenanceScheduler.
 
     Args:
         session: Database session

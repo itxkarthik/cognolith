@@ -14,10 +14,12 @@ from app.core import security
 from app.core.config import Settings, settings
 from app.core.csrf import validate_csrf_token
 from app.main import app
+from app.models.backup import OAuthState
 from app.models.document import Document
-from app.models.user import EmailVerificationCode, RefreshToken, User, UserCreate
+from app.models.user import EmailVerificationCode, RefreshToken, TokenBlacklist, User, UserCreate
 from app.services import auth_service
 from app.services.email_service import EmailDeliveryError
+from app.services.maintenance_scheduler import cleanup_expired_auth_records
 
 API = settings.API_V1_STR
 PASSWORD = "secure-password"
@@ -208,6 +210,37 @@ def test_csrf_tokens_are_compared_exactly() -> None:
 def test_staging_requires_a_secret_key() -> None:
     with pytest.raises(ValidationError, match="must be set in staging"):
         Settings(ENVIRONMENT="staging", SECRET_KEY="", POSTGRES_PASSWORD="strong-db-password")
+
+
+def test_cleanup_removes_only_expired_auth_records(session: Session) -> None:
+    user = _create_user(session)
+    assert user.id is not None
+    now = datetime.now(UTC)
+    old = now - timedelta(days=2)
+    session.add_all(
+        [
+            RefreshToken(user_id=user.id, hashed_token="expired", expires_at=old),
+            RefreshToken(
+                user_id=user.id, hashed_token="active", expires_at=now + timedelta(days=1)
+            ),
+            TokenBlacklist(jti="expired-jti", expires_at=old),
+            OAuthState(user_id=user.id, state_hash="expired-state", expires_at=old),
+            EmailVerificationCode(
+                user_id=user.id,
+                code_hash="hash",
+                expires_at=old,
+                resend_available_at=old,
+                window_started_at=old,
+            ),
+        ]
+    )
+    session.commit()
+
+    removed = cleanup_expired_auth_records(session, now=now)
+
+    assert removed == 4
+    remaining = session.exec(select(RefreshToken.hashed_token)).all()
+    assert remaining == ["active"]
 
 
 def test_session_version_bump_is_atomic_even_from_a_stale_copy(session: Session) -> None:
