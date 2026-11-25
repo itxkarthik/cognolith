@@ -1,4 +1,3 @@
-import secrets
 from collections.abc import Generator
 from typing import Annotated
 
@@ -11,6 +10,7 @@ from sqlmodel import Session, select
 
 from app.core import security
 from app.core.config import settings
+from app.core.csrf import validate_csrf_token
 from app.core.database import engine
 from app.models.user import TokenBlacklist, TokenPayload, User
 
@@ -52,16 +52,11 @@ TokenDep = Annotated[str, Depends(get_auth_token)]
 
 
 def _validate_csrf(request: Request) -> None:
-    cookie_token = request.cookies.get(settings.CSRF_COOKIE_NAME)
-    header_token = request.headers.get(settings.CSRF_HEADER_NAME)
-
-    if not cookie_token or not header_token:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Missing CSRF token",
-        )
-
-    if not secrets.compare_digest(cookie_token, header_token):
+    # Second line of defence behind CSRFMiddleware, using the same check
+    if not validate_csrf_token(
+        request.cookies.get(settings.CSRF_COOKIE_NAME),
+        request.headers.get(settings.CSRF_HEADER_NAME),
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid CSRF token",
