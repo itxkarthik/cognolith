@@ -63,6 +63,15 @@ def _validate_csrf(request: Request) -> None:
         )
 
 
+def _unauthorized(detail: str) -> HTTPException:
+    # 401 tells clients to refresh or sign in again; 403 is for real permission failures
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
@@ -74,23 +83,17 @@ def get_current_user(request: Request, session: SessionDep, token: TokenDep) -> 
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
         token_data = TokenPayload(**payload)
     except (InvalidTokenError, ValidationError):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Could not validate credentials",
-        )
+        raise _unauthorized("Could not validate credentials")
     # Check if the token has been blacklisted (logout / revocation)
     if token_data.jti:
         blacklisted = session.exec(
             select(TokenBlacklist).where(TokenBlacklist.jti == token_data.jti)
         ).first()
         if blacklisted:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has been revoked",
-            )
+            raise _unauthorized("Token has been revoked")
     user = session.get(User, token_data.sub)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise _unauthorized("Could not validate credentials")
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive User")
     if not user.is_verified:
