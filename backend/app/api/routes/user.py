@@ -36,7 +36,10 @@ from app.schemas.verification import (
     VerifyEmailRequest,
 )
 from app.services import auth_service
-from app.services.email_service import EmailDeliveryError, send_verification_email
+from app.services.email_service import (
+    EmailDeliveryError,
+    send_verification_email,
+)
 from app.services.email_verification_service import (
     InvalidVerificationCodeError,
     VerificationCodeExpiredError,
@@ -405,11 +408,7 @@ def verify_email(
 
     token_pair = auth_service.create_token_pair(session=session, user=user)
     set_auth_cookies(response, token_pair.access_token, token_pair.refresh_token)
-    return Token(
-        access_token=token_pair.access_token,
-        refresh_token=token_pair.refresh_token,
-        token_type=token_pair.token_type,
-    )
+    return Token(access_token=token_pair.access_token, token_type=token_pair.token_type)
 
 
 @router.post(

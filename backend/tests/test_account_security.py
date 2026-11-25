@@ -34,6 +34,18 @@ def _sign_in(email: str = "owner@example.com") -> tuple[TestClient, str]:
     return browser, csrf_token
 
 
+def test_login_does_not_return_the_refresh_token_in_the_body(session: Session) -> None:
+    _create_user(session)
+
+    browser, _ = _sign_in()
+    response = browser.post(
+        f"{API}/login/access-token", data={"username": "owner@example.com", "password": PASSWORD}
+    )
+
+    assert set(response.json()) == {"access_token", "token_type"}
+    assert browser.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
+
+
 @pytest.mark.parametrize(
     "token",
     [

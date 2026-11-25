@@ -626,16 +626,26 @@ class TestRefreshRoute:
 
         refresh_client = TestClient(app)
         refresh_client.cookies.set(settings.ACCESS_TOKEN_COOKIE_NAME, other_pair.access_token)
-        response = refresh_client.post(
-            f"{settings.API_V1_STR}/auth/refresh",
-            json={"refresh_token": owner_pair.refresh_token},
-        )
+        refresh_client.cookies.set(settings.REFRESH_TOKEN_COOKIE_NAME, owner_pair.refresh_token)
+        response = refresh_client.post(f"{settings.API_V1_STR}/auth/refresh")
 
         assert response.status_code == 200
         payload = jwt.decode(
             response.json()["access_token"], settings.SECRET_KEY, algorithms=[security.ALGORITHM]
         )
         assert payload["sub"] == str(test_user.id)
+        assert "refresh_token" not in response.json()
+
+    def test_refresh_ignores_a_refresh_token_in_the_body(
+        self, db_session: Session, test_user: User
+    ):
+        pair = auth_service.create_token_pair(session=db_session, user=test_user)
+
+        response = TestClient(app).post(
+            f"{settings.API_V1_STR}/auth/refresh", json={"refresh_token": pair.refresh_token}
+        )
+
+        assert response.status_code == 401
 
 
 if __name__ == "__main__":

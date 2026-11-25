@@ -78,22 +78,6 @@ export async function changeEmail(
 	return response.data;
 }
 
-export async function refreshToken(refresh_token?: string): Promise<TokenResponse> {
-	try {
-		const response = await apiClient.post<TokenResponse>(apiConfig.endpoints.refresh, {
-			refresh_token,
-		});
-		return response.data;
-	} catch (error) {
-		if (error instanceof APIRequestError) {
-			throw error;
-		}
-		throw new APIRequestError("Failed to refresh token", {
-			errorCode: "TOKEN_REFRESH_FAILED",
-		});
-	}
-}
-
 export async function getCurrentUser(): Promise<User> {
 	try {
 		const response = await apiClient.get<User>(apiConfig.endpoints.me);

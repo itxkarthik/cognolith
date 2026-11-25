@@ -123,14 +123,7 @@ def login_access_token(
         refresh_token=token_pair.refresh_token,
     )
 
-    return Token(
-        access_token=token_pair.access_token,
-        refresh_token=token_pair.refresh_token,
-    )
-
-
-class RefreshRequest(BaseModel):
-    refresh_token: str | None = None
+    return Token(access_token=token_pair.access_token)
 
 
 @router.post(
@@ -147,14 +140,14 @@ class RefreshRequest(BaseModel):
 def refresh_access_token(
     request: Request,
     response: Response,
-    body: RefreshRequest,
     session: SessionDep,
 ) -> Token:
     """
-    Exchange a valid refresh token for a new access + refresh token pair.
-    The old refresh token is revoked (rotation).
+    Exchange the refresh-token cookie for a new access + refresh token pair.
+    The old refresh token is revoked (rotation). The refresh token is only
+    accepted from its httpOnly cookie, never from the request body.
     """
-    refresh_token = body.refresh_token or request.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
+    refresh_token = request.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Missing refresh token")
 
@@ -173,10 +166,7 @@ def refresh_access_token(
         csrf_token=request.cookies.get(settings.CSRF_COOKIE_NAME),
     )
 
-    return Token(
-        access_token=token_pair.access_token,
-        refresh_token=token_pair.refresh_token,
-    )
+    return Token(access_token=token_pair.access_token)
 
 
 @router.post(

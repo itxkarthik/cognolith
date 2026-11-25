@@ -335,8 +335,13 @@ class Message(SQLModel):
 
 
 class Token(SQLModel):
+    """
+    Login/refresh response. The refresh token is only ever sent as an httpOnly
+    cookie; the short-lived access token stays in the body for bearer clients
+    (OpenAPI "Authorize", scripts).
+    """
+
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
 
 

@@ -16,9 +16,9 @@ export interface MessageResponse {
 	message: string;
 }
 
+/** The refresh token is only ever sent as an httpOnly cookie, never in a body. */
 export interface TokenResponse {
 	access_token: string;
-	refresh_token: string;
 	token_type: string;
 }
 
