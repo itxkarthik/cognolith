@@ -1,7 +1,8 @@
-"""account security: case-insensitive emails
+"""account security: case-insensitive emails, token version
 
 - Emails are lower-cased and a unique index on lower(email) stops two accounts
   differing only in case. The upgrade refuses to run if such accounts exist.
+- users.token_version is embedded in access tokens; bumping it revokes them all.
 
 Revision ID: 0010_account_security
 Revises: 0009_embedding_tables
@@ -34,7 +35,12 @@ def upgrade() -> None:
         )
     op.execute("UPDATE users SET email = lower(email) WHERE email <> lower(email)")
     op.create_index(_INDEX_NAME, "users", [sa.text("lower(email)")], unique=True)
+    op.add_column(
+        "users",
+        sa.Column("token_version", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("users", "token_version")
     op.drop_index(_INDEX_NAME, table_name="users")

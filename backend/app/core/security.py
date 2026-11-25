@@ -48,10 +48,13 @@ def decrypt_provider_token(value: bytes, *, encryption_key: str | None = None) -
         raise ProviderTokenEncryptionError("Google Drive provider token cannot be decrypted") from error
 
 
-def create_access_token(subject: str | Any, expires_delta: timedelta) -> str:
+def create_access_token(
+    subject: str | Any, expires_delta: timedelta, token_version: int = 0
+) -> str:
     expire = datetime.now(UTC) + expires_delta
     jti = str(uuid.uuid4())
-    to_encode = {"exp": expire, "sub": str(subject), "jti": jti}
+    # ver must match User.token_version; bumping it revokes every earlier token
+    to_encode = {"exp": expire, "sub": str(subject), "jti": jti, "ver": token_version}
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 

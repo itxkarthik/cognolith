@@ -156,10 +156,17 @@ def update_user_me(*, session: SessionDep, user_in: UserUpdateMe, current_user: 
     },
 )
 def update_password_me(
-    *, session: SessionDep, body: UpdatePassword, current_user: CurrentUser
+    *,
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    body: UpdatePassword,
+    current_user: CurrentUser,
 ) -> Any:
     """
-    Update current user password
+    Update current user password.
+
+    Every other session is signed out; this one continues with a fresh token pair.
     """
     verified, _ = verify_password(body.current_password, current_user.hashed_password)
     if not verified:
@@ -169,11 +176,23 @@ def update_password_me(
             status_code=400,
             detail="New password cannot be same as old password",
         )
-    hashed_password = get_password_hash(body.new_password)
-    current_user.hashed_password = hashed_password
-    session.add(current_user)
-    session.commit()
+    current_user.hashed_password = get_password_hash(body.new_password)
+    auth_service.end_all_sessions(session=session, user=current_user)
+    _start_fresh_session(request=request, response=response, session=session, user=current_user)
     return Message(message="Password updated successfully")
+
+
+def _start_fresh_session(
+    *, request: Request, response: Response, session: SessionDep, user: User
+) -> None:
+    """Issue a new token pair for the caller after end_all_sessions."""
+    token_pair = auth_service.create_token_pair(session=session, user=user)
+    set_auth_cookies(
+        response,
+        token_pair.access_token,
+        token_pair.refresh_token,
+        csrf_token=request.cookies.get(settings.CSRF_COOKIE_NAME),
+    )
 
 
 @router.get(

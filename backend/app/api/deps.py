@@ -94,6 +94,8 @@ def get_current_user(request: Request, session: SessionDep, token: TokenDep) -> 
     user = session.get(User, token_data.sub)
     if not user:
         raise _unauthorized("Could not validate credentials")
+    if token_data.ver != user.token_version:
+        raise _unauthorized("Token has been revoked")
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive User")
     if not user.is_verified:

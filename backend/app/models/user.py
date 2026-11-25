@@ -132,6 +132,9 @@ class User(PortableIdMixin, TimestampMixin, UserBase, SQLModel, table=True):
     is_verified: bool = Field(default=False)
     is_deleted: bool = Field(default=False)
     last_login_at: datetime | None = Field(default=None)
+    # Embedded in every access token; bumping it rejects all earlier tokens at once
+    # (password change, email change, log out everywhere)
+    token_version: int = Field(default=0, nullable=False)
 
     # Relationships
     settings: "UserSettings" = Relationship(
@@ -348,6 +351,8 @@ class Token(SQLModel):
 class TokenPayload(SQLModel):
     sub: str | None = None
     jti: str | None = None
+    # Absent from tokens issued before token versioning, which count as version 0
+    ver: int = 0
 
 
 class NewPassword(SQLModel):

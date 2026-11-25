@@ -2,7 +2,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
-from sqlmodel import Session, col
+from sqlmodel import Session, col, update
 
 from app import crud  # type: ignore[attr-defined]
 from app.core import security
@@ -46,7 +46,9 @@ def create_token_pair(session: Session, user: User, family_id: str | None = None
         raise ValueError("User must be persisted before tokens can be created")
     user_id = user.id
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(subject=user_id, expires_delta=access_token_expires)
+    access_token = security.create_access_token(
+        subject=user_id, expires_delta=access_token_expires, token_version=user.token_version
+    )
 
     # Create refresh token (long-lived, single-use)
     raw_refresh_token = security.generate_refresh_token()
@@ -156,6 +158,29 @@ def revoke_access_token(
         expires_at: Token expiration timestamp (for cleanup scheduling)
     """
     crud.blacklist_token(session=session, jti=jti, expires_at=expires_at)
+
+
+def end_all_sessions(session: Session, user: User) -> None:
+    """
+    Sign the user out everywhere: revoke every refresh token and bump the token
+    version, so other devices lose access immediately rather than when their
+    30-minute access token expires. Tokens issued afterwards carry the new version.
+    """
+    if user.id is None:
+        raise ValueError("User must be persisted before sessions can be ended")
+    # Write the caller's pending changes (new password or email) first: the refresh
+    # below reloads the row and would otherwise discard them
+    session.add(user)
+    session.flush()
+    # Atomic in SQL: two concurrent calls must both move the version forward
+    session.exec(
+        update(User)
+        .where(col(User.id) == user.id)
+        .values(token_version=User.token_version + 1)
+    )
+    crud.revoke_all_user_refresh_tokens(session=session, user_id=user.id)
+    # Pick up the incremented version (and drop any stale in-memory value)
+    session.refresh(user)
 
 
 def revoke_all_user_tokens(session: Session, user_id: int) -> None:
