@@ -34,6 +34,12 @@ def _remove_uploaded_file(file_path: str) -> None:
         logger.exception("Failed to remove uploaded file", extra={"file_path": file_path})
 
 
+def remove_uploaded_files(file_paths: list[str]) -> None:
+    """Delete stored uploads; failures are logged so one bad path doesn't stop the rest."""
+    for file_path in file_paths:
+        _remove_uploaded_file(file_path)
+
+
 def _mark_document_failed(*, session: Session, document_id: int | None, reason: str) -> None:
     try:
         session.rollback()

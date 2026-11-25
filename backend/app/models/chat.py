@@ -34,7 +34,9 @@ class ChatSession(PortableIdMixin, TimestampMixin, SQLModel, table=True):
         default_factory=uuid4,
         sa_column=Column(PGUUID(as_uuid=True), nullable=False, unique=True, index=True),
     )
-    user_id: int | None = Field(default=None, foreign_key="users.id", nullable=False)
+    user_id: int | None = Field(
+        default=None, foreign_key="users.id", ondelete="CASCADE", nullable=False
+    )
     title: str | None = Field(default=None, max_length=255)
     description: str | None = Field(default=None)
     is_archived: bool = Field(default=False)
@@ -78,7 +80,9 @@ class ChatMessages(PortableIdMixin, TimestampMixin, SQLModel, table=True):
         default_factory=uuid4,
         sa_column=Column(PGUUID(as_uuid=True), nullable=False, unique=True, index=True),
     )
-    session_id: int | None = Field(foreign_key="chat_sessions.id", nullable=False)
+    session_id: int | None = Field(
+        foreign_key="chat_sessions.id", ondelete="CASCADE", nullable=False
+    )
     role: ChatRole = Field(nullable=False, max_length=20)
     content: str = Field(nullable=False)
     sources: dict | None = Field(default=None, sa_column=Column(JSONB))

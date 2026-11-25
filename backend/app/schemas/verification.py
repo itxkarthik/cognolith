@@ -26,3 +26,7 @@ class ResendVerificationResponse(BaseModel):
 class EmailChangeRequest(BaseModel):
     new_email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=128)

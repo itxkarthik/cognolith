@@ -239,7 +239,7 @@ class UserSettings(TimestampMixin, SQLModel, table=True):
         CheckConstraint("temperature >= 0 AND temperature <= 1", name="chk_temperature"),
         CheckConstraint("max_tokens >= 100 AND max_tokens <= 4000", name="chk_max_tokens"),
     )
-    user_id: int | None = Field(primary_key=True, foreign_key="users.id")
+    user_id: int | None = Field(primary_key=True, foreign_key="users.id", ondelete="CASCADE")
     llm_provider: LlmProvider = Field(default=LlmProvider.ollama)
     llm_model: str = Field(default="llama3.2:1b", max_length=100)
     embedding_model: str = Field(default="nomic-embed-text", max_length=100)
@@ -252,7 +252,9 @@ class UserSettings(TimestampMixin, SQLModel, table=True):
     theme: UserTheme = Field(default=UserTheme.light)
     language: str = Field(default="en", max_length=10)
     notes_view_mode: NotesViewMode = Field(default=NotesViewMode.grid)
-    default_note_folder_id: int | None = Field(default=None, foreign_key="note_folders.id")
+    default_note_folder_id: int | None = Field(
+        default=None, foreign_key="note_folders.id", ondelete="SET NULL"
+    )
     email_notifications: bool = Field(default=True)
     processing_notifications: bool = Field(default=True)
     rag_diagnostics_enabled: bool = Field(default=False)
@@ -287,7 +289,7 @@ class ActivityLogs(SQLModel, table=True):
     )
 
     id: int | None = Field(primary_key=True, default=None)
-    user_id: int | None = Field(foreign_key="users.id", nullable=False)
+    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
     action: ActivityAction = Field(nullable=False)
     entity_type: EntityType = Field(nullable=False, max_length=50)
     entity_id: int | None = Field(nullable=False)
@@ -309,7 +311,7 @@ class RefreshToken(TimestampMixin, SQLModel, table=True):
         Index("ix_refresh_tokens_family_id", "family_id"),
     )
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id", nullable=False)
+    user_id: int = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
     hashed_token: str = Field(nullable=False, max_length=64)
     expires_at: datetime = Field(nullable=False)
     revoked: bool = Field(default=False)

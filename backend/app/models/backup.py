@@ -60,7 +60,9 @@ class GoogleDriveConnection(TimestampMixin, SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id", nullable=False, unique=True, index=True)
+    user_id: int = Field(
+        foreign_key="users.id", ondelete="CASCADE", nullable=False, unique=True, index=True
+    )
     encrypted_refresh_token: bytes = Field(sa_column=Column(LargeBinary, nullable=False))
     token_expires_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
@@ -90,7 +92,7 @@ class OAuthState(SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
+    user_id: int = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False, index=True)
     state_hash: str = Field(nullable=False, max_length=64, unique=True, index=True)
     expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     consumed_at: datetime | None = Field(
@@ -116,7 +118,7 @@ class WorkspaceBackup(TimestampMixin, SQLModel, table=True):
         default_factory=uuid4,
         sa_column=Column(PGUUID(as_uuid=True), nullable=False, unique=True, index=True),
     )
-    user_id: int = Field(foreign_key="users.id", nullable=False, index=True)
+    user_id: int = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False, index=True)
     operation_kind: BackupOperationKind = Field(
         default=BackupOperationKind.snapshot,
         sa_column=Column(String(20), nullable=False),
@@ -151,7 +153,9 @@ class BackupSchedule(TimestampMixin, SQLModel, table=True):
     __tablename__: ClassVar[str] = "backup_schedules"  # pyright: ignore
 
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id", nullable=False, unique=True, index=True)
+    user_id: int = Field(
+        foreign_key="users.id", ondelete="CASCADE", nullable=False, unique=True, index=True
+    )
     enabled: bool = Field(default=True)
     interval_hours: int = Field(default=24)
     last_attempt_at: datetime | None = Field(

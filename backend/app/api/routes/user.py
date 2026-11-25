@@ -1,17 +1,21 @@
+import asyncio
 import logging
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlmodel import col, func, select
+from sqlmodel import Session, col, delete, func, select
 
 from app import crud
 from app.api.deps import CurrentUser, SessionDep, get_current_active_superuser
 from app.api.routes.auth import clear_auth_cookies, set_auth_cookies
 from app.core.config import settings
+from app.core.database import engine
 from app.core.exceptions import AppError, ExternalServiceError
 from app.core.rate_limit import limiter
 from app.core.security import get_password_hash, verify_password
+from app.models.backup import DriveConnectionStatus
+from app.models.document import Document
 from app.models.user import (
     LlmProvider,
     Message,
@@ -29,6 +33,7 @@ from app.models.user import (
 from app.schemas.error import ErrorCode, StandardErrorResponse
 from app.schemas.settings import OllamaModelOption, UserAISettingsResponse, UserAISettingsUpdate
 from app.schemas.verification import (
+    DeleteAccountRequest,
     EmailChangeRequest,
     ResendVerificationRequest,
     ResendVerificationResponse,
@@ -36,6 +41,7 @@ from app.schemas.verification import (
     VerifyEmailRequest,
 )
 from app.services import auth_service
+from app.services.document_service import remove_uploaded_files
 from app.services.email_service import (
     EmailDeliveryError,
     send_verification_email,
@@ -48,6 +54,7 @@ from app.services.email_verification_service import (
     mask_email,
     verify_email_code,
 )
+from app.services.google_drive_oauth import GoogleDriveOAuthService
 
 router = APIRouter(prefix="/users", tags=["users"])
 logger = logging.getLogger(__name__)
@@ -322,6 +329,7 @@ async def update_user_ai_settings(
     path="/me",
     response_model=Message,
     responses={
+        400: {"model": StandardErrorResponse, "description": "Incorrect password"},
         401: {"model": StandardErrorResponse, "description": "Authentication required"},
         403: {
             "model": StandardErrorResponse,
@@ -330,18 +338,61 @@ async def update_user_ai_settings(
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
-def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
+async def delete_user_me(
+    response: Response,
+    session: SessionDep,
+    current_user: CurrentUser,
+    body: DeleteAccountRequest,
+) -> Any:
     """
-    Delete the current user
+    Delete the current user after re-checking their password.
+
+    The Google Drive authorization is revoked and uploaded files are removed from
+    disk; backups already in the user's own Drive are left for them to manage.
     """
+    password_valid, _ = verify_password(body.password, current_user.hashed_password)
+    if not password_valid:
+        raise AppError(
+            message="Current password is incorrect.",
+            error_code=ErrorCode.AUTHENTICATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
     if current_user.is_superuser:
         raise HTTPException(
             status_code=403,
             detail="Superuser is not allowed to delete themself",
         )
-    session.delete(current_user)
-    session.commit()
+
+    await _delete_account(session=session, user=current_user)
+    clear_auth_cookies(response)
     return Message(message="User Deleted Successfully")
+
+
+async def _delete_account(*, session: SessionDep, user: User) -> None:
+    """
+    Remove an account and everything it owns.
+
+    ON DELETE rules remove the user's notes, documents, chats, tokens and backup
+    records. The Google Drive authorization is revoked first; uploaded files are
+    removed only after the rows are gone, so a failed delete never loses data.
+    """
+    if user.id is None:
+        raise AppError(message="Invalid user")
+    connection = user.google_drive_connection
+    if connection is not None and connection.status != DriveConnectionStatus.disconnected:
+        await GoogleDriveOAuthService(session=session).disconnect(connection)
+    # Blocking DB and file work stays off the event loop
+    await asyncio.to_thread(_purge_account_data, user.id)
+
+
+def _purge_account_data(user_id: int) -> None:
+    with Session(engine) as session:
+        file_paths = list(
+            session.exec(select(Document.file_path).where(Document.user_id == user_id)).all()
+        )
+        session.exec(delete(User).where(col(User.id) == user_id))
+        session.commit()
+    remove_uploaded_files(file_paths)
 
 
 @router.post(
@@ -587,9 +638,9 @@ def update_user(*, session: SessionDep, user_id: int, user_in: UserUpdate) -> An
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
-def delete_user(session: SessionDep, current_user: CurrentUser, user_id: int) -> Message:
+async def delete_user(session: SessionDep, current_user: CurrentUser, user_id: int) -> Message:
     """
-    Delete a user.
+    Delete a user and everything they own.
     """
     user = session.get(User, user_id)
     if not user:
@@ -598,7 +649,5 @@ def delete_user(session: SessionDep, current_user: CurrentUser, user_id: int) ->
         raise HTTPException(
             status_code=403, detail="Super users are not allowed to delete themselves"
         )
-    # Cascade delete handles related records (documents, notes, etc.)
-    session.delete(user)
-    session.commit()
+    await _delete_account(session=session, user=user)
     return Message(message="User deleted successfully")

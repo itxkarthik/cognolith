@@ -1,6 +1,7 @@
 """Session, token and account-lifecycle protections (milestone M1)."""
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import jwt
 import pytest
@@ -13,6 +14,7 @@ from app.core import security
 from app.core.config import Settings, settings
 from app.core.csrf import validate_csrf_token
 from app.main import app
+from app.models.document import Document
 from app.models.user import RefreshToken, User, UserCreate
 from app.services import auth_service
 
@@ -145,6 +147,53 @@ def test_token_for_a_deleted_user_gets_401(session: Session) -> None:
     response = TestClient(app).get(f"{API}/users/me", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 401
+
+
+def test_account_deletion_requires_the_password(session: Session) -> None:
+    _create_user(session)
+    browser, csrf_token = _sign_in()
+
+    response = browser.request(
+        "DELETE",
+        f"{API}/users/me",
+        json={"password": "wrong-password"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 400
+    assert crud.get_user_by_email(session=session, email="owner@example.com") is not None
+
+
+def test_account_deletion_removes_uploaded_files(session: Session, tmp_path: Path) -> None:
+    user = _create_user(session)
+    upload = tmp_path / "upload.txt"
+    upload.write_text("private notes")
+    session.add(
+        Document(
+            user_id=user.id,
+            title="Private",
+            file_name="upload.txt",
+            file_path=str(upload),
+            file_size=13,
+            file_type=".txt",
+            mime_type="text/plain",
+            status="completed",
+        )
+    )
+    session.commit()
+    browser, csrf_token = _sign_in()
+
+    response = browser.request(
+        "DELETE",
+        f"{API}/users/me",
+        json={"password": PASSWORD},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 200
+    assert not upload.exists()
+    session.expire_all()
+    assert crud.get_user_by_email(session=session, email="owner@example.com") is None
 
 
 def test_csrf_tokens_are_compared_exactly() -> None:
