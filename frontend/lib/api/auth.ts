@@ -78,6 +78,24 @@ export async function changeEmail(
 	return response.data;
 }
 
+/** Sends a fresh code to the pending address; the previous code stops working. */
+export async function resendEmailChangeCode(): Promise<VerificationChallenge> {
+	const response = await apiClient.post<VerificationChallenge>(apiConfig.endpoints.resendEmailChangeCode);
+	return response.data;
+}
+
+/** Drops an unconfirmed email change; the current address is unaffected. */
+export async function cancelEmailChange(): Promise<User> {
+	const response = await apiClient.delete<User>(apiConfig.endpoints.changeEmail);
+	return response.data;
+}
+
+/** Switches the account to the pending address once its emailed code is confirmed. */
+export async function confirmEmailChange(code: string): Promise<User> {
+	const response = await apiClient.post<User>(apiConfig.endpoints.confirmEmailChange, { code });
+	return response.data;
+}
+
 export async function getCurrentUser(): Promise<User> {
 	try {
 		const response = await apiClient.get<User>(apiConfig.endpoints.me);

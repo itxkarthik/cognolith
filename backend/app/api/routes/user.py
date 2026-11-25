@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, delete, func, select
 
 from app import crud
@@ -23,17 +24,20 @@ from app.models.user import (
     UpdatePassword,
     User,
     UserCreate,
+    UserMe,
     UserPublic,
     UserRegister,
     UserSettings,
     UsersPublic,
     UserUpdate,
     UserUpdateMe,
+    normalize_email,
 )
 from app.schemas.error import ErrorCode, StandardErrorResponse
 from app.schemas.settings import OllamaModelOption, UserAISettingsResponse, UserAISettingsUpdate
 from app.schemas.verification import (
     DeleteAccountRequest,
+    EmailChangeConfirmRequest,
     EmailChangeRequest,
     ResendVerificationRequest,
     ResendVerificationResponse,
@@ -44,12 +48,16 @@ from app.services import auth_service
 from app.services.document_service import remove_uploaded_files
 from app.services.email_service import (
     EmailDeliveryError,
+    send_email_change_code,
+    send_security_notice,
     send_verification_email,
 )
 from app.services.email_verification_service import (
     InvalidVerificationCodeError,
+    IssuedVerificationCode,
     VerificationCodeExpiredError,
     VerificationRateLimitError,
+    check_verification_code,
     issue_verification_code,
     mask_email,
     verify_email_code,
@@ -124,7 +132,7 @@ def create_user(*, session: SessionDep, user_in: UserCreate) -> Any:
 
 @router.patch(
     path="/me",
-    response_model=UserPublic,
+    response_model=UserMe,
     responses={
         400: {"model": StandardErrorResponse, "description": "Validation error"},
         401: {"model": StandardErrorResponse, "description": "Authentication required"},
@@ -204,7 +212,7 @@ def _start_fresh_session(
 
 @router.get(
     path="/me",
-    response_model=UserPublic,
+    response_model=UserMe,
     responses={
         401: {"model": StandardErrorResponse, "description": "Authentication required"},
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
@@ -515,11 +523,14 @@ def resend_verification(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def change_email(
-    response: Response,
     session: SessionDep,
     current_user: CurrentUser,
     body: EmailChangeRequest,
 ) -> VerificationChallenge:
+    """
+    Start an email change: a code goes to the new address, and the current
+    address stays in use until the code is confirmed.
+    """
     password_valid, _ = verify_password(body.password, current_user.hashed_password)
     if not password_valid:
         raise AppError(
@@ -527,38 +538,175 @@ def change_email(
             error_code=ErrorCode.AUTHENTICATION_ERROR,
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    new_email = str(body.new_email)
-    existing = crud.get_user_by_email(session=session, email=new_email)
-    if existing is not None and existing.id != current_user.id:
+    new_email = normalize_email(str(body.new_email))
+    if new_email == current_user.email:
         raise AppError(
-            message="An account already uses this email address.",
-            error_code=ErrorCode.CONFLICT,
-            status_code=status.HTTP_409_CONFLICT,
+            message="The new email address is the same as the current one.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
+    _ensure_email_available(session=session, email=new_email, user=current_user)
 
-    current_user.email = new_email
-    current_user.is_verified = False
+    current_user.pending_email = new_email
     session.add(current_user)
-    session.commit()
-    session.refresh(current_user)
-    if current_user.id is None:
-        raise AppError(message="Invalid authenticated user")
-    auth_service.revoke_all_user_tokens(session=session, user_id=current_user.id)
-    issued = issue_verification_code(session=session, user=current_user)
+    issued = _issue_code(session=session, user=current_user)
     try:
-        send_verification_email(
-            recipient=current_user.email,
-            code=issued.code,
-            recipient_name=current_user.full_name,
+        send_email_change_code(
+            recipient=new_email, code=issued.code, recipient_name=current_user.full_name
         )
     except EmailDeliveryError as exc:
+        # No code arrived, so there is nothing to confirm
+        current_user.pending_email = None
+        session.add(current_user)
+        session.commit()
         raise ExternalServiceError("Verification email could not be delivered.") from exc
-    clear_auth_cookies(response)
     return VerificationChallenge(
-        masked_email=mask_email(current_user.email),
+        masked_email=mask_email(new_email),
         expires_at=issued.expires_at,
         resend_available_at=issued.resend_available_at,
     )
+
+
+@router.post(
+    path="/me/email-change/confirm",
+    response_model=UserMe,
+    responses={
+        400: {"model": StandardErrorResponse, "description": "Invalid code"},
+        409: {"model": StandardErrorResponse, "description": "Email already in use"},
+        410: {"model": StandardErrorResponse, "description": "Code expired"},
+    },
+)
+def confirm_email_change(
+    request: Request,
+    response: Response,
+    session: SessionDep,
+    current_user: CurrentUser,
+    body: EmailChangeConfirmRequest,
+) -> Any:
+    """
+    Switch to the pending address once its code is confirmed. Other sessions are
+    signed out and the previous address is told about the change.
+    """
+    new_email = _require_pending_email(current_user)
+    _check_code(session=session, user=current_user, code=body.code)
+    _ensure_email_available(session=session, email=new_email, user=current_user)
+
+    previous_email = current_user.email
+    current_user.email = new_email
+    current_user.pending_email = None
+    try:
+        auth_service.end_all_sessions(session=session, user=current_user)
+    except IntegrityError as exc:
+        # Another account claimed the address between the check and the commit
+        session.rollback()
+        raise _email_taken_error() from exc
+    _start_fresh_session(request=request, response=response, session=session, user=current_user)
+    _notify(
+        recipient=previous_email,
+        subject=f"Your {settings.PROJECT_NAME} email address was changed",
+        body=f"The email address on your account was changed to {mask_email(new_email)}.",
+        recipient_name=current_user.full_name,
+    )
+    session.refresh(current_user)
+    return current_user
+
+
+@router.post(
+    path="/me/email-change/resend",
+    response_model=VerificationChallenge,
+    responses={
+        400: {"model": StandardErrorResponse, "description": "No email change pending"},
+        429: {"model": StandardErrorResponse, "description": "Too many codes requested"},
+    },
+)
+def resend_email_change_code(session: SessionDep, current_user: CurrentUser) -> Any:
+    """Send a fresh code to the pending address; the previous code stops working."""
+    new_email = _require_pending_email(current_user)
+    issued = _issue_code(session=session, user=current_user)
+    try:
+        send_email_change_code(
+            recipient=new_email, code=issued.code, recipient_name=current_user.full_name
+        )
+    except EmailDeliveryError as exc:
+        raise ExternalServiceError("Verification email could not be delivered.") from exc
+    return VerificationChallenge(
+        masked_email=mask_email(new_email),
+        expires_at=issued.expires_at,
+        resend_available_at=issued.resend_available_at,
+    )
+
+
+@router.delete(path="/me/email-change", response_model=UserMe)
+def cancel_email_change(session: SessionDep, current_user: CurrentUser) -> Any:
+    """Drop an unconfirmed email change; the current address is unaffected."""
+    current_user.pending_email = None
+    session.add(current_user)
+    session.commit()
+    session.refresh(current_user)
+    return current_user
+
+
+def _require_pending_email(user: User) -> str:
+    if user.pending_email is None:
+        raise AppError(
+            message="There is no email change in progress.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return user.pending_email
+
+
+def _email_taken_error() -> AppError:
+    return AppError(
+        message="An account already uses this email address.",
+        error_code=ErrorCode.CONFLICT,
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
+def _ensure_email_available(*, session: SessionDep, email: str, user: User) -> None:
+    existing = crud.get_user_by_email(session=session, email=email)
+    if existing is not None and existing.id != user.id:
+        raise _email_taken_error()
+
+
+def _issue_code(*, session: SessionDep, user: User) -> IssuedVerificationCode:
+    try:
+        return issue_verification_code(session=session, user=user)
+    except VerificationRateLimitError as exc:
+        raise AppError(
+            message="Too many codes requested. Try again later.",
+            error_code=ErrorCode.RATE_LIMITED,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        ) from exc
+
+
+def _check_code(*, session: SessionDep, user: User, code: str) -> None:
+    """Validate a 6-digit code, mapping failures to the same responses as signup."""
+    try:
+        check_verification_code(session=session, user=user, code=code)
+    except VerificationCodeExpiredError as exc:
+        raise AppError(
+            message="Verification code has expired.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_410_GONE,
+        ) from exc
+    except InvalidVerificationCodeError as exc:
+        raise AppError(
+            message="Invalid or expired verification code.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+        ) from exc
+
+
+def _notify(*, recipient: str, subject: str, body: str, recipient_name: str | None) -> None:
+    """Security notices are best effort; a delivery failure must not undo the change."""
+    try:
+        send_security_notice(
+            recipient=recipient, subject=subject, body=body, recipient_name=recipient_name
+        )
+    except EmailDeliveryError:
+        logger.warning("Security notice could not be delivered")
 
 
 @router.get(

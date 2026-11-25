@@ -37,6 +37,8 @@ export const apiConfig = {
 		verifyEmail: "/users/verify-email",
 		resendVerification: "/users/resend-verification",
 		changeEmail: "/users/me/email-change",
+		confirmEmailChange: "/users/me/email-change/confirm",
+		resendEmailChangeCode: "/users/me/email-change/resend",
 		refresh: "/auth/refresh",
 		me: "/users/me",
 		logout: "/auth/logout",

@@ -107,9 +107,13 @@ def issue_verification_code(
     )
 
 
-def verify_email_code(
+def check_verification_code(
     *, session: Session, user: User, code: str, now: datetime | None = None
 ) -> None:
+    """
+    Consume the user's current code, or raise. Failed attempts are counted and
+    committed; on success the consumption is staged for the caller's commit.
+    """
     user_id = _require_user_id(user)
     checked_at = _as_utc(now or datetime.now(UTC))
     record = session.get(EmailVerificationCode, user_id)
@@ -130,8 +134,15 @@ def verify_email_code(
 
     record.consumed_at = checked_at
     record.updated_at = checked_at
-    user.is_verified = True
     session.add(record)
+
+
+def verify_email_code(
+    *, session: Session, user: User, code: str, now: datetime | None = None
+) -> None:
+    """Confirm a signup code and mark the account verified."""
+    check_verification_code(session=session, user=user, code=code, now=now)
+    user.is_verified = True
     session.add(user)
     session.commit()
     session.refresh(user)

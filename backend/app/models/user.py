@@ -132,6 +132,8 @@ class User(PortableIdMixin, TimestampMixin, UserBase, SQLModel, table=True):
     is_verified: bool = Field(default=False)
     is_deleted: bool = Field(default=False)
     last_login_at: datetime | None = Field(default=None)
+    # New address awaiting confirmation; `email` keeps working until it is confirmed
+    pending_email: str | None = Field(default=None, max_length=255)
     # Embedded in every access token; bumping it rejects all earlier tokens at once
     # (password change, email change, log out everywhere)
     token_version: int = Field(default=0, nullable=False)
@@ -199,6 +201,12 @@ class UserPublic(UserBase):
     id: int
     is_verified: bool
     created_at: datetime | None = None
+
+
+class UserMe(UserPublic):
+    """The signed-in user's own view, including an unconfirmed email change."""
+
+    pending_email: str | None = None
 
 
 class UsersPublic(SQLModel):

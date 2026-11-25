@@ -52,6 +52,8 @@ export interface User {
 	is_verified: boolean;
 	full_name?: string | null;
 	created_at?: string | null;
+	/** New address awaiting its emailed code (only on the signed-in user's own record). */
+	pending_email?: string | null;
 }
 
 export interface OllamaModelOption {

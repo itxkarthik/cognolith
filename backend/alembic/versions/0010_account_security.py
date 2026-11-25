@@ -1,7 +1,8 @@
-"""account security: case-insensitive emails, token version, delete rules
+"""account security: case-insensitive emails, pending email, token version, delete rules
 
 - Emails are lower-cased and a unique index on lower(email) stops two accounts
   differing only in case. The upgrade refuses to run if such accounts exist.
+- users.pending_email holds a new address until its code is confirmed.
 - users.token_version is embedded in access tokens; bumping it revokes them all.
 - Foreign keys get ON DELETE rules so deleting an account removes its data:
   owned rows cascade, optional links are set to NULL.
@@ -79,6 +80,7 @@ def upgrade() -> None:
         )
     op.execute("UPDATE users SET email = lower(email) WHERE email <> lower(email)")
     op.create_index(_INDEX_NAME, "users", [sa.text("lower(email)")], unique=True)
+    op.add_column("users", sa.Column("pending_email", sa.String(length=255), nullable=True))
     op.add_column(
         "users",
         sa.Column("token_version", sa.Integer(), nullable=False, server_default=sa.text("0")),
@@ -89,4 +91,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     _set_delete_rules(restore=True)
     op.drop_column("users", "token_version")
+    op.drop_column("users", "pending_email")
     op.drop_index(_INDEX_NAME, table_name="users")

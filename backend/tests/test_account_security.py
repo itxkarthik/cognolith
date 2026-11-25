@@ -15,8 +15,9 @@ from app.core.config import Settings, settings
 from app.core.csrf import validate_csrf_token
 from app.main import app
 from app.models.document import Document
-from app.models.user import RefreshToken, User, UserCreate
+from app.models.user import EmailVerificationCode, RefreshToken, User, UserCreate
 from app.services import auth_service
+from app.services.email_service import EmailDeliveryError
 
 API = settings.API_V1_STR
 PASSWORD = "secure-password"
@@ -258,3 +259,131 @@ def test_stale_session_after_sign_out_everywhere_is_not_reported_as_theft(
         )
 
     assert "reuse" not in caplog.text
+
+
+def test_email_change_rejects_the_current_address(session: Session) -> None:
+    _create_user(session)
+    browser, csrf_token = _sign_in()
+
+    response = browser.post(
+        f"{API}/users/me/email-change",
+        json={"new_email": "Owner@Example.com", "password": PASSWORD},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 400
+
+
+def test_pending_email_change_survives_a_reload_and_can_be_cancelled(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.api.routes.user.send_email_change_code", lambda **_: None)
+    _create_user(session)
+    browser, csrf_token = _sign_in()
+    headers = {"X-CSRF-Token": csrf_token}
+
+    browser.post(
+        f"{API}/users/me/email-change",
+        json={"new_email": "new@example.com", "password": PASSWORD},
+        headers=headers,
+    )
+    assert browser.get(f"{API}/users/me").json()["pending_email"] == "new@example.com"
+
+    cancelled = browser.delete(f"{API}/users/me/email-change", headers=headers)
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["pending_email"] is None
+    assert cancelled.json()["email"] == "owner@example.com"
+    confirm = browser.post(
+        f"{API}/users/me/email-change/confirm", json={"code": "123456"}, headers=headers
+    )
+    assert confirm.status_code == 400
+
+
+def test_pending_email_is_not_shown_in_admin_user_listings(session: Session) -> None:
+    user = _create_user(session)
+    user.pending_email = "new@example.com"
+    session.add(user)
+    session.commit()
+    admin = crud.create_user(
+        session=session,
+        user_create=UserCreate(email="admin@example.com", password=PASSWORD, is_superuser=True),
+    )
+    assert admin.id is not None
+    browser, _ = _sign_in("admin@example.com")
+
+    listing = browser.get(f"{API}/users/").json()["data"]
+
+    assert all("pending_email" not in row for row in listing)
+
+
+def test_failed_code_delivery_leaves_no_pending_email_change(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(**_: object) -> None:
+        raise EmailDeliveryError("SMTP down")
+
+    monkeypatch.setattr("app.api.routes.user.send_email_change_code", fail)
+    _create_user(session)
+    browser, csrf_token = _sign_in()
+
+    response = browser.post(
+        f"{API}/users/me/email-change",
+        json={"new_email": "new@example.com", "password": PASSWORD},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code >= 500
+    assert browser.get(f"{API}/users/me").json()["pending_email"] is None
+
+
+def test_resend_sends_a_fresh_code_to_the_pending_address(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "app.api.routes.user.send_email_change_code",
+        lambda *, recipient, code, **_: sent.append((recipient, code)),
+    )
+    _create_user(session)
+    browser, csrf_token = _sign_in()
+    headers = {"X-CSRF-Token": csrf_token}
+    browser.post(
+        f"{API}/users/me/email-change",
+        json={"new_email": "new@example.com", "password": PASSWORD},
+        headers=headers,
+    )
+
+    too_soon = browser.post(f"{API}/users/me/email-change/resend", headers=headers)
+    assert too_soon.status_code == 429
+
+    record = session.exec(select(EmailVerificationCode)).one()
+    record.resend_available_at = datetime.now(UTC) - timedelta(seconds=1)
+    session.add(record)
+    session.commit()
+    resent = browser.post(f"{API}/users/me/email-change/resend", headers=headers)
+
+    assert resent.status_code == 200
+    assert [recipient for recipient, _ in sent] == ["new@example.com", "new@example.com"]
+    first_code, latest_code = sent[0][1], sent[1][1]
+    if first_code != latest_code:
+        stale = browser.post(
+            f"{API}/users/me/email-change/confirm", json={"code": first_code}, headers=headers
+        )
+        assert stale.status_code == 400
+    confirmed = browser.post(
+        f"{API}/users/me/email-change/confirm", json={"code": latest_code}, headers=headers
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["email"] == "new@example.com"
+
+
+def test_resend_without_a_pending_change_is_rejected(session: Session) -> None:
+    _create_user(session)
+    browser, csrf_token = _sign_in()
+
+    response = browser.post(
+        f"{API}/users/me/email-change/resend", headers={"X-CSRF-Token": csrf_token}
+    )
+
+    assert response.status_code == 400
