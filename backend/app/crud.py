@@ -2,10 +2,18 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from app.core.security import get_password_hash, hash_refresh_token, verify_password
-from app.models.user import RefreshToken, TokenBlacklist, User, UserCreate, UserUpdate
+from app.models.user import (
+    RefreshToken,
+    TokenBlacklist,
+    User,
+    UserCreate,
+    UserUpdate,
+    normalize_email,
+)
 
 
 def create_user(*, session: Session, user_create: UserCreate, is_verified: bool = True) -> User:
@@ -37,7 +45,8 @@ def update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:
 
 
 def get_user_by_email(*, session: Session, email: str) -> User | None:
-    statement = select(User).where(User.email == email)
+    # Case-insensitive, matching the unique index on lower(email)
+    statement = select(User).where(func.lower(User.email) == normalize_email(email))
     session_user = session.exec(statement).first()
     return session_user
 

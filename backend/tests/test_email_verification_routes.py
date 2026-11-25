@@ -161,3 +161,21 @@ def test_profile_patch_cannot_bypass_email_verification(session: Session) -> Non
     assert response.status_code == 400
     session.refresh(user)
     assert user.email == "profile@example.com"
+
+
+def test_email_lookup_is_case_insensitive(session: Session, monkeypatch) -> None:
+    _capture_delivery(monkeypatch)
+    client.post(
+        "/api/v1/users/signup",
+        json={"email": "Case.User@Example.com", "password": "secure-password"},
+    )
+
+    duplicate = client.post(
+        "/api/v1/users/signup",
+        json={"email": "case.user@example.com", "password": "secure-password"},
+    )
+
+    assert duplicate.status_code == 409
+    user = crud.get_user_by_email(session=session, email="CASE.USER@EXAMPLE.COM")
+    assert user is not None
+    assert user.email == "case.user@example.com"

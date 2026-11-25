@@ -6,6 +6,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import String, inspect, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import SQLModel
 
 from app.ai.vectorstore import stored_embedding_dimensions
@@ -40,7 +41,10 @@ def _alembic_config() -> Config:
 def test_embedding_tables_is_the_migration_head() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_current_head() == "0009_embedding_tables"
+    assert script.get_current_head() == "0010_account_security"
+    assert (
+        script.get_revision("0010_account_security").down_revision == "0009_embedding_tables"
+    )
     assert (
         script.get_revision("0009_embedding_tables").down_revision
         == "0008_hnsw_embedding_indexes"
@@ -320,4 +324,65 @@ def test_google_drive_subject_migration_rejects_existing_duplicates() -> None:
                 "('first-owner@example.com', 'second-owner@example.com')"
             )
         )
+    command.upgrade(config, "head")
+
+
+def _insert_user(connection: Connection, email: str) -> None:
+    connection.execute(
+        text(
+            """
+            INSERT INTO users (
+                portable_id, email, is_active, is_superuser, created_at,
+                updated_at, hashed_password, is_verified, is_deleted
+            ) VALUES (
+                gen_random_uuid(), :email, true, false,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'hashed', true, false
+            )
+            """
+        ),
+        {"email": email},
+    )
+
+
+def test_account_security_migration_lowercases_emails() -> None:
+    config = _alembic_config()
+    SQLModel.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    command.upgrade(config, "0009_embedding_tables")
+    with engine.begin() as connection:
+        _insert_user(connection, "Mixed.Case@Example.com")
+
+    command.upgrade(config, "head")
+
+    with engine.begin() as connection:
+        assert connection.execute(text("SELECT email FROM users")).scalar_one() == (
+            "mixed.case@example.com"
+        )
+        with pytest.raises(IntegrityError):
+            with connection.begin_nested():
+                _insert_user(connection, "MIXED.case@example.com")
+        connection.execute(text("DELETE FROM users"))
+
+
+def test_account_security_migration_rejects_case_duplicates() -> None:
+    config = _alembic_config()
+    SQLModel.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    command.upgrade(config, "0009_embedding_tables")
+    with engine.begin() as connection:
+        _insert_user(connection, "same@example.com")
+        _insert_user(connection, "Same@Example.com")
+
+    with pytest.raises(RuntimeError, match="differs only in letter case"):
+        command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == "0009_embedding_tables"
+        )
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM users"))
     command.upgrade(config, "head")

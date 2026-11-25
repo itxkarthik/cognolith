@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, ClassVar, Optional
 from uuid import UUID, uuid4
 
 from pydantic import field_validator
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlmodel import CheckConstraint, Column, Field, Index, Relationship, SQLModel, desc
@@ -13,6 +13,12 @@ from app.utils.sanitization import sanitize_plain_text
 
 from .chat import TimestampMixin
 from .portable import PortableIdMixin
+
+
+def normalize_email(value: str) -> str:
+    """Emails are matched case-insensitively, so store and compare one canonical form."""
+    return sanitize_plain_text(value).strip().lower()
+
 
 if TYPE_CHECKING:
     from .backup import BackupSchedule, GoogleDriveConnection, OAuthState, WorkspaceBackup
@@ -38,7 +44,7 @@ class UserBase(SQLModel):
     @field_validator("email", mode="before")
     @classmethod
     def sanitize_email(cls, v: str) -> str:
-        return sanitize_plain_text(v)
+        return normalize_email(v)
 
 
 # Creation API properties
@@ -61,7 +67,7 @@ class UserRegister(SQLModel):
     @field_validator("email", mode="before")
     @classmethod
     def sanitize_email(cls, v: str) -> str:
-        return sanitize_plain_text(v)
+        return normalize_email(v)
 
 
 # Update API properties | Optional
@@ -80,7 +86,7 @@ class UserUpdate(SQLModel):
     @field_validator("email", mode="before")
     @classmethod
     def sanitize_email(cls, value: str | None) -> str | None:
-        return sanitize_plain_text(value) if value is not None else None
+        return normalize_email(value) if value is not None else None
 
 
 class UserUpdateMe(SQLModel):
@@ -99,7 +105,7 @@ class UserUpdateMe(SQLModel):
     def sanitize_email(cls, v: str | None) -> str | None:
         if v is None:
             return v
-        return sanitize_plain_text(v)
+        return normalize_email(v)
 
 
 class UpdatePassword(SQLModel):
@@ -112,6 +118,7 @@ class User(PortableIdMixin, TimestampMixin, UserBase, SQLModel, table=True):
     __tablename__: ClassVar[str] = "users"  # pyright: ignore[reportIncompatibleVariableOverride]
     __table_args__ = (
         Index("ix_user_email", "email", unique=True),
+        Index("ix_users_email_lower", text("lower(email)"), unique=True),
         Index("ix_users_created_at", "created_at"),
     )
     id: int | None = Field(default=None, primary_key=True)
