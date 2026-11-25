@@ -126,6 +126,15 @@ def _revoke_refresh_tokens(*, session: Session, tokens: Sequence[RefreshToken]) 
     session.commit()
 
 
+def family_has_active_token(*, session: Session, family_id: str) -> bool:
+    statement = select(RefreshToken.id).where(
+        RefreshToken.family_id == family_id,
+        col(RefreshToken.revoked).is_(False),
+        RefreshToken.expires_at > datetime.now(UTC),
+    )
+    return session.exec(statement).first() is not None
+
+
 def revoke_refresh_token_family(*, session: Session, family_id: str) -> None:
     statement = select(RefreshToken).where(
         RefreshToken.family_id == family_id, col(RefreshToken.revoked).is_(False)

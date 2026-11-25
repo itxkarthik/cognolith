@@ -6,14 +6,14 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app import crud
 from app.core import security
 from app.core.config import Settings, settings
 from app.core.csrf import validate_csrf_token
 from app.main import app
-from app.models.user import User, UserCreate
+from app.models.user import RefreshToken, User, UserCreate
 from app.services import auth_service
 
 API = settings.API_V1_STR
@@ -72,6 +72,17 @@ def test_password_change_signs_out_other_sessions_but_keeps_this_one(session: Se
     assert replay.post(f"{API}/auth/refresh").status_code == 401
 
 
+def test_revoke_all_rejects_access_tokens_immediately(session: Session) -> None:
+    _create_user(session)
+    browser, csrf_token = _sign_in()
+    other_device, _ = _sign_in()
+
+    response = browser.post(f"{API}/auth/revoke-all", headers={"X-CSRF-Token": csrf_token})
+
+    assert response.status_code == 200
+    assert other_device.get(f"{API}/users/me").status_code == 401
+
+
 def test_tokens_from_before_versioning_stop_working_after_sessions_end(session: Session) -> None:
     user = _create_user(session)
     legacy_token = jwt.encode(
@@ -89,6 +100,23 @@ def test_tokens_from_before_versioning_stop_working_after_sessions_end(session: 
     auth_service.end_all_sessions(session=session, user=user)
 
     assert TestClient(app).get(f"{API}/users/me", headers=headers).status_code == 401
+
+
+def test_revoke_token_also_revokes_the_session_refresh_token(session: Session) -> None:
+    _create_user(session)
+    browser, csrf_token = _sign_in()
+    refresh_token = browser.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
+    assert refresh_token
+
+    response = browser.post(f"{API}/auth/revoke-token", headers={"X-CSRF-Token": csrf_token})
+
+    assert response.status_code == 200
+    db_token = session.exec(
+        select(RefreshToken).where(
+            RefreshToken.hashed_token == security.hash_refresh_token(refresh_token)
+        )
+    ).one()
+    assert db_token.revoked is True
 
 
 @pytest.mark.parametrize(
@@ -144,3 +172,40 @@ def test_session_version_bump_is_atomic_even_from_a_stale_copy(session: Session)
 
     session.refresh(user)
     assert user.token_version == 2
+
+
+def test_revoke_token_ignores_another_users_refresh_cookie(session: Session) -> None:
+    _create_user(session)
+    victim = _create_user(session, email="victim@example.com")
+    victim_pair = auth_service.create_token_pair(session=session, user=victim)
+    browser, csrf_token = _sign_in()
+    browser.cookies.set(settings.REFRESH_TOKEN_COOKIE_NAME, victim_pair.refresh_token)
+
+    browser.post(f"{API}/auth/revoke-token", headers={"X-CSRF-Token": csrf_token})
+
+    victim_token = session.exec(
+        select(RefreshToken).where(
+            RefreshToken.hashed_token == security.hash_refresh_token(victim_pair.refresh_token)
+        )
+    ).one()
+    assert victim_token.revoked is False
+
+
+def test_stale_session_after_sign_out_everywhere_is_not_reported_as_theft(
+    session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    user = _create_user(session)
+    pair = auth_service.create_token_pair(session=session, user=user)
+    auth_service.end_all_sessions(session=session, user=user)
+    for token in session.exec(select(RefreshToken)).all():
+        # Past the concurrent-refresh grace window
+        token.revoked_at = datetime.now(UTC) - timedelta(minutes=5)
+        session.add(token)
+    session.commit()
+
+    with pytest.raises(ValueError):
+        auth_service.refresh_access_token_from_refresh(
+            session=session, refresh_token=pair.refresh_token
+        )
+
+    assert "reuse" not in caplog.text

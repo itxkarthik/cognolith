@@ -104,7 +104,11 @@ def refresh_access_token_from_refresh(
 
     now = datetime.now(UTC)
     if db_token.revoked:
-        if _within_reuse_grace(db_token.revoked_at, now):
+        # Reuse only signals theft while a newer token in the family is still live.
+        # A family revoked as a whole (logout, password change) is just a stale session.
+        if _within_reuse_grace(db_token.revoked_at, now) or not crud.family_has_active_token(
+            session=session, family_id=db_token.family_id
+        ):
             session.rollback()
         else:
             logger.warning(
@@ -181,6 +185,17 @@ def end_all_sessions(session: Session, user: User) -> None:
     crud.revoke_all_user_refresh_tokens(session=session, user_id=user.id)
     # Pick up the incremented version (and drop any stale in-memory value)
     session.refresh(user)
+
+
+def revoke_refresh_token_family(session: Session, refresh_token: str, user_id: int) -> None:
+    """Revoke the session a raw refresh token belongs to, if it is this user's."""
+    db_token = crud.lock_refresh_token_by_hash(
+        session=session, hashed_token=security.hash_refresh_token(refresh_token)
+    )
+    if db_token is None or db_token.user_id != user_id:
+        session.rollback()
+        return
+    crud.revoke_refresh_token_family(session=session, family_id=db_token.family_id)
 
 
 def revoke_all_user_tokens(session: Session, user_id: int) -> None:

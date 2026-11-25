@@ -245,6 +245,7 @@ class TokenInfoResponse(BaseModel):
     },
 )
 def revoke_current_token(
+    request: Request,
     response: Response,
     session: SessionDep,
     token: TokenDep,
@@ -275,7 +276,15 @@ def revoke_current_token(
         expires_at = datetime.fromtimestamp(payload["exp"], tz=UTC)
         auth_service.revoke_access_token(session=session, jti=token_data.jti, expires_at=expires_at)
 
-    # Clear auth cookies
+    # The session's refresh token must die too, or it could mint new access tokens
+    refresh_token = request.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
+    if refresh_token:
+        auth_service.revoke_refresh_token_family(
+            session=session,
+            refresh_token=refresh_token,
+            user_id=_authenticated_user_id(current_user),
+        )
+
     clear_auth_cookies(response)
 
     return Message(message="Token revoked successfully")
@@ -306,10 +315,8 @@ def revoke_all_user_tokens_endpoint(
     Returns:
             Success message
     """
-    # Revoke all tokens
-    auth_service.revoke_all_user_tokens(
-        session=session, user_id=_authenticated_user_id(current_user)
-    )
+    # Refresh tokens are revoked and every access token issued so far is rejected
+    auth_service.end_all_sessions(session=session, user=current_user)
     clear_auth_cookies(response)
 
     return Message(message="All tokens revoked successfully")
