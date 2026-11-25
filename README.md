@@ -105,7 +105,7 @@ The main settings are:
 | `POSTGRES_USER` | PostgreSQL user |
 | `POSTGRES_PASSWORD` | PostgreSQL password |
 | `POSTGRES_DB` | Database name |
-| `SECRET_KEY` | Token-signing secret |
+| `SECRET_KEY` | Token-signing secret; required in every environment except `local` |
 | `FRONTEND_HOST` | Allowed frontend origin |
 | `SMTP_HOST` | SMTP server used for verification emails |
 | `SMTP_PORT` | SMTP server port (`1025` for local Mailpit) |
