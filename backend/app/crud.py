@@ -102,6 +102,25 @@ def get_refresh_token_by_hash(*, session: Session, hashed_token: str) -> Refresh
     return session.exec(statement).first()
 
 
+def get_refresh_token_owner_id(*, session: Session, hashed_token: str) -> int | None:
+    statement = select(RefreshToken.user_id).where(RefreshToken.hashed_token == hashed_token)
+    return session.exec(statement).first()
+
+
+def lock_user(*, session: Session, user_id: int) -> User | None:
+    """
+    Row-lock a user (and reload it). Paths that issue or revoke a user's tokens take
+    this lock before any token lock, so they serialize in one order and never deadlock.
+    """
+    statement = (
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return session.exec(statement).first()
+
+
 def lock_refresh_token_by_hash(*, session: Session, hashed_token: str) -> RefreshToken | None:
     """Fetch a refresh token in any state, row-locked so concurrent refreshes serialize."""
     statement = (
@@ -111,10 +130,10 @@ def lock_refresh_token_by_hash(*, session: Session, hashed_token: str) -> Refres
 
 
 def revoke_refresh_token(*, session: Session, db_token: RefreshToken) -> None:
+    """Stage a token's revocation; the caller commits it with the rest of its change."""
     db_token.revoked = True
     db_token.revoked_at = datetime.now(UTC)
     session.add(db_token)
-    session.commit()
 
 
 def _revoke_refresh_tokens(*, session: Session, tokens: Sequence[RefreshToken]) -> None:

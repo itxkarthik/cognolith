@@ -549,7 +549,7 @@ def change_email(
 
     current_user.pending_email = new_email
     session.add(current_user)
-    issued = _issue_code(session=session, user=current_user)
+    issued = _issue_code(session=session, user=current_user, address=new_email)
     try:
         send_email_change_code(
             recipient=new_email, code=issued.code, recipient_name=current_user.full_name
@@ -588,7 +588,7 @@ def confirm_email_change(
     signed out and the previous address is told about the change.
     """
     new_email = _require_pending_email(current_user)
-    _check_code(session=session, user=current_user, code=body.code)
+    _check_code(session=session, user=current_user, code=body.code, address=new_email)
     _ensure_email_available(session=session, email=new_email, user=current_user)
 
     previous_email = current_user.email
@@ -622,7 +622,7 @@ def confirm_email_change(
 def resend_email_change_code(session: SessionDep, current_user: CurrentUser) -> Any:
     """Send a fresh code to the pending address; the previous code stops working."""
     new_email = _require_pending_email(current_user)
-    issued = _issue_code(session=session, user=current_user)
+    issued = _issue_code(session=session, user=current_user, address=new_email)
     try:
         send_email_change_code(
             recipient=new_email, code=issued.code, recipient_name=current_user.full_name
@@ -670,9 +670,9 @@ def _ensure_email_available(*, session: SessionDep, email: str, user: User) -> N
         raise _email_taken_error()
 
 
-def _issue_code(*, session: SessionDep, user: User) -> IssuedVerificationCode:
+def _issue_code(*, session: SessionDep, user: User, address: str) -> IssuedVerificationCode:
     try:
-        return issue_verification_code(session=session, user=user)
+        return issue_verification_code(session=session, user=user, address=address)
     except VerificationRateLimitError as exc:
         raise AppError(
             message="Too many codes requested. Try again later.",
@@ -681,10 +681,10 @@ def _issue_code(*, session: SessionDep, user: User) -> IssuedVerificationCode:
         ) from exc
 
 
-def _check_code(*, session: SessionDep, user: User, code: str) -> None:
-    """Validate a 6-digit code, mapping failures to the same responses as signup."""
+def _check_code(*, session: SessionDep, user: User, code: str, address: str) -> None:
+    """Validate an email-change code, mapping failures to the same responses as signup."""
     try:
-        check_verification_code(session=session, user=user, code=code)
+        check_verification_code(session=session, user=user, code=code, address=address)
     except VerificationCodeExpiredError as exc:
         raise AppError(
             message="Verification code has expired.",

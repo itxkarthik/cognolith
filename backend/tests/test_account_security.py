@@ -1,5 +1,6 @@
 """Session, token and account-lifecycle protections (milestone M1)."""
 
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -7,7 +8,8 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlmodel import Session, select
+from sqlalchemy.exc import OperationalError
+from sqlmodel import Session, col, select
 
 from app import crud
 from app.core import security
@@ -205,6 +207,8 @@ def test_csrf_tokens_are_compared_exactly() -> None:
     assert validate_csrf_token(token, token) is True
     assert validate_csrf_token(token, token[:-1] + "b") is False
     assert validate_csrf_token(token, None) is False
+    # Non-ASCII input is a client error, not a crash
+    assert validate_csrf_token(token, "é" * 43) is False
 
 
 def test_staging_requires_a_secret_key() -> None:
@@ -420,3 +424,93 @@ def test_resend_without_a_pending_change_is_rejected(session: Session) -> None:
     )
 
     assert response.status_code == 400
+
+
+def test_refresh_in_flight_cannot_outlive_sign_out_everywhere(session: Session) -> None:
+    user = _create_user(session)
+    assert user.id is not None
+    pair = auth_service.create_token_pair(session=session, user=user)
+    outcome: dict[str, bool] = {}
+
+    def refresh() -> None:
+        with Session(session.get_bind()) as other:
+            try:
+                auth_service.refresh_access_token_from_refresh(
+                    session=other, refresh_token=pair.refresh_token
+                )
+                outcome["refreshed"] = True
+            except ValueError:
+                outcome["refreshed"] = False
+
+    with Session(session.get_bind()) as signing_out:
+        locked = crud.lock_user(session=signing_out, user_id=user.id)
+        assert locked is not None
+        worker = threading.Thread(target=refresh)
+        worker.start()
+        worker.join(timeout=1)
+        # The refresh waits for the user lock instead of rotating underneath us
+        assert worker.is_alive()
+        auth_service.end_all_sessions(session=signing_out, user=locked)
+    worker.join(timeout=10)
+
+    assert outcome == {"refreshed": False}
+    live = session.exec(
+        select(RefreshToken).where(
+            RefreshToken.user_id == user.id, col(RefreshToken.revoked).is_(False)
+        )
+    ).all()
+    assert live == []
+
+
+def test_email_change_code_only_confirms_the_address_it_was_sent_to(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[str] = []
+    monkeypatch.setattr(
+        "app.api.routes.user.send_email_change_code",
+        lambda *, code, **_: sent.append(code),
+    )
+    user = _create_user(session)
+    browser, csrf_token = _sign_in()
+    headers = {"X-CSRF-Token": csrf_token}
+    browser.post(
+        f"{API}/users/me/email-change",
+        json={"new_email": "mine@example.com", "password": PASSWORD},
+        headers=headers,
+    )
+    # A racing request leaves a different address pending under the same code
+    user.pending_email = "someone-else@example.com"
+    session.add(user)
+    session.commit()
+
+    response = browser.post(
+        f"{API}/users/me/email-change/confirm", json={"code": sent[0]}, headers=headers
+    )
+
+    assert response.status_code == 400
+    session.refresh(user)
+    assert user.email == "owner@example.com"
+
+
+def test_cleanup_continues_after_one_table_fails(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_: Session) -> int:
+        raise OperationalError("DELETE", {}, Exception("lock timeout"))
+
+    monkeypatch.setattr("app.services.maintenance_scheduler.cleanup_expired_tokens", fail)
+    user = _create_user(session)
+    assert user.id is not None
+    session.add(
+        OAuthState(
+            user_id=user.id,
+            state_hash="expired-state",
+            expires_at=datetime.now(UTC) - timedelta(days=1),
+        )
+    )
+    session.commit()
+
+    removed = cleanup_expired_auth_records(session)
+
+    assert removed == 1
+    assert session.exec(select(OAuthState)).all() == []

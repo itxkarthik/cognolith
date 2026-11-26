@@ -13,7 +13,9 @@ import logging
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
+from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, col, delete
 
 from app.core.database import engine
@@ -28,21 +30,42 @@ DEFAULT_INTERVAL_SECONDS = 6 * 60 * 60
 
 
 def cleanup_expired_auth_records(session: Session, now: datetime | None = None) -> int:
-    """Delete every expired auth record; returns the number of rows removed."""
+    """
+    Delete every expired auth record; returns the number of rows removed.
+    A failing table is rolled back and logged, and the remaining tables still run.
+    """
     cutoff = now or datetime.now(UTC)
-    removed = cleanup_expired_tokens(session)
-    for statement in (
-        delete(OAuthState).where(col(OAuthState.expires_at) < cutoff),
-        # Keep a record while its send-rate window is open, or deleting it would
-        # reset the per-hour resend limit
-        delete(EmailVerificationCode).where(
-            col(EmailVerificationCode.expires_at) < cutoff,
-            col(EmailVerificationCode.window_started_at) < cutoff - SEND_WINDOW,
-        ),
-    ):
+
+    def delete_rows(statement: Any) -> int:
         result = session.exec(statement)
-        removed += result.rowcount or 0
         session.commit()
+        return result.rowcount or 0
+
+    steps: tuple[tuple[str, Callable[[], int]], ...] = (
+        ("refresh tokens and blacklist entries", lambda: cleanup_expired_tokens(session)),
+        (
+            "OAuth states",
+            lambda: delete_rows(delete(OAuthState).where(col(OAuthState.expires_at) < cutoff)),
+        ),
+        (
+            "verification codes",
+            # Keep a record while its send-rate window is open, or deleting it would
+            # reset the per-hour resend limit
+            lambda: delete_rows(
+                delete(EmailVerificationCode).where(
+                    col(EmailVerificationCode.expires_at) < cutoff,
+                    col(EmailVerificationCode.window_started_at) < cutoff - SEND_WINDOW,
+                )
+            ),
+        ),
+    )
+    removed = 0
+    for name, step in steps:
+        try:
+            removed += step()
+        except SQLAlchemyError:
+            session.rollback()
+            logger.exception("Cleaning up expired %s failed", name)
     return removed
 
 

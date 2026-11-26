@@ -96,9 +96,13 @@ def refresh_access_token_from_refresh(
         ValueError: If token is invalid, revoked, or expired
     """
     hashed = security.hash_refresh_token(refresh_token)
+    owner_id = crud.get_refresh_token_owner_id(session=session, hashed_token=hashed)
+    # Lock the owner first, as end_all_sessions does: a refresh and a sign-out-everywhere
+    # then run one after the other, so the sign-out can't miss the replacement token
+    user = None if owner_id is None else crud.lock_user(session=session, user_id=owner_id)
     db_token = crud.lock_refresh_token_by_hash(session=session, hashed_token=hashed)
 
-    if not db_token:
+    if not db_token or not user:
         session.rollback()
         raise ValueError("Invalid or expired refresh token")
 
@@ -122,12 +126,12 @@ def refresh_access_token_from_refresh(
             crud.revoke_refresh_token_family(session=session, family_id=db_token.family_id)
         raise ValueError("Invalid or expired refresh token")
 
-    user = session.get(User, db_token.user_id)
-    if _as_utc(db_token.expires_at) <= now or not user or not user.is_active:
+    if _as_utc(db_token.expires_at) <= now or not user.is_active:
         session.rollback()
         raise ValueError("Invalid or expired refresh token")
 
-    # Revoke the old token (single-use pattern); the commit releases the row lock
+    # Single use: the old token's revocation commits together with its replacement,
+    # and that commit releases the locks
     crud.revoke_refresh_token(session=session, db_token=db_token)
 
     return create_token_pair(session=session, user=user, family_id=db_token.family_id)
@@ -172,6 +176,8 @@ def end_all_sessions(session: Session, user: User) -> None:
     """
     if user.id is None:
         raise ValueError("User must be persisted before sessions can be ended")
+    # The user-row update below takes the lock token rotation also takes first,
+    # so an in-flight refresh either finishes before this or sees its token revoked.
     # Write the caller's pending changes (new password or email) first: the refresh
     # below reloads the row and would otherwise discard them
     session.add(user)
@@ -189,10 +195,14 @@ def end_all_sessions(session: Session, user: User) -> None:
 
 def revoke_refresh_token_family(session: Session, refresh_token: str, user_id: int) -> None:
     """Revoke the session a raw refresh token belongs to, if it is this user's."""
-    db_token = crud.lock_refresh_token_by_hash(
-        session=session, hashed_token=security.hash_refresh_token(refresh_token)
-    )
-    if db_token is None or db_token.user_id != user_id:
+    hashed = security.hash_refresh_token(refresh_token)
+    if crud.get_refresh_token_owner_id(session=session, hashed_token=hashed) != user_id:
+        session.rollback()
+        return
+    # Same lock order as rotation, so a concurrent refresh can't slip a token past us
+    crud.lock_user(session=session, user_id=user_id)
+    db_token = crud.lock_refresh_token_by_hash(session=session, hashed_token=hashed)
+    if db_token is None:
         session.rollback()
         return
     crud.revoke_refresh_token_family(session=session, family_id=db_token.family_id)
