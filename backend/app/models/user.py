@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, ClassVar, Optional
 from uuid import UUID, uuid4
 
 from pydantic import field_validator
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlmodel import CheckConstraint, Column, Field, Index, Relationship, SQLModel, desc
@@ -13,6 +13,12 @@ from app.utils.sanitization import sanitize_plain_text
 
 from .chat import TimestampMixin
 from .portable import PortableIdMixin
+
+
+def normalize_email(value: str) -> str:
+    """Emails are matched case-insensitively, so store and compare one canonical form."""
+    return sanitize_plain_text(value).strip().lower()
+
 
 if TYPE_CHECKING:
     from .backup import BackupSchedule, GoogleDriveConnection, OAuthState, WorkspaceBackup
@@ -38,7 +44,7 @@ class UserBase(SQLModel):
     @field_validator("email", mode="before")
     @classmethod
     def sanitize_email(cls, v: str) -> str:
-        return sanitize_plain_text(v)
+        return normalize_email(v)
 
 
 # Creation API properties
@@ -61,7 +67,7 @@ class UserRegister(SQLModel):
     @field_validator("email", mode="before")
     @classmethod
     def sanitize_email(cls, v: str) -> str:
-        return sanitize_plain_text(v)
+        return normalize_email(v)
 
 
 # Update API properties | Optional
@@ -80,7 +86,7 @@ class UserUpdate(SQLModel):
     @field_validator("email", mode="before")
     @classmethod
     def sanitize_email(cls, value: str | None) -> str | None:
-        return sanitize_plain_text(value) if value is not None else None
+        return normalize_email(value) if value is not None else None
 
 
 class UserUpdateMe(SQLModel):
@@ -99,7 +105,7 @@ class UserUpdateMe(SQLModel):
     def sanitize_email(cls, v: str | None) -> str | None:
         if v is None:
             return v
-        return sanitize_plain_text(v)
+        return normalize_email(v)
 
 
 class UpdatePassword(SQLModel):
@@ -112,6 +118,7 @@ class User(PortableIdMixin, TimestampMixin, UserBase, SQLModel, table=True):
     __tablename__: ClassVar[str] = "users"  # pyright: ignore[reportIncompatibleVariableOverride]
     __table_args__ = (
         Index("ix_user_email", "email", unique=True),
+        Index("ix_users_email_lower", text("lower(email)"), unique=True),
         Index("ix_users_created_at", "created_at"),
     )
     id: int | None = Field(default=None, primary_key=True)
@@ -125,6 +132,11 @@ class User(PortableIdMixin, TimestampMixin, UserBase, SQLModel, table=True):
     is_verified: bool = Field(default=False)
     is_deleted: bool = Field(default=False)
     last_login_at: datetime | None = Field(default=None)
+    # New address awaiting confirmation; `email` keeps working until it is confirmed
+    pending_email: str | None = Field(default=None, max_length=255)
+    # Embedded in every access token; bumping it rejects all earlier tokens at once
+    # (password change, email change, log out everywhere)
+    token_version: int = Field(default=0, nullable=False)
 
     # Relationships
     settings: "UserSettings" = Relationship(
@@ -191,6 +203,12 @@ class UserPublic(UserBase):
     created_at: datetime | None = None
 
 
+class UserMe(UserPublic):
+    """The signed-in user's own view, including an unconfirmed email change."""
+
+    pending_email: str | None = None
+
+
 class UsersPublic(SQLModel):
     data: list[UserPublic]
     count: int
@@ -229,7 +247,7 @@ class UserSettings(TimestampMixin, SQLModel, table=True):
         CheckConstraint("temperature >= 0 AND temperature <= 1", name="chk_temperature"),
         CheckConstraint("max_tokens >= 100 AND max_tokens <= 4000", name="chk_max_tokens"),
     )
-    user_id: int | None = Field(primary_key=True, foreign_key="users.id")
+    user_id: int | None = Field(primary_key=True, foreign_key="users.id", ondelete="CASCADE")
     llm_provider: LlmProvider = Field(default=LlmProvider.ollama)
     llm_model: str = Field(default="llama3.2:1b", max_length=100)
     embedding_model: str = Field(default="nomic-embed-text", max_length=100)
@@ -242,7 +260,9 @@ class UserSettings(TimestampMixin, SQLModel, table=True):
     theme: UserTheme = Field(default=UserTheme.light)
     language: str = Field(default="en", max_length=10)
     notes_view_mode: NotesViewMode = Field(default=NotesViewMode.grid)
-    default_note_folder_id: int | None = Field(default=None, foreign_key="note_folders.id")
+    default_note_folder_id: int | None = Field(
+        default=None, foreign_key="note_folders.id", ondelete="SET NULL"
+    )
     email_notifications: bool = Field(default=True)
     processing_notifications: bool = Field(default=True)
     rag_diagnostics_enabled: bool = Field(default=False)
@@ -277,7 +297,7 @@ class ActivityLogs(SQLModel, table=True):
     )
 
     id: int | None = Field(primary_key=True, default=None)
-    user_id: int | None = Field(foreign_key="users.id", nullable=False)
+    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
     action: ActivityAction = Field(nullable=False)
     entity_type: EntityType = Field(nullable=False, max_length=50)
     entity_id: int | None = Field(nullable=False)
@@ -299,7 +319,7 @@ class RefreshToken(TimestampMixin, SQLModel, table=True):
         Index("ix_refresh_tokens_family_id", "family_id"),
     )
     id: int | None = Field(default=None, primary_key=True)
-    user_id: int = Field(foreign_key="users.id", nullable=False)
+    user_id: int = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
     hashed_token: str = Field(nullable=False, max_length=64)
     expires_at: datetime = Field(nullable=False)
     revoked: bool = Field(default=False)
@@ -328,14 +348,21 @@ class Message(SQLModel):
 
 
 class Token(SQLModel):
+    """
+    Login/refresh response. The refresh token is only ever sent as an httpOnly
+    cookie; the short-lived access token stays in the body for bearer clients
+    (OpenAPI "Authorize", scripts).
+    """
+
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
 
 
 class TokenPayload(SQLModel):
     sub: str | None = None
     jti: str | None = None
+    # Absent from tokens issued before token versioning, which count as version 0
+    ver: int = 0
 
 
 class NewPassword(SQLModel):

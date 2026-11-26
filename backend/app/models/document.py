@@ -46,7 +46,7 @@ class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
         default_factory=uuid4,
         sa_column=Column(PGUUID(as_uuid=True), nullable=False, unique=True, index=True),
     )
-    user_id: int | None = Field(foreign_key="users.id", nullable=False)
+    user_id: int | None = Field(foreign_key="users.id", ondelete="CASCADE", nullable=False)
     title: str = Field(nullable=False, max_length=255)
     file_name: str = Field(nullable=False, max_length=255)
     file_path: str = Field(nullable=False)
@@ -100,7 +100,7 @@ class DocumentChunks(TimestampMixin, SQLModel, table=True):
         ),
     )
     id: int | None = Field(default=None, primary_key=True, index=True)
-    document_id: int | None = Field(foreign_key="documents.id", nullable=False)
+    document_id: int | None = Field(foreign_key="documents.id", ondelete="CASCADE", nullable=False)
     chunk_index: int | None = Field(nullable=False)
     content: str = Field(nullable=False)
     content_hash: str | None = Field(default=None, max_length=255)

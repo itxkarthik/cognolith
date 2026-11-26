@@ -53,14 +53,17 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def _hash_code(*, user_id: int, code: str) -> str:
-    message = f"{user_id}:{code}".encode()
+def _hash_code(*, user_id: int, code: str, address: str | None) -> str:
+    # An email-change code is bound to the address it was sent to, so it can't
+    # confirm a different pending address. Signup codes keep the original format.
+    message = (f"{user_id}:{code}" if address is None else f"{user_id}:{address}:{code}").encode()
     return hmac.new(settings.SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()
 
 
 def issue_verification_code(
-    *, session: Session, user: User, now: datetime | None = None
+    *, session: Session, user: User, now: datetime | None = None, address: str | None = None
 ) -> IssuedVerificationCode:
+    """Issue a new code for the user; pass `address` to bind it to an email change."""
     user_id = _require_user_id(user)
     issued_at = _as_utc(now or datetime.now(UTC))
     record = session.get(EmailVerificationCode, user_id)
@@ -82,7 +85,7 @@ def issue_verification_code(
     if record is None:
         record = EmailVerificationCode(
             user_id=user_id,
-            code_hash=_hash_code(user_id=user_id, code=code),
+            code_hash=_hash_code(user_id=user_id, code=code, address=address),
             expires_at=expires_at,
             resend_available_at=resend_available_at,
             window_started_at=issued_at,
@@ -90,7 +93,7 @@ def issue_verification_code(
             updated_at=issued_at,
         )
     else:
-        record.code_hash = _hash_code(user_id=user_id, code=code)
+        record.code_hash = _hash_code(user_id=user_id, code=code, address=address)
         record.expires_at = expires_at
         record.failed_attempts = 0
         record.resend_available_at = resend_available_at
@@ -107,9 +110,19 @@ def issue_verification_code(
     )
 
 
-def verify_email_code(
-    *, session: Session, user: User, code: str, now: datetime | None = None
+def check_verification_code(
+    *,
+    session: Session,
+    user: User,
+    code: str,
+    now: datetime | None = None,
+    address: str | None = None,
 ) -> None:
+    """
+    Consume the user's current code, or raise. Failed attempts are counted and
+    committed; on success the consumption is staged for the caller's commit.
+    An email-change code only matches the `address` it was issued for.
+    """
     user_id = _require_user_id(user)
     checked_at = _as_utc(now or datetime.now(UTC))
     record = session.get(EmailVerificationCode, user_id)
@@ -120,7 +133,7 @@ def verify_email_code(
     if record.failed_attempts >= MAX_FAILED_ATTEMPTS:
         raise InvalidVerificationCodeError("Verification code is locked")
 
-    candidate = _hash_code(user_id=user_id, code=code)
+    candidate = _hash_code(user_id=user_id, code=code, address=address)
     if not hmac.compare_digest(candidate, record.code_hash):
         record.failed_attempts += 1
         record.updated_at = checked_at
@@ -130,8 +143,15 @@ def verify_email_code(
 
     record.consumed_at = checked_at
     record.updated_at = checked_at
-    user.is_verified = True
     session.add(record)
+
+
+def verify_email_code(
+    *, session: Session, user: User, code: str, now: datetime | None = None
+) -> None:
+    """Confirm a signup code and mark the account verified."""
+    check_verification_code(session=session, user=user, code=code, now=now)
+    user.is_verified = True
     session.add(user)
     session.commit()
     session.refresh(user)

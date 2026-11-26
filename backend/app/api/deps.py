@@ -1,4 +1,3 @@
-import secrets
 from collections.abc import Generator
 from typing import Annotated
 
@@ -11,6 +10,7 @@ from sqlmodel import Session, select
 
 from app.core import security
 from app.core.config import settings
+from app.core.csrf import validate_csrf_token
 from app.core.database import engine
 from app.models.user import TokenBlacklist, TokenPayload, User
 
@@ -52,20 +52,24 @@ TokenDep = Annotated[str, Depends(get_auth_token)]
 
 
 def _validate_csrf(request: Request) -> None:
-    cookie_token = request.cookies.get(settings.CSRF_COOKIE_NAME)
-    header_token = request.headers.get(settings.CSRF_HEADER_NAME)
-
-    if not cookie_token or not header_token:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Missing CSRF token",
-        )
-
-    if not secrets.compare_digest(cookie_token, header_token):
+    # Second line of defence behind CSRFMiddleware, using the same check
+    if not validate_csrf_token(
+        request.cookies.get(settings.CSRF_COOKIE_NAME),
+        request.headers.get(settings.CSRF_HEADER_NAME),
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid CSRF token",
         )
+
+
+def _unauthorized(detail: str) -> HTTPException:
+    # 401 tells clients to refresh or sign in again; 403 is for real permission failures
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -79,23 +83,19 @@ def get_current_user(request: Request, session: SessionDep, token: TokenDep) -> 
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[security.ALGORITHM])
         token_data = TokenPayload(**payload)
     except (InvalidTokenError, ValidationError):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Could not validate credentials",
-        )
+        raise _unauthorized("Could not validate credentials")
     # Check if the token has been blacklisted (logout / revocation)
     if token_data.jti:
         blacklisted = session.exec(
             select(TokenBlacklist).where(TokenBlacklist.jti == token_data.jti)
         ).first()
         if blacklisted:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token has been revoked",
-            )
+            raise _unauthorized("Token has been revoked")
     user = session.get(User, token_data.sub)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise _unauthorized("Could not validate credentials")
+    if token_data.ver != user.token_version:
+        raise _unauthorized("Token has been revoked")
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive User")
     if not user.is_verified:

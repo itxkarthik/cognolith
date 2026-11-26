@@ -16,9 +16,9 @@ export interface MessageResponse {
 	message: string;
 }
 
+/** The refresh token is only ever sent as an httpOnly cookie, never in a body. */
 export interface TokenResponse {
 	access_token: string;
-	refresh_token: string;
 	token_type: string;
 }
 
@@ -52,6 +52,8 @@ export interface User {
 	is_verified: boolean;
 	full_name?: string | null;
 	created_at?: string | null;
+	/** New address awaiting its emailed code (only on the signed-in user's own record). */
+	pending_email?: string | null;
 }
 
 export interface OllamaModelOption {

@@ -106,36 +106,128 @@ def test_resend_verification_is_rate_limited(monkeypatch) -> None:
     assert responses[5].status_code == 429
 
 
-def test_email_change_requires_reverification(session: Session, monkeypatch) -> None:
-    delivered, _ = _capture_delivery(monkeypatch)
-    user = crud.create_user(
+def _signed_in_client(session: Session, email: str) -> tuple[TestClient, str]:
+    crud.create_user(
         session=session,
-        user_create=UserCreate(email="current@example.com", password="secure-password"),
+        user_create=UserCreate(email=email, password="secure-password"),
     )
-    user.is_verified = True
-    session.add(user)
-    session.commit()
-
     browser = TestClient(app)
     login_response = browser.post(
         "/api/v1/login/access-token",
-        data={"username": "current@example.com", "password": "secure-password"},
+        data={"username": email, "password": "secure-password"},
     )
     assert login_response.status_code == 200
     csrf_token = browser.cookies.get("csrf-token")
     assert csrf_token
+    return browser, csrf_token
+
+
+def _capture_email_change(monkeypatch) -> tuple[dict[str, str], list[str]]:
+    delivered: dict[str, str] = {}
+    notices: list[str] = []
+
+    def capture_code(*, recipient: str, code: str, recipient_name: str | None = None) -> None:
+        delivered["recipient"] = recipient
+        delivered["code"] = code
+
+    def capture_notice(
+        *, recipient: str, subject: str, body: str, recipient_name: str | None = None
+    ) -> None:
+        notices.append(recipient)
+
+    monkeypatch.setattr("app.api.routes.user.send_email_change_code", capture_code)
+    monkeypatch.setattr("app.api.routes.user.send_security_notice", capture_notice)
+    return delivered, notices
+
+
+def test_email_change_keeps_current_address_until_confirmed(
+    session: Session, monkeypatch
+) -> None:
+    delivered, _ = _capture_email_change(monkeypatch)
+    browser, csrf_token = _signed_in_client(session, "current@example.com")
 
     response = browser.post(
         "/api/v1/users/me/email-change",
-        json={"new_email": "replacement@example.com", "password": "secure-password"},
+        json={"new_email": "Replacement@Example.com", "password": "secure-password"},
         headers={"X-CSRF-Token": csrf_token},
     )
 
     assert response.status_code == 202
     assert delivered["recipient"] == "replacement@example.com"
-    session.refresh(user)
-    assert user.email == "replacement@example.com"
-    assert user.is_verified is False
+    user = crud.get_user_by_email(session=session, email="current@example.com")
+    assert user is not None
+    assert user.pending_email == "replacement@example.com"
+    assert user.is_verified is True
+    assert browser.get("/api/v1/users/me").json()["email"] == "current@example.com"
+
+
+def test_email_change_confirm_switches_address_and_ends_other_sessions(
+    session: Session, monkeypatch
+) -> None:
+    delivered, notices = _capture_email_change(monkeypatch)
+    browser, csrf_token = _signed_in_client(session, "current@example.com")
+    other_device = TestClient(app)
+    other_device.post(
+        "/api/v1/login/access-token",
+        data={"username": "current@example.com", "password": "secure-password"},
+    )
+    browser.post(
+        "/api/v1/users/me/email-change",
+        json={"new_email": "replacement@example.com", "password": "secure-password"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    response = browser.post(
+        "/api/v1/users/me/email-change/confirm",
+        json={"code": delivered["code"]},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "replacement@example.com"
+    assert notices == ["current@example.com"]
+    assert browser.get("/api/v1/users/me").status_code == 200
+    assert other_device.get("/api/v1/users/me").status_code == 401
+
+
+def test_email_change_confirm_rejects_a_wrong_code(session: Session, monkeypatch) -> None:
+    delivered, _ = _capture_email_change(monkeypatch)
+    browser, csrf_token = _signed_in_client(session, "current@example.com")
+    browser.post(
+        "/api/v1/users/me/email-change",
+        json={"new_email": "replacement@example.com", "password": "secure-password"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    wrong_code = "000000" if delivered["code"] != "000000" else "111111"
+
+    response = browser.post(
+        "/api/v1/users/me/email-change/confirm",
+        json={"code": wrong_code},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+
+    assert response.status_code == 400
+    user = crud.get_user_by_email(session=session, email="current@example.com")
+    assert user is not None
+    assert user.pending_email == "replacement@example.com"
+
+
+def test_email_lookup_is_case_insensitive(session: Session, monkeypatch) -> None:
+    _capture_delivery(monkeypatch)
+    client.post(
+        "/api/v1/users/signup",
+        json={"email": "Case.User@Example.com", "password": "secure-password"},
+    )
+
+    duplicate = client.post(
+        "/api/v1/users/signup",
+        json={"email": "case.user@example.com", "password": "secure-password"},
+    )
+
+    assert duplicate.status_code == 409
+    user = crud.get_user_by_email(session=session, email="CASE.USER@EXAMPLE.COM")
+    assert user is not None
+    assert user.email == "case.user@example.com"
 
 
 def test_profile_patch_cannot_bypass_email_verification(session: Session) -> None:

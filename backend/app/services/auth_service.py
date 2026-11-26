@@ -2,12 +2,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
-from sqlmodel import Session, col
+from sqlmodel import Session, col, update
 
 from app import crud  # type: ignore[attr-defined]
 from app.core import security
 from app.core.config import settings
-from app.models.user import RefreshToken, TokenBlacklist, User
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,9 @@ def create_token_pair(session: Session, user: User, family_id: str | None = None
         raise ValueError("User must be persisted before tokens can be created")
     user_id = user.id
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(subject=user_id, expires_delta=access_token_expires)
+    access_token = security.create_access_token(
+        subject=user_id, expires_delta=access_token_expires, token_version=user.token_version
+    )
 
     # Create refresh token (long-lived, single-use)
     raw_refresh_token = security.generate_refresh_token()
@@ -94,15 +96,23 @@ def refresh_access_token_from_refresh(
         ValueError: If token is invalid, revoked, or expired
     """
     hashed = security.hash_refresh_token(refresh_token)
+    owner_id = crud.get_refresh_token_owner_id(session=session, hashed_token=hashed)
+    # Lock the owner first, as end_all_sessions does: a refresh and a sign-out-everywhere
+    # then run one after the other, so the sign-out can't miss the replacement token
+    user = None if owner_id is None else crud.lock_user(session=session, user_id=owner_id)
     db_token = crud.lock_refresh_token_by_hash(session=session, hashed_token=hashed)
 
-    if not db_token:
+    if not db_token or not user:
         session.rollback()
         raise ValueError("Invalid or expired refresh token")
 
     now = datetime.now(UTC)
     if db_token.revoked:
-        if _within_reuse_grace(db_token.revoked_at, now):
+        # Reuse only signals theft while a newer token in the family is still live.
+        # A family revoked as a whole (logout, password change) is just a stale session.
+        if _within_reuse_grace(db_token.revoked_at, now) or not crud.family_has_active_token(
+            session=session, family_id=db_token.family_id
+        ):
             session.rollback()
         else:
             logger.warning(
@@ -116,12 +126,12 @@ def refresh_access_token_from_refresh(
             crud.revoke_refresh_token_family(session=session, family_id=db_token.family_id)
         raise ValueError("Invalid or expired refresh token")
 
-    user = session.get(User, db_token.user_id)
-    if _as_utc(db_token.expires_at) <= now or not user or not user.is_active:
+    if _as_utc(db_token.expires_at) <= now or not user.is_active:
         session.rollback()
         raise ValueError("Invalid or expired refresh token")
 
-    # Revoke the old token (single-use pattern); the commit releases the row lock
+    # Single use: the old token's revocation commits together with its replacement,
+    # and that commit releases the locks
     crud.revoke_refresh_token(session=session, db_token=db_token)
 
     return create_token_pair(session=session, user=user, family_id=db_token.family_id)
@@ -156,6 +166,46 @@ def revoke_access_token(
         expires_at: Token expiration timestamp (for cleanup scheduling)
     """
     crud.blacklist_token(session=session, jti=jti, expires_at=expires_at)
+
+
+def end_all_sessions(session: Session, user: User) -> None:
+    """
+    Sign the user out everywhere: revoke every refresh token and bump the token
+    version, so other devices lose access immediately rather than when their
+    30-minute access token expires. Tokens issued afterwards carry the new version.
+    """
+    if user.id is None:
+        raise ValueError("User must be persisted before sessions can be ended")
+    # The user-row update below takes the lock token rotation also takes first,
+    # so an in-flight refresh either finishes before this or sees its token revoked.
+    # Write the caller's pending changes (new password or email) first: the refresh
+    # below reloads the row and would otherwise discard them
+    session.add(user)
+    session.flush()
+    # Atomic in SQL: two concurrent calls must both move the version forward
+    session.exec(
+        update(User)
+        .where(col(User.id) == user.id)
+        .values(token_version=User.token_version + 1)
+    )
+    crud.revoke_all_user_refresh_tokens(session=session, user_id=user.id)
+    # Pick up the incremented version (and drop any stale in-memory value)
+    session.refresh(user)
+
+
+def revoke_refresh_token_family(session: Session, refresh_token: str, user_id: int) -> None:
+    """Revoke the session a raw refresh token belongs to, if it is this user's."""
+    hashed = security.hash_refresh_token(refresh_token)
+    if crud.get_refresh_token_owner_id(session=session, hashed_token=hashed) != user_id:
+        session.rollback()
+        return
+    # Same lock order as rotation, so a concurrent refresh can't slip a token past us
+    crud.lock_user(session=session, user_id=user_id)
+    db_token = crud.lock_refresh_token_by_hash(session=session, hashed_token=hashed)
+    if db_token is None:
+        session.rollback()
+        return
+    crud.revoke_refresh_token_family(session=session, family_id=db_token.family_id)
 
 
 def revoke_all_user_tokens(session: Session, user_id: int) -> None:
@@ -194,50 +244,6 @@ def is_access_token_blacklisted(session: Session, jti: str) -> bool:
     """
     result = crud.is_token_blacklisted(session=session, jti=jti)
     return bool(result) if result is not None else False
-
-
-def cleanup_expired_tokens(session: Session) -> int:
-    """
-    Remove expired tokens from database to keep storage clean.
-
-    Deletes:
-    - Expired refresh tokens (revoked or not)
-    - Expired blacklisted access tokens
-
-    Should be run periodically (e.g., daily via Celery job).
-
-    Args:
-        session: Database session
-
-    Returns:
-        Number of tokens deleted
-    """
-    from sqlmodel import delete
-
-    now = datetime.now(UTC)
-
-    # Delete expired refresh tokens
-    refresh_stmt = (
-        delete(RefreshToken)
-        .where(col(RefreshToken.expires_at) < now)
-        .execution_options(synchronize_session=False)
-    )
-    refresh_result = session.exec(refresh_stmt)
-    refresh_deleted = refresh_result.rowcount if hasattr(refresh_result, "rowcount") else 0
-
-    # Delete expired blacklisted tokens
-    blacklist_stmt = (
-        delete(TokenBlacklist)
-        .where(col(TokenBlacklist.expires_at) < now)
-        .execution_options(synchronize_session=False)
-    )
-    blacklist_result = session.exec(blacklist_stmt)
-    blacklist_deleted = blacklist_result.rowcount if hasattr(blacklist_result, "rowcount") else 0
-
-    session.commit()
-
-    total_deleted = refresh_deleted + blacklist_deleted
-    return total_deleted
 
 
 def get_token_info(session: Session, token_payload: dict[str, Any]) -> dict[str, Any]:

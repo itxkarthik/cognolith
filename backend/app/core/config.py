@@ -105,11 +105,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_secret_key(self) -> Self:
-        """Ensure SECRET_KEY is set in production, generate ephemeral key in local mode."""
+        """Require SECRET_KEY outside local mode; generate an ephemeral key locally."""
         if not self.SECRET_KEY:
-            if self.ENVIRONMENT == "production":
+            # Staging too: an ephemeral key differs per worker and per restart
+            if self.ENVIRONMENT != "local":
                 raise ValueError(
-                    "SECRET_KEY environment variable must be set in production. "
+                    f"SECRET_KEY environment variable must be set in {self.ENVIRONMENT}. "
                     'Generate a secure key with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
                 )
             # Local development: generate ephemeral key (sessions won't persist across restarts)

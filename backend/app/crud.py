@@ -2,10 +2,18 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from app.core.security import get_password_hash, hash_refresh_token, verify_password
-from app.models.user import RefreshToken, TokenBlacklist, User, UserCreate, UserUpdate
+from app.models.user import (
+    RefreshToken,
+    TokenBlacklist,
+    User,
+    UserCreate,
+    UserUpdate,
+    normalize_email,
+)
 
 
 def create_user(*, session: Session, user_create: UserCreate, is_verified: bool = True) -> User:
@@ -37,7 +45,8 @@ def update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:
 
 
 def get_user_by_email(*, session: Session, email: str) -> User | None:
-    statement = select(User).where(User.email == email)
+    # Case-insensitive, matching the unique index on lower(email)
+    statement = select(User).where(func.lower(User.email) == normalize_email(email))
     session_user = session.exec(statement).first()
     return session_user
 
@@ -93,6 +102,25 @@ def get_refresh_token_by_hash(*, session: Session, hashed_token: str) -> Refresh
     return session.exec(statement).first()
 
 
+def get_refresh_token_owner_id(*, session: Session, hashed_token: str) -> int | None:
+    statement = select(RefreshToken.user_id).where(RefreshToken.hashed_token == hashed_token)
+    return session.exec(statement).first()
+
+
+def lock_user(*, session: Session, user_id: int) -> User | None:
+    """
+    Row-lock a user (and reload it). Paths that issue or revoke a user's tokens take
+    this lock before any token lock, so they serialize in one order and never deadlock.
+    """
+    statement = (
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return session.exec(statement).first()
+
+
 def lock_refresh_token_by_hash(*, session: Session, hashed_token: str) -> RefreshToken | None:
     """Fetch a refresh token in any state, row-locked so concurrent refreshes serialize."""
     statement = (
@@ -102,10 +130,10 @@ def lock_refresh_token_by_hash(*, session: Session, hashed_token: str) -> Refres
 
 
 def revoke_refresh_token(*, session: Session, db_token: RefreshToken) -> None:
+    """Stage a token's revocation; the caller commits it with the rest of its change."""
     db_token.revoked = True
     db_token.revoked_at = datetime.now(UTC)
     session.add(db_token)
-    session.commit()
 
 
 def _revoke_refresh_tokens(*, session: Session, tokens: Sequence[RefreshToken]) -> None:
@@ -115,6 +143,15 @@ def _revoke_refresh_tokens(*, session: Session, tokens: Sequence[RefreshToken]) 
         token.revoked_at = revoked_at
         session.add(token)
     session.commit()
+
+
+def family_has_active_token(*, session: Session, family_id: str) -> bool:
+    statement = select(RefreshToken.id).where(
+        RefreshToken.family_id == family_id,
+        col(RefreshToken.revoked).is_(False),
+        RefreshToken.expires_at > datetime.now(UTC),
+    )
+    return session.exec(statement).first() is not None
 
 
 def revoke_refresh_token_family(*, session: Session, family_id: str) -> None:

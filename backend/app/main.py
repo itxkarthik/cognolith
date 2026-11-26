@@ -27,6 +27,7 @@ from app.core.middleware import (
 from app.core.rate_limit import limiter
 from app.services.backup_scheduler import BackupScheduler
 from app.services.document_processing import document_processor
+from app.services.maintenance_scheduler import MaintenanceScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ async def lifespan(_: FastAPI):
     Handles database initialization with retry logic on startup.
     """
     backup_scheduler = BackupScheduler()
+    maintenance_scheduler = MaintenanceScheduler()
 
     # Startup
     try:
@@ -54,6 +56,7 @@ async def lifespan(_: FastAPI):
             logger.info("Resumed processing of %s interrupted document(s)", resumed)
 
         await backup_scheduler.start()
+        await maintenance_scheduler.start()
 
         logger.info("✓ Application startup complete")
     except Exception as e:
@@ -63,6 +66,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        await maintenance_scheduler.stop()
         await backup_scheduler.stop()
         await document_processor.shutdown()
         logger.info("Shutting down application...")

@@ -1,42 +1,18 @@
 "use client";
 
 import { useTheme } from "next-themes";
-import { FormEvent, useState } from "react";
 import { CheckCircle2, MailWarning, MoonStar, Monitor, ShieldCheck, Sparkles, SunMedium, UserCircle2 } from "lucide-react";
-import { useRouter } from "next/navigation";
 
 import { useAuth } from "@/lib/hooks/useAuth";
 import { AIModelSettings } from "@/components/features/settings/AIModelSettings";
+import { EmailChangeForm } from "@/components/features/settings/EmailChangeForm";
 import { GoogleDriveBackupSettings } from "@/components/features/settings/GoogleDriveBackupSettings";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "@/components/ui";
-import { changeEmail } from "@/lib/api/auth";
-import { useAuthStore } from "@/store/authStore";
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle } from "@/components/ui";
 
 export default function SettingsPage() {
   const { user } = useAuth();
-  const router = useRouter();
-  const clearAuth = useAuthStore((state) => state.clearAuth);
   const { theme, setTheme, resolvedTheme } = useTheme();
   const currentTheme = theme === "system" ? resolvedTheme : theme;
-  const [newEmail, setNewEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [emailError, setEmailError] = useState<string | null>(null);
-  const [isChangingEmail, setIsChangingEmail] = useState(false);
-
-  const onChangeEmail = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setEmailError(null);
-    setIsChangingEmail(true);
-    try {
-      await changeEmail(newEmail, password);
-      clearAuth();
-      router.replace(`/auth/verify-email?email=${encodeURIComponent(newEmail)}`);
-    } catch (error) {
-      setEmailError(error instanceof Error ? error.message : "Email address could not be changed.");
-    } finally {
-      setIsChangingEmail(false);
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -78,24 +54,7 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            <form onSubmit={onChangeEmail} className="space-y-3 border-t border-border pt-4">
-              <div>
-                <p className="text-sm font-semibold text-foreground">Change email address</p>
-                <p className="text-xs text-muted-foreground">Your sessions will end while the new address is verified.</p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label htmlFor="new-email">New email</Label>
-                  <Input id="new-email" type="email" autoComplete="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} required />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="email-change-password">Current password</Label>
-                  <Input id="email-change-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-                </div>
-              </div>
-              {emailError ? <p className="text-sm text-destructive">{emailError}</p> : null}
-              <Button type="submit" variant="outline" disabled={isChangingEmail}>Verify new email</Button>
-            </form>
+            <EmailChangeForm />
           </CardContent>
         </Card>
 

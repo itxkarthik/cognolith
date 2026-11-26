@@ -142,6 +142,9 @@ async def _authenticate_websocket(websocket: WebSocket, session_id: int) -> int 
             return None
 
         user = session.get(User, user_id)
+        if user is not None and token_data.ver != user.token_version:
+            await websocket.close(code=4401, reason="Authentication revoked")
+            return None
         chat_session = session.exec(
             select(ChatSession).where(
                 ChatSession.id == session_id,

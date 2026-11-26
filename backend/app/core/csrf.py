@@ -100,8 +100,9 @@ def validate_csrf_token(token_from_cookie: str | None, token_from_header: str | 
         logger.warning("Missing CSRF token - no cookie or header token")
         return False
 
-    # Tokens must match
-    if token_from_cookie != token_from_header:
+    # Tokens must match (constant-time, so the comparison leaks nothing). Compare bytes:
+    # compare_digest raises TypeError for non-ASCII str, which a client controls
+    if not secrets.compare_digest(token_from_cookie.encode(), token_from_header.encode()):
         logger.warning("CSRF token mismatch - tokens don't match")
         return False
 

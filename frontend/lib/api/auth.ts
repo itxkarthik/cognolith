@@ -78,20 +78,22 @@ export async function changeEmail(
 	return response.data;
 }
 
-export async function refreshToken(refresh_token?: string): Promise<TokenResponse> {
-	try {
-		const response = await apiClient.post<TokenResponse>(apiConfig.endpoints.refresh, {
-			refresh_token,
-		});
-		return response.data;
-	} catch (error) {
-		if (error instanceof APIRequestError) {
-			throw error;
-		}
-		throw new APIRequestError("Failed to refresh token", {
-			errorCode: "TOKEN_REFRESH_FAILED",
-		});
-	}
+/** Sends a fresh code to the pending address; the previous code stops working. */
+export async function resendEmailChangeCode(): Promise<VerificationChallenge> {
+	const response = await apiClient.post<VerificationChallenge>(apiConfig.endpoints.resendEmailChangeCode);
+	return response.data;
+}
+
+/** Drops an unconfirmed email change; the current address is unaffected. */
+export async function cancelEmailChange(): Promise<User> {
+	const response = await apiClient.delete<User>(apiConfig.endpoints.changeEmail);
+	return response.data;
+}
+
+/** Switches the account to the pending address once its emailed code is confirmed. */
+export async function confirmEmailChange(code: string): Promise<User> {
+	const response = await apiClient.post<User>(apiConfig.endpoints.confirmEmailChange, { code });
+	return response.data;
 }
 
 export async function getCurrentUser(): Promise<User> {
