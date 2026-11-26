@@ -31,6 +31,7 @@ from app.main import app
 from app.models.backup import BackupSchedule, GoogleDriveConnection, WorkspaceBackup
 from app.models.user import RefreshToken, TokenBlacklist, User, UserCreate
 from app.services import auth_service
+from app.services.maintenance_scheduler import cleanup_expired_auth_records
 
 client = TestClient(app)
 
@@ -384,7 +385,7 @@ class TestTokenExpiration:
         assert count_before >= 1
 
         # Run cleanup
-        deleted = auth_service.cleanup_expired_tokens(session=db_session)
+        deleted = cleanup_expired_auth_records(db_session)
 
         # Verify deleted
         assert deleted > 0

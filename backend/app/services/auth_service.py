@@ -7,7 +7,7 @@ from sqlmodel import Session, col, update
 from app import crud  # type: ignore[attr-defined]
 from app.core import security
 from app.core.config import settings
-from app.models.user import RefreshToken, TokenBlacklist, User
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -244,50 +244,6 @@ def is_access_token_blacklisted(session: Session, jti: str) -> bool:
     """
     result = crud.is_token_blacklisted(session=session, jti=jti)
     return bool(result) if result is not None else False
-
-
-def cleanup_expired_tokens(session: Session) -> int:
-    """
-    Remove expired tokens from database to keep storage clean.
-
-    Deletes:
-    - Expired refresh tokens (revoked or not)
-    - Expired blacklisted access tokens
-
-    Run periodically by MaintenanceScheduler.
-
-    Args:
-        session: Database session
-
-    Returns:
-        Number of tokens deleted
-    """
-    from sqlmodel import delete
-
-    now = datetime.now(UTC)
-
-    # Delete expired refresh tokens
-    refresh_stmt = (
-        delete(RefreshToken)
-        .where(col(RefreshToken.expires_at) < now)
-        .execution_options(synchronize_session=False)
-    )
-    refresh_result = session.exec(refresh_stmt)
-    refresh_deleted = refresh_result.rowcount if hasattr(refresh_result, "rowcount") else 0
-
-    # Delete expired blacklisted tokens
-    blacklist_stmt = (
-        delete(TokenBlacklist)
-        .where(col(TokenBlacklist.expires_at) < now)
-        .execution_options(synchronize_session=False)
-    )
-    blacklist_result = session.exec(blacklist_stmt)
-    blacklist_deleted = blacklist_result.rowcount if hasattr(blacklist_result, "rowcount") else 0
-
-    session.commit()
-
-    total_deleted = refresh_deleted + blacklist_deleted
-    return total_deleted
 
 
 def get_token_info(session: Session, token_payload: dict[str, Any]) -> dict[str, Any]:

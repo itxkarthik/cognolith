@@ -3,6 +3,7 @@
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import jwt
 import pytest
@@ -495,22 +496,29 @@ def test_email_change_code_only_confirms_the_address_it_was_sent_to(
 def test_cleanup_continues_after_one_table_fails(
     session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fail(_: Session) -> int:
-        raise OperationalError("DELETE", {}, Exception("lock timeout"))
-
-    monkeypatch.setattr("app.services.maintenance_scheduler.cleanup_expired_tokens", fail)
     user = _create_user(session)
     assert user.id is not None
-    session.add(
-        OAuthState(
-            user_id=user.id,
-            state_hash="expired-state",
-            expires_at=datetime.now(UTC) - timedelta(days=1),
-        )
+    expired = datetime.now(UTC) - timedelta(days=1)
+    session.add_all(
+        [
+            RefreshToken(user_id=user.id, hashed_token="expired", expires_at=expired),
+            TokenBlacklist(jti="expired-jti", expires_at=expired),
+            OAuthState(user_id=user.id, state_hash="expired-state", expires_at=expired),
+        ]
     )
     session.commit()
+    real_exec = session.exec
+
+    def exec_failing_on_refresh_tokens(statement: Any, *args: Any, **kwargs: Any) -> Any:
+        if getattr(getattr(statement, "table", None), "name", None) == "refresh_tokens":
+            raise OperationalError("DELETE", {}, Exception("lock timeout"))
+        return real_exec(statement, *args, **kwargs)
+
+    monkeypatch.setattr(session, "exec", exec_failing_on_refresh_tokens)
 
     removed = cleanup_expired_auth_records(session)
 
-    assert removed == 1
-    assert session.exec(select(OAuthState)).all() == []
+    assert removed == 2
+    assert real_exec(select(TokenBlacklist)).all() == []
+    assert real_exec(select(OAuthState)).all() == []
+    assert len(real_exec(select(RefreshToken)).all()) == 1
