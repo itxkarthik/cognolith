@@ -185,6 +185,9 @@ export interface DocumentUpdate {
 	language?: string;
 }
 
+// failed: content is stored but not embedded yet; the next search or chat retries it
+export type DocumentEmbeddingStatus = "pending" | "indexed" | "failed";
+
 export interface DocumentResponse {
 	id: number;
 	user_id: number;
@@ -204,6 +207,7 @@ export interface DocumentResponse {
 	word_count?: number | null;
 	page_count?: number | null;
 	processing_error?: string | null;
+	embedding_status: DocumentEmbeddingStatus;
 	is_deleted: boolean;
 	created_at: string;
 	updated_at: string;

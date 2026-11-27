@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from typing import Any
 
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, select, update
 
 from app.ai.chunking import NoteChunk, chunk_note, chunking_preferences
 from app.ai.embeddings import generate_embedding, generate_embeddings
@@ -29,7 +29,7 @@ from app.ai.vectorstore import (
     PgVectorStore,
     VectorSearchResult,
 )
-from app.models.document import Document, DocumentChunks
+from app.models.document import Document, DocumentChunks, DocumentEmbeddingStatus
 from app.models.note import Notes
 from app.models.user import UserSettings
 from app.utils.text_processing import create_content_preview
@@ -1143,6 +1143,16 @@ def ensure_workspace_embeddings(
                 embeddings=embeddings,
                 user_id=user_id,
                 model=embedding_model,
+            )
+        if missing_chunks:
+            # Every missing chunk is now embedded, including those a failed upload left
+            session.exec(
+                update(Document)
+                .where(
+                    col(Document.id).in_({chunk.document_id for chunk in missing_chunks}),
+                    col(Document.embedding_status) != DocumentEmbeddingStatus.indexed,
+                )
+                .values(embedding_status=DocumentEmbeddingStatus.indexed)
             )
 
     if include_notes:

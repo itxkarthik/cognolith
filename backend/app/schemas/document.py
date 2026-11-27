@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.document import DocumentEmbeddingStatus
 from app.utils.sanitization import sanitize_plain_text
 from app.utils.validators import validate_no_sql_injection, validate_no_xss
 
@@ -99,6 +100,7 @@ class DocumentResponse(BaseModel):
     word_count: int | None = None
     page_count: int | None = None
     processing_error: str | None = None
+    embedding_status: DocumentEmbeddingStatus
     is_deleted: bool
     created_at: datetime
     updated_at: datetime

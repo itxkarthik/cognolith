@@ -269,6 +269,8 @@ class Settings(BaseSettings):
     REDIS_URL: str | None = None
     # Uploads processed at once in the background; extraction is CPU-bound
     DOCUMENT_PROCESSING_CONCURRENCY: int = Field(default=2, ge=1)
+    # Text extraction longer than this fails the document instead of holding a slot
+    DOCUMENT_EXTRACTION_TIMEOUT_SECONDS: float = Field(default=300.0, gt=0)
 
     def get_database_url(self) -> str:
         if self.DATABASE_URL:

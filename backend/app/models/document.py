@@ -22,6 +22,15 @@ class DocumentStatus(StrEnum):
     deleted = "deleted"
 
 
+class DocumentEmbeddingStatus(StrEnum):
+    # Not embedded yet: still processing, or processing failed before embedding
+    pending = "pending"
+    # Every chunk has a vector (a document with no text has nothing to embed)
+    indexed = "indexed"
+    # Embedding failed; content is stored and the next search or chat retries it
+    failed = "failed"
+
+
 class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     __tablename__: ClassVar[str] = "documents"  # pyright: ignore
     __table_args__ = (
@@ -64,6 +73,12 @@ class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     processing_started_at: datetime | None = Field(default=None)
     processing_completed_at: datetime | None = Field(default=None)
     processing_error: str | None = Field(default=None)
+    # Runs started, so a file that crashes the process isn't retried forever
+    processing_attempts: int = Field(default=0)
+    embedding_status: DocumentEmbeddingStatus = Field(
+        default=DocumentEmbeddingStatus.pending,
+        sa_column=Column(String(20), nullable=False, server_default="pending"),
+    )
     word_count: int | None = Field(default=None)
     page_count: int | None = Field(default=None)
     chunk_count: int = Field(default=0)

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, update
 from sqlmodel import Session, col, or_, select
 
 from app.ai.chunking import chunking_preferences
@@ -17,7 +17,7 @@ from app.ai.embeddings import generate_embeddings
 from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
 from app.core.exceptions import AIServiceUnavailableError
-from app.models.document import Document, DocumentChunks
+from app.models.document import Document, DocumentChunks, DocumentEmbeddingStatus
 from app.models.user import User
 from app.schemas.document import DocumentUpdate
 from app.services.document_processing import document_processor
@@ -126,6 +126,8 @@ async def process_existing_document(
         raise ValueError("Deleted documents cannot be processed")
 
     document.status = "processing"
+    document.processing_attempts += 1
+    document.embedding_status = DocumentEmbeddingStatus.pending
     document.processing_started_at = datetime.now(UTC)
     document.processing_completed_at = None
     document.processing_error = None
@@ -141,8 +143,7 @@ async def process_existing_document(
     session.commit()
 
     try:
-        # PDF/DOCX parsing is CPU-bound and synchronous; keep it off the event loop
-        content = clean_text(await asyncio.to_thread(extract_text_from_file, document.file_path))
+        content = clean_text(await _extract_text(document.file_path))
         chunk_size, chunk_overlap = chunking_preferences(session, user_id)
         chunks = split_text_into_chunks(content, chunk_size=chunk_size, overlap=chunk_overlap)
         document.content = content
@@ -165,6 +166,7 @@ async def process_existing_document(
             chunk_rows.append(chunk_row)
         session.flush()
 
+        document.embedding_status = DocumentEmbeddingStatus.indexed
         if chunk_rows:
             try:
                 embeddings, embedding_model = await generate_embeddings(
@@ -179,6 +181,7 @@ async def process_existing_document(
                     model=embedding_model,
                 )
             except Exception:
+                document.embedding_status = DocumentEmbeddingStatus.failed
                 logger.exception(
                     "Failed to generate document embeddings; content remains available",
                     extra={"document_id": document.id, "user_id": user_id},
@@ -205,6 +208,10 @@ async def process_existing_document(
         session.commit()
         session.refresh(document)
         return document
+    except asyncio.CancelledError:
+        # Stopped by shutdown, which says nothing about the file: don't count the run
+        _uncount_attempt(session=session, document_id=document_id)
+        raise
     except Exception as exc:
         logger.exception(
             "Document processing failed",
@@ -219,6 +226,39 @@ async def process_existing_document(
         )
         _mark_document_failed(session=session, document_id=document_id, reason=reason)
         raise
+
+
+async def _extract_text(file_path: str) -> str:
+    """
+    Extract a file's text off the event loop (PDF/DOCX parsing is CPU-bound).
+
+    The timeout frees the processing slot and fails the document; the thread can't be
+    interrupted and finishes in the background, its result discarded.
+    """
+    timeout = settings.DOCUMENT_EXTRACTION_TIMEOUT_SECONDS
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(extract_text_from_file, file_path), timeout=timeout
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Text extraction took longer than {timeout:g} seconds",
+        ) from None
+
+
+def _uncount_attempt(*, session: Session, document_id: int) -> None:
+    try:
+        session.rollback()
+        session.exec(
+            update(Document)
+            .where(col(Document.id) == document_id, col(Document.processing_attempts) > 0)
+            .values(processing_attempts=col(Document.processing_attempts) - 1)
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("Could not restore the processing attempt count", extra={"document_id": document_id})
 
 
 async def _validate_and_prepare(file: UploadFile) -> None:

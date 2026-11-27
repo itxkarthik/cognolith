@@ -6,7 +6,7 @@ import Link from "next/link";
 import { cn } from "@/lib/utils/cn";
 import type { DocumentResponse } from "@/types";
 
-import { formatBytes, formatDate, formatFileType, getStatusClasses } from "./utils";
+import { formatBytes, formatDate, formatFileType, getStatusClasses, NOT_SEARCHABLE_MESSAGE } from "./utils";
 
 interface DocumentCardProps {
   document: DocumentResponse;
@@ -36,6 +36,11 @@ export function DocumentCard({ document, onDelete, isDeleting = false }: Documen
         </div>
         <span className={cn("rounded-sm border px-2 py-1 text-xs font-medium capitalize", getStatusClasses(document.status))}>{document.status}</span>
       </div>
+      {document.status === "completed" && document.embedding_status === "failed" ? (
+        <p className="mt-2 text-xs text-muted-foreground" title={NOT_SEARCHABLE_MESSAGE}>
+          Not searchable yet
+        </p>
+      ) : null}
 
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-muted-foreground">
         <div>
