@@ -283,7 +283,7 @@ def test_an_embedded_document_is_marked_indexed(session: Session, tmp_path, monk
     assert processed.processing_attempts == 1
 
 
-def test_the_next_search_reindexes_a_failed_document(
+def test_the_indexer_reindexes_a_failed_document(
     session: Session, tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setattr(document_service, "generate_embeddings", _fake_embeddings(fail=True))

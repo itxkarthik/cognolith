@@ -10,9 +10,9 @@ from sqlmodel import Session, col, select
 from app.ai.chunking import NoteChunk
 from app.ai.reranking import LexicalQuery
 from app.core.config import settings
-from app.models.chat import ChatMessages, ChatRole, ChatSession
+from app.models.chat import ChatGenerationStatus, ChatMessages, ChatRole, ChatSession
 from app.models.document import Document, DocumentChunks
-from app.models.embedding import EMBEDDING_TABLES
+from app.models.embedding import EMBEDDING_TABLES, chunk_embeddings
 from app.models.text_search import NOTE_CONFIG
 
 # HNSW needs no training data, so unlike ivfflat it has good recall even when it is
@@ -163,12 +163,26 @@ class PgVectorStore:
         )
         return {int(row.chunk_id) for row in rows}
 
-    def active_document_chunks(self, *, user_id: int) -> list[DocumentChunks]:
+    def unindexed_document_chunks(self, *, user_id: int, model: str) -> list[DocumentChunks]:
+        """The user's chunks with no vector for `model`; indexed ones are never loaded."""
+        indexed = (
+            select(chunk_embeddings.c.chunk_id)
+            .where(
+                chunk_embeddings.c.chunk_id == DocumentChunks.id,
+                chunk_embeddings.c.model == model,
+            )
+            .exists()
+        )
         return list(
             self.session.exec(
                 select(DocumentChunks)
                 .join(Document, col(Document.id) == col(DocumentChunks.document_id))
-                .where(Document.user_id == user_id, col(Document.is_deleted).is_(False))
+                .where(
+                    Document.user_id == user_id,
+                    col(Document.is_deleted).is_(False),
+                    ~indexed,
+                )
+                .order_by(col(DocumentChunks.id))
             ).all()
         )
 
@@ -214,6 +228,10 @@ class PgVectorStore:
                 .where(
                     ChatSession.user_id == user_id,
                     col(ChatMessages.role).in_([ChatRole.user, ChatRole.assistant]),
+                    # A reply still streaming changes; it's indexed once it's done
+                    col(ChatMessages.generation_status).is_distinct_from(
+                        ChatGenerationStatus.streaming
+                    ),
                 )
             ).all()
         )

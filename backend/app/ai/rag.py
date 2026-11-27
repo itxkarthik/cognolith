@@ -314,12 +314,7 @@ def prepare_rag_pipeline(
     needs_inventory = _needs_workspace_inventory(retrieval_query)
     vector_store = PgVectorStore(session=session)
     vector_store.ensure_schema(embedding_dimensions=len(query_embedding))
-    ensure_workspace_embeddings(
-        session=session,
-        vector_store=vector_store,
-        user_id=user_id,
-        embedding_model=embedding_model,
-    )
+    # Read-only: the workspace indexer embeds new and changed content in the background
     lexical_query = build_lexical_query(retrieval_query)
     has_prior_scope = bool(retrieval_context.prior_document_ids or retrieval_context.prior_note_ids)
     sources = _search_ranked_sources(
@@ -1118,14 +1113,9 @@ def ensure_workspace_embeddings(
     include_chats: bool = False,
 ) -> None:
     if include_documents:
-        indexed_chunk_ids = vector_store.indexed_document_chunk_ids(
+        missing_chunks = vector_store.unindexed_document_chunks(
             user_id=user_id, model=embedding_model
         )
-        missing_chunks = [
-            chunk
-            for chunk in vector_store.active_document_chunks(user_id=user_id)
-            if chunk.id is not None and chunk.id not in indexed_chunk_ids
-        ]
 
         for start in range(0, len(missing_chunks), EMBEDDING_BATCH_SIZE):
             batch = missing_chunks[start : start + EMBEDDING_BATCH_SIZE]

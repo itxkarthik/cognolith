@@ -23,6 +23,7 @@ from app.models.chat import ChatGenerationStatus, ChatMessages, ChatRole, ChatSe
 from app.models.user import User, UserSettings
 from app.services.chat_history import REPLY_TO_KEY, build_conversation_history
 from app.services.generation_coordinator import generation_coordinator
+from app.services.workspace_indexer import workspace_indexer
 
 logger = logging.getLogger(__name__)
 
@@ -328,15 +329,12 @@ def _prepare_rag_in_own_session(
     stops awaiting the thread but can't stop it, so the two must not share a session.
     """
     with Session(engine) as rag_session:
-        prepared = prepare_rag_pipeline(
+        return prepare_rag_pipeline(
             session=rag_session,
             user_id=user_id,
             query=query,
             conversation_history=conversation_history,
         )
-        # Persist workspace embeddings refreshed during retrieval
-        rag_session.commit()
-        return prepared
 
 
 BeginReply = Callable[[Session, User, ChatSession], tuple[ChatMessages, ChatMessages, Event]]
@@ -649,6 +647,7 @@ async def stream_chat_generation(
             generation_completed_at=datetime.now(UTC),
             **values,
         )
+        workspace_indexer.mark_dirty(user_id)
         if message["generation_status"] == ChatGenerationStatus.cancelled:
             yield encode_sse("cancelled", {"message": message})
         else:

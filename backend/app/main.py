@@ -30,6 +30,7 @@ from app.services.backup_scheduler import BackupScheduler
 from app.services.chat_generation import fail_interrupted_generations
 from app.services.document_processing import document_processor
 from app.services.maintenance_scheduler import MaintenanceScheduler
+from app.services.workspace_indexer import workspace_indexer
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,8 @@ async def lifespan(_: FastAPI):
 
         await backup_scheduler.start()
         await maintenance_scheduler.start()
+        # Embeds new and changed content; chat and search only read vectors
+        await workspace_indexer.start()
 
         logger.info("✓ Application startup complete")
     except Exception as e:
@@ -74,6 +77,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        await workspace_indexer.stop()
         await maintenance_scheduler.stop()
         await backup_scheduler.stop()
         await document_processor.shutdown()
