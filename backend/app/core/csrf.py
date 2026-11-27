@@ -14,8 +14,9 @@ import logging
 import secrets
 
 from fastapi import Request, status
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import MutableHeaders
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import settings
 
@@ -114,108 +115,95 @@ def validate_csrf_token(token_from_cookie: str | None, token_from_header: str | 
     return True
 
 
-class CSRFMiddleware(BaseHTTPMiddleware):
+class CSRFMiddleware:
     """
-    CSRF protection middleware for FastAPI.
+    CSRF protection, as pure ASGI middleware.
 
-    - Generates CSRF tokens for GET requests
-    - Validates CSRF tokens for state-changing requests
-    - Excludes safe and public endpoints
-    - Uses double-submit cookie pattern
+    - State-changing requests must carry the CSRF cookie's value in the header
+      (double-submit cookie pattern)
+    - Exempt endpoints skip that, and the ones that set or clear auth cookies
+      refuse cross-site browser requests instead
+    - Safe requests get a token cookie when the client has none
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        """
-        Process request and validate/generate CSRF tokens.
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-        Args:
-            request: The incoming HTTP request
-            call_next: The next middleware or route handler
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        path = scope["path"]
+        method = scope["method"]
 
-        Returns:
-            Response with CSRF token cookie if applicable
-        """
-        # Exempt auth endpoints skip the token check but still refuse cross-site posts
-        if request.url.path in CSRF_EXEMPT_PATHS:
+        if path in CSRF_EXEMPT_PATHS:
             if (
-                request.method in CSRF_PROTECTED_METHODS
-                and request.url.path in ORIGIN_CHECKED_PATHS
+                method in CSRF_PROTECTED_METHODS
+                and path in ORIGIN_CHECKED_PATHS
                 and not is_trusted_origin(request)
             ):
-                logger.error(f"Cross-site request refused for {request.method} {request.url.path}")
-                return self._forbidden("Cross-site request refused", "cross_site_request")
-            return await call_next(request)
+                logger.error(f"Cross-site request refused for {method} {path}")
+                await _forbidden("Cross-site request refused", "cross_site_request")(
+                    scope, receive, send
+                )
+                return
+            await self.app(scope, receive, send)
+            return
 
-        # Skip CSRF check for safe methods (GET, HEAD, OPTIONS)
-        if request.method not in CSRF_PROTECTED_METHODS:
-            response = await call_next(request)
-            # Issue a token only when the client has none. Rotating on every
-            # response races with parallel requests that already read the old one.
-            self._ensure_csrf_cookie(request, response)
-            return response
+        if method in CSRF_PROTECTED_METHODS:
+            token_from_cookie = request.cookies.get(settings.CSRF_COOKIE_NAME)
+            token_from_header = request.headers.get(settings.CSRF_HEADER_NAME)
+            if not validate_csrf_token(token_from_cookie, token_from_header):
+                logger.error(f"CSRF validation failed for {method} {path}")
+                await _forbidden("CSRF token validation failed", "invalid_token")(
+                    scope, receive, send
+                )
+                return
+            # The token stays the same until login/logout
+            await self.app(scope, receive, send)
+            return
 
-        # For state-changing methods, validate CSRF token
-        csrf_valid = await self._validate_csrf(request)
-
-        if not csrf_valid:
-            logger.error(f"CSRF validation failed for {request.method} {request.url.path}")
-            return self._forbidden("CSRF token validation failed", "invalid_token")
-
-        # CSRF valid, process request. The token stays the same until login/logout.
-        return await call_next(request)
-
-    @staticmethod
-    def _forbidden(message: str, error_header: str) -> JSONResponse:
-        return JSONResponse(
-            status_code=status.HTTP_403_FORBIDDEN,
-            content={
-                "status": "error",
-                "error": "authorization_error",
-                "message": message,
-            },
-            headers={
-                "X-CSRF-Error": error_header,
-                "Pragma": "no-cache",
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-            },
-        )
-
-    def _ensure_csrf_cookie(self, request: Request, response: Response) -> None:
         if request.cookies.get(settings.CSRF_COOKIE_NAME):
+            await self.app(scope, receive, send)
             return
-        cookie_prefix = f"{settings.CSRF_COOKIE_NAME}=".encode()
-        if any(
-            name == b"set-cookie" and value.startswith(cookie_prefix)
-            for name, value in response.raw_headers
-        ):
-            return
-        self._set_csrf_cookie(response, generate_csrf_token())
 
-    async def _validate_csrf(self, request: Request) -> bool:
-        """
-        Validate CSRF token from request.
+        # Issue a token only when the client has none. Rotating on every response
+        # races with parallel requests that already read the old one.
+        async def send_with_token(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                cookie_prefix = f"{settings.CSRF_COOKIE_NAME}="
+                if not any(
+                    value.startswith(cookie_prefix) for value in headers.getlist("set-cookie")
+                ):
+                    headers.append("set-cookie", _csrf_cookie_header(generate_csrf_token()))
+            await send(message)
 
-        Gets token from:
-        1. Cookie (settings.CSRF_COOKIE_NAME)
-        2. Header (settings.CSRF_HEADER_NAME)
+        await self.app(scope, receive, send_with_token)
 
-        Args:
-            request: The HTTP request
 
-        Returns:
-            True if CSRF token is valid, False otherwise
-        """
-        # Get CSRF token from cookie
-        token_from_cookie = request.cookies.get(settings.CSRF_COOKIE_NAME)
+def _forbidden(message: str, error_header: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={
+            "status": "error",
+            "error": "authorization_error",
+            "message": message,
+        },
+        headers={
+            "X-CSRF-Error": error_header,
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
 
-        # Get CSRF token from header
-        token_from_header = request.headers.get(settings.CSRF_HEADER_NAME)
 
-        # Validate tokens
-        return validate_csrf_token(token_from_cookie, token_from_header)
-
-    def _set_csrf_cookie(self, response: Response, token: str) -> None:
-        set_csrf_cookie(response, token)
+def _csrf_cookie_header(token: str) -> str:
+    """The Set-Cookie value set_csrf_cookie would produce, for a raw ASGI message."""
+    carrier = Response()
+    set_csrf_cookie(carrier, token)
+    return carrier.headers["set-cookie"]
 
 
 def set_csrf_cookie(response: Response, token: str) -> None:

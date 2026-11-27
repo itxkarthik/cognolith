@@ -8,7 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
 from sqlmodel import Session
 
 from app.ai.embedding_validation import validate_embedding_setup
@@ -21,6 +20,7 @@ from app.core.database import engine, test_db_connection
 from app.core.exceptions import AppError, global_exception_handler
 from app.core.middleware import (
     MaxRequestBodySizeMiddleware,
+    RateLimitMiddleware,
     RequestIDMiddleware,
     RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
@@ -98,28 +98,19 @@ app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_hand
 app.add_exception_handler(AppError, global_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
-# 1. Request ID — runs first so all downstream middleware/routes have access
-app.add_middleware(RequestIDMiddleware)
-
-# 2. Request Logging — logs all requests/responses with structured JSON format
-app.add_middleware(RequestLoggingMiddleware)
-
-# 3. CSRF Protection — validates CSRF tokens on state-changing requests
-app.add_middleware(CSRFMiddleware)
-
-# 4. Security Headers — added to every response
-app.add_middleware(SecurityHeadersMiddleware)
-
-# 5. Max Request Body Size — reject oversized payloads early
-app.add_middleware(MaxRequestBodySizeMiddleware)
-
-# 6. Rate limiting — applies the limiter's default limit to every undecorated route
-app.add_middleware(SlowAPIMiddleware)
-
-# 7. ETag and Cache Control — adds ETag and cache headers for client-side caching
+# Middleware, outermost first: CORS > request id > logging > security headers >
+# body size > rate limit > CSRF > cache/ETag > routes. Each add_middleware call wraps
+# the ones added before it, so they are added innermost first.
+# CORS is outermost so even a refused request (403, 413, 429) is readable by the
+# browser; the request id comes next so every log line and error carries it.
 app.add_middleware(ETagAndCacheMiddleware)
-
-# 8. CORS — locked down to specific methods and headers
+app.add_middleware(CSRFMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(MaxRequestBodySizeMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(RequestIDMiddleware)
+# Outermost; locked down to specific methods and headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.all_cors_origins,

@@ -1,13 +1,25 @@
+"""
+HTTP middleware, all pure ASGI.
+
+Each one edits the `http.response.start` message as it passes, so no response body
+is wrapped or buffered (the ETag middleware buffers only what it fingerprints).
+BaseHTTPMiddleware ran every layer in its own task with a memory stream, adding
+latency per request and getting in the way of streamed responses.
+"""
+
 import json
 import logging
+import re
 import time
 import uuid
 
-from starlette.datastructures import Headers
+from slowapi import Limiter
+from slowapi.middleware import _find_route_handler, _should_exempt, async_check_limits
+from starlette.applications import Starlette
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import settings
@@ -42,64 +54,72 @@ def content_security_policy_for_path(path: str) -> str:
     return DEFAULT_CONTENT_SECURITY_POLICY
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
-        response = await call_next(request)
+class SecurityHeadersMiddleware:
+    """Add the security headers to every HTTP response."""
 
-        # Prevent MIME-type sniffing
-        response.headers["X-Content-Type-Options"] = "nosniff"
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-        # Prevent clickjacking — deny all iframe embedding
-        response.headers["X-Frame-Options"] = "DENY"
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        policy = content_security_policy_for_path(scope["path"])
 
-        # Control referrer information
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                # Prevent MIME-type sniffing
+                headers["X-Content-Type-Options"] = "nosniff"
+                # Prevent clickjacking: deny all iframe embedding
+                headers["X-Frame-Options"] = "DENY"
+                headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+                headers["Permissions-Policy"] = (
+                    "camera=(), microphone=(), geolocation=(), browsing-topics=()"
+                )
+                # Documentation uses FastAPI's pinned CDN assets; other routes stay same-origin
+                headers["Content-Security-Policy"] = policy
+                # HSTS only in staging/production (not local dev)
+                if settings.ENVIRONMENT != "local":
+                    headers["Strict-Transport-Security"] = (
+                        "max-age=63072000; includeSubDomains; preload"
+                    )
+            await send(message)
 
-        # Restrict browser feature access
-        response.headers[
-            "Permissions-Policy"
-        ] = "camera=(), microphone=(), geolocation=(), browsing-topics=()"
+        await self.app(scope, receive, send_with_headers)
 
-        # Documentation uses FastAPI's pinned CDN assets; all other routes stay same-origin only.
-        response.headers["Content-Security-Policy"] = content_security_policy_for_path(
-            request.url.path
+
+# Client-supplied ids are echoed into logs and headers, so only plain tokens are kept
+_REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+class RequestIDMiddleware:
+    """
+    Give every request an id, reused from `X-Request-ID` when it is a plain token.
+
+    The id is stored on `request.state.request_id` for logs and error responses and
+    returned in the `X-Request-ID` response header.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        supplied = Headers(scope=scope).get("x-request-id")
+        request_id = (
+            supplied if supplied and _REQUEST_ID_PATTERN.fullmatch(supplied) else str(uuid.uuid4())
         )
+        scope.setdefault("state", {})["request_id"] = request_id
 
-        # HSTS — only in staging/production (not local dev)
-        if settings.ENVIRONMENT != "local":
-            response.headers[
-                "Strict-Transport-Security"
-            ] = "max-age=63072000; includeSubDomains; preload"
+        async def send_with_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Request-ID"] = request_id
+            await send(message)
 
-        # Prevent caching of API responses (event streams also forbid transformation)
-        if response.headers.get("content-type", "").startswith("text/event-stream"):
-            response.headers["Cache-Control"] = "no-cache, no-store, no-transform"
-        else:
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-
-        return response
-
-
-class RequestIDMiddleware(BaseHTTPMiddleware):
-    """
-    Assigns a unique request ID to every incoming request.
-
-    - If the client sends an `X-Request-ID` header, it is reused.
-    - Otherwise, a new UUID4 is generated.
-    - The ID is attached to `request.state.request_id` for use in logging/audit.
-    - The ID is returned in the `X-Request-ID` response header.
-    """
-
-    async def dispatch(self, request: Request, call_next) -> Response:
-        # Use client-provided ID or generate a new one
-        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-        request.state.request_id = request_id
-
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-
-        return response
+        await self.app(scope, receive, send_with_id)
 
 
 def _body_too_large_detail() -> str:
@@ -181,100 +201,133 @@ class MaxRequestBodySizeMiddleware:
                 await _body_too_large_response()(scope, receive, send)
 
 
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
+class RequestLoggingMiddleware:
     """
-    Logs all incoming requests and outgoing responses in structured JSON format.
+    Log each request and its response as structured JSON.
 
-    Features:
-    - Captures request details: method, path, query params, headers
-    - Captures response details: status code, response time
-    - Includes request ID for traceability
-    - Uses structured JSON logging for easy parsing
-    - Respects LOG_LEVEL configuration
-    - Excludes health check endpoints from verbose logging
+    Runs inside RequestIDMiddleware, so every line carries the request id. The
+    elapsed time covers the whole response, the full duration of a stream included.
+    Health checks are logged only when they fail.
     """
 
-    # Paths that should use minimal logging (health checks, etc)
     MINIMAL_LOG_PATHS = {"/health", "/health/live", "/health/ready"}
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        # Capture request start time
-        start_time = time.time()
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-        # Get request ID from request state (set by RequestIDMiddleware)
-        request_id = getattr(request.state, "request_id", "unknown")
-
-        # Extract request details
-        method = request.method
-        path = request.url.path
-        query_string = str(request.url.query) if request.url.query else None
-
-        # Determine if this should be detailed logging
-        is_minimal_path = path in self.MINIMAL_LOG_PATHS
-
-        # Log incoming request
-        request_log = {
-            "event": "request",
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+        request_id = scope.get("state", {}).get("request_id", "unknown")
+        path = scope["path"]
+        query = scope.get("query_string", b"").decode("latin-1") or None
+        client = scope.get("client")
+        base = {
             "request_id": request_id,
-            "method": method,
+            "method": scope["method"],
             "path": path,
-            "query": query_string,
-            "client": request.client.host if request.client else None,
-            "user_agent": request.headers.get("user-agent", None),
+            "query": query,
         }
-
+        is_minimal_path = path in self.MINIMAL_LOG_PATHS
         if not is_minimal_path:
-            logger.debug(json.dumps(request_log))
+            logger.debug(
+                json.dumps(
+                    {
+                        "event": "request",
+                        **base,
+                        "client": client[0] if client else None,
+                        "user_agent": Headers(scope=scope).get("user-agent"),
+                    }
+                )
+            )
+        status_code: int | None = None
+
+        async def send_and_record(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
 
         try:
-            # Call the next middleware/route handler
-            response = await call_next(request)
+            await self.app(scope, receive, send_and_record)
         except Exception as exc:
-            # Log errors
-            elapsed_time = time.time() - start_time
-            error_log = {
-                "event": "request_error",
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "request_id": request_id,
-                "method": method,
-                "path": path,
-                "query": query_string,
-                "client": request.client.host if request.client else None,
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-                "elapsed_ms": round(elapsed_time * 1000, 2),
-            }
-            logger.error(json.dumps(error_log))
+            logger.error(
+                json.dumps(
+                    {
+                        "event": "request_error",
+                        **base,
+                        "client": client[0] if client else None,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "elapsed_ms": _elapsed_ms(started),
+                    }
+                )
+            )
             raise
-
-        # Calculate response time
-        elapsed_time = time.time() - start_time
-
-        # Log response
-        response_log = {
-            "event": "response",
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "request_id": request_id,
-            "method": method,
-            "path": path,
-            "status": response.status_code,
-            "elapsed_ms": round(elapsed_time * 1000, 2),
-        }
-
-        # Use appropriate log level based on status code
-        if response.status_code >= 500:
-            # Server errors
-            logger.error(json.dumps(response_log))
-        elif response.status_code >= 400:
-            # Client errors
-            logger.warning(json.dumps(response_log))
+        if status_code is None:
+            return  # the client went away before a response started
+        response_log = json.dumps(
+            {
+                "event": "response",
+                **base,
+                "status": status_code,
+                "elapsed_ms": _elapsed_ms(started),
+            }
+        )
+        if status_code >= 500:
+            logger.error(response_log)
+        elif status_code >= 400:
+            logger.warning(response_log)
         elif not is_minimal_path:
-            # Success logs (except health checks—they're too noisy)
-            logger.info(json.dumps(response_log))
+            logger.info(response_log)
 
-        # Add request ID to response headers if not already present
-        if "X-Request-ID" not in response.headers:
-            response.headers["X-Request-ID"] = request_id
 
-        return response
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 2)
+
+
+class RateLimitMiddleware:
+    """
+    Apply the limiter's default limit to routes without their own limit decorator.
+
+    Replaces slowapi's middlewares: SlowAPIMiddleware is a BaseHTTPMiddleware, and
+    SlowAPIASGIMiddleware sends `http.response.start` again before every body chunk,
+    which breaks any streamed response.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        app: Starlette = scope["app"]
+        limiter: Limiter = app.state.limiter
+        if not limiter.enabled:
+            await self.app(scope, receive, send)
+            return
+        handler = _find_route_handler(app.routes, scope)
+        if _should_exempt(limiter, handler):
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        error_response, inject_headers = await async_check_limits(limiter, request, handler, app)
+        if error_response is not None:
+            await error_response(scope, receive, send)
+            return
+        if not inject_headers:
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_limit_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                limiter._inject_asgi_headers(  # pyright: ignore[reportPrivateUsage]
+                    MutableHeaders(scope=message), request.state.view_rate_limit
+                )
+            await send(message)
+
+        await self.app(scope, receive, send_with_limit_headers)
