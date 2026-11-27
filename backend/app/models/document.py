@@ -36,19 +36,7 @@ class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     __table_args__ = (
         Index("ix_document_user_created", "user_id", "created_at"),
         Index("ix_documents_user_status", "user_id", "status"),
-        Index(
-            "ix_document_search",
-            text("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))"),
-            postgresql_using="gin",
-        ),
         Index("ix_document_tags", "tags", postgresql_using="gin"),
-        Index(
-            "ix_document_full_text",
-            text(
-                "to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, ''))"
-            ),
-            postgresql_using="gin",
-        ),
     )
     id: int | None = Field(default=None, primary_key=True)
     portable_id: UUID = Field(
@@ -102,11 +90,6 @@ class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
 class DocumentChunks(TimestampMixin, SQLModel, table=True):
     __tablename__: ClassVar[str] = "document_chunks"  # pyright: ignore
     __table_args__ = (
-        Index(
-            "ix_document_chunks_content_search",
-            text("to_tsvector('english', content)"),
-            postgresql_using="gin",
-        ),
         UniqueConstraint("document_id", "chunk_index", name="uix_document_chunks"),
         Index(
             "ix_document_chunks_content_trgm",

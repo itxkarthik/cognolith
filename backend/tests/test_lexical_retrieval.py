@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlmodel import Session
 
 from app.ai.rag import RAGContextSource, _expand_document_context_sources
@@ -155,3 +156,128 @@ def test_document_context_expands_and_merges_neighboring_chunks(session: Session
     assert "Crash-safe resume" in expanded[0].content
     assert expanded[0].content.count("Technologies: Go") == 1
     assert expanded[0].content.count("- HTTP tracker") == 1
+
+
+def _document(session: Session, user: User, title: str, language: str, chunks: list[str]) -> int:
+    assert user.id is not None
+    document = Document(
+        user_id=user.id,
+        title=title,
+        file_name="doc.txt",
+        file_path="/tmp/doc.txt",
+        file_size=1,
+        file_type="text",
+        mime_type="text/plain",
+        status="completed",
+        language=language,
+    )
+    session.add(document)
+    session.flush()
+    assert document.id is not None
+    for index, content in enumerate(chunks):
+        session.add(
+            DocumentChunks(
+                document_id=document.id,
+                chunk_index=index,
+                content=content,
+                vector_id=f"chunk-{document.id}-{index}",
+            )
+        )
+    session.commit()
+    return document.id
+
+
+def test_a_document_is_stemmed_in_its_own_language(session: Session) -> None:
+    user = _create_user(session)
+    assert user.id is not None
+    german = _document(session, user, "Notizen", "de", ["Die alten Häuser am Fluss"])
+    # English stemming leaves "häuser" alone, so only German finds it from "Haus"
+    _document(session, user, "Notes", "en", ["Die alten Häuser am Fluss"])
+
+    hits = PgVectorStore(session=session).lexical_chunk_search(
+        user_id=user.id, query=build_lexical_query("Haus"), top_k=5
+    )
+
+    assert [hit.document_id for hit in hits] == [german]
+    assert hits[0].exact_match is False
+    assert hits[0].lexical_score > 0
+
+
+def test_a_document_title_match_finds_its_chunks(session: Session) -> None:
+    user = _create_user(session)
+    assert user.id is not None
+    document_id = _document(session, user, "Quarterly budgets", "en", ["Unrelated text."])
+
+    hits = PgVectorStore(session=session).lexical_chunk_search(
+        user_id=user.id, query=build_lexical_query("budget"), top_k=5
+    )
+
+    assert [hit.document_id for hit in hits] == [document_id]
+
+
+def test_lexical_search_reads_the_stored_vector_indexes(session: Session) -> None:
+    user = _create_user(session)
+    assert user.id is not None
+    document_id = _document(session, user, "Log", "en", ["the zebra migration"])
+    # A workspace large enough that reading every row costs more than the index
+    connection = session.connection()
+    connection.execute(
+        text(
+            """
+            INSERT INTO document_chunks
+                (created_at, updated_at, document_id, chunk_index, content, vector_id)
+            SELECT NOW(), NOW(), :document_id, n, repeat('routine entry number ' || n || ' ', 40),
+                'v' || n
+            FROM generate_series(1, 20000) AS n
+            """
+        ),
+        {"document_id": document_id},
+    )
+    session.add(Notes(user_id=user.id, title="Sighting", content="the zebra migration"))
+    session.flush()
+    connection.execute(
+        text(
+            """
+            INSERT INTO notes (
+                created_at, updated_at, portable_id, user_id, title, content, content_type,
+                keywords, ai_generated, is_favorite, is_archived, is_pinned, version, revision,
+                is_public, is_locked, is_deleted, last_accessed_at, last_edited_at
+            )
+            SELECT NOW(), NOW(), gen_random_uuid(), :user_id, 'Note ' || n,
+                repeat('routine entry number ' || n || ' ', 40), 'markdown', '{}', false, false,
+                false, false,
+                1, 1, false, false, false, NOW(), NOW()
+            FROM generate_series(1, 20000) AS n
+            """
+        ),
+        {"user_id": user.id},
+    )
+    connection.exec_driver_sql("ANALYZE document_chunks, documents, notes")
+
+    plans: list[str] = []
+    original_execute = connection.execute
+
+    def explain(statement, parameters=None, **kwargs):  # noqa: ANN001, ANN202
+        if "lexical_matches" in str(statement):
+            plan = original_execute(text(f"EXPLAIN {statement}"), parameters, **kwargs)
+            plans.append("\n".join(row[0] for row in plan))
+        return original_execute(statement, parameters, **kwargs)
+
+    connection.execute = explain  # pyright: ignore[reportAttributeAccessIssue]
+    try:
+        store = PgVectorStore(session=session)
+        chunk_hits = store.lexical_chunk_search(
+            user_id=user.id, query=build_lexical_query("zebras"), top_k=5
+        )
+        note_hits = store.lexical_note_search(
+            user_id=user.id, query=build_lexical_query("zebras"), top_k=5
+        )
+    finally:
+        del connection.execute
+
+    assert [hit.content for hit in chunk_hits] == ["the zebra migration"]
+    assert [hit.content for hit in note_hits] == ["the zebra migration"]
+    chunk_plan, note_plan = plans
+    assert "ix_document_chunks_search_vector" in chunk_plan
+    assert "ix_notes_search_vector" in note_plan
+    assert "to_tsvector" not in chunk_plan + note_plan  # read, never computed per row
