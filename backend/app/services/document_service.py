@@ -11,13 +11,14 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import delete, func
 from sqlmodel import Session, col, or_, select
 
+from app.ai.chunking import chunking_preferences
 from app.ai.document_summary import generate_document_summary
 from app.ai.embeddings import generate_embeddings
 from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
 from app.core.exceptions import AIServiceUnavailableError
 from app.models.document import Document, DocumentChunks
-from app.models.user import User, UserSettings
+from app.models.user import User
 from app.schemas.document import DocumentUpdate
 from app.services.document_processing import document_processor
 from app.utils.file_processing import extract_text_from_file
@@ -113,13 +114,6 @@ async def upload_and_process_document(
     return document
 
 
-def _chunking_preferences(session: Session, user_id: int) -> tuple[int, int]:
-    """The user's chunk size/overlap, with overlap kept below the size it slides over."""
-    preferences = session.get(UserSettings, user_id) or UserSettings(user_id=user_id)
-    chunk_size = preferences.chunk_size
-    return chunk_size, min(preferences.chunk_overlap, chunk_size // 2)
-
-
 async def process_existing_document(
     session: Session,
     user_id: int,
@@ -149,7 +143,7 @@ async def process_existing_document(
     try:
         # PDF/DOCX parsing is CPU-bound and synchronous; keep it off the event loop
         content = clean_text(await asyncio.to_thread(extract_text_from_file, document.file_path))
-        chunk_size, chunk_overlap = _chunking_preferences(session, user_id)
+        chunk_size, chunk_overlap = chunking_preferences(session, user_id)
         chunks = split_text_into_chunks(content, chunk_size=chunk_size, overlap=chunk_overlap)
         document.content = content
         document.content_preview = create_content_preview(content)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlmodel import Session, col, select
 
+from app.ai.chunking import NoteChunk, chunk_note, chunking_preferences
 from app.ai.embeddings import generate_embedding, generate_embeddings
 from app.ai.llm import LLMService, build_chat_messages
 from app.ai.reranking import (
@@ -100,6 +101,9 @@ class RAGContextSource:
     supporting_chunk_ids: tuple[int, ...] = ()
     origin: str = "vector"
 
+
+# Texts sent to the embedding model per request while re-indexing
+EMBEDDING_BATCH_SIZE = 32
 
 _CASUAL_QUERIES = {
     "bye",
@@ -996,6 +1000,7 @@ def _context_source_from_ranked(
         source_id=hit.note_id,
         title=hit.title,
         content=hit.content,
+        chunk_index=hit.chunk_index if isinstance(hit, NoteVectorSearchResult) else None,
         vector_score=(
             ranked.vector_score
             if ranked.vector_score is not None and ranked.vector_score >= similarity_threshold
@@ -1123,8 +1128,8 @@ def ensure_workspace_embeddings(
             if chunk.id is not None and chunk.id not in indexed_chunk_ids
         ]
 
-        for start in range(0, len(missing_chunks), 32):
-            batch = missing_chunks[start : start + 32]
+        for start in range(0, len(missing_chunks), EMBEDDING_BATCH_SIZE):
+            batch = missing_chunks[start : start + EMBEDDING_BATCH_SIZE]
             embeddings, _ = _run_async(
                 generate_embeddings(
                     session=session,
@@ -1147,30 +1152,37 @@ def ensure_workspace_embeddings(
         indexed_note_hashes = vector_store.note_embedding_hashes(
             user_id=user_id, model=embedding_model
         )
-        stale_notes: list[tuple[int, str, str]] = []
+        chunk_size, overlap = chunking_preferences(session, user_id)
+        stale_notes: list[list[NoteChunk]] = []
+        emptied_note_ids: set[int] = set()
         for note in active_notes:
             if note.id is None:
                 continue
-            embedding_text = f"{note.title}\n\n{note.content}"[:12000]
-            content_hash = hashlib.sha256(embedding_text.encode("utf-8")).hexdigest()
-            if indexed_note_hashes.get(note.id) != content_hash:
-                stale_notes.append((note.id, embedding_text, content_hash))
+            chunks = chunk_note(note, chunk_size=chunk_size, overlap=overlap)
+            if not chunks:
+                if note.id in indexed_note_hashes:
+                    emptied_note_ids.add(note.id)
+            elif indexed_note_hashes.get(note.id) != chunks[0].content_hash:
+                stale_notes.append(chunks)
+        vector_store.remove_note_embeddings(note_ids=emptied_note_ids)
 
-        for start in range(0, len(stale_notes), 32):
-            batch = stale_notes[start : start + 32]
-            embeddings, _ = _run_async(
-                generate_embeddings(
-                    session=session,
-                    user_id=user_id,
-                    texts=[embedding_text for _, embedding_text, _ in batch],
-                    model=embedding_model,
+        for batch in _whole_note_batches(stale_notes, max_chunks=EMBEDDING_BATCH_SIZE):
+            embeddings: list[list[float]] = []
+            for start in range(0, len(batch), EMBEDDING_BATCH_SIZE):
+                vectors, _ = _run_async(
+                    generate_embeddings(
+                        session=session,
+                        user_id=user_id,
+                        texts=[
+                            chunk.embedding_text
+                            for chunk in batch[start : start + EMBEDDING_BATCH_SIZE]
+                        ],
+                        model=embedding_model,
+                    )
                 )
-            )
+                embeddings.extend(vectors)
             vector_store.store_note_embeddings(
-                notes=[(note_id, content_hash) for note_id, _, content_hash in batch],
-                embeddings=embeddings,
-                user_id=user_id,
-                model=embedding_model,
+                chunks=batch, embeddings=embeddings, user_id=user_id, model=embedding_model
             )
 
     if include_chats:
@@ -1188,8 +1200,8 @@ def ensure_workspace_embeddings(
                     (message.id, message.session_id, embedding_text, content_hash)
                 )
 
-        for start in range(0, len(stale_messages), 32):
-            batch = stale_messages[start : start + 32]
+        for start in range(0, len(stale_messages), EMBEDDING_BATCH_SIZE):
+            batch = stale_messages[start : start + EMBEDDING_BATCH_SIZE]
             embeddings, _ = _run_async(
                 generate_embeddings(
                     session=session,
@@ -1207,6 +1219,24 @@ def ensure_workspace_embeddings(
                 user_id=user_id,
                 model=embedding_model,
             )
+
+
+def _whole_note_batches(
+    notes: Sequence[Sequence[NoteChunk]], *, max_chunks: int
+) -> Iterator[list[NoteChunk]]:
+    """
+    Group notes into batches of about `max_chunks` chunks without splitting a note:
+    storing a note replaces all of its rows, so its chunks must be stored together.
+    A note longer than `max_chunks` is a batch of its own.
+    """
+    batch: list[NoteChunk] = []
+    for chunks in notes:
+        if batch and len(batch) + len(chunks) > max_chunks:
+            yield batch
+            batch = []
+        batch.extend(chunks)
+    if batch:
+        yield batch
 
 
 def _load_document_map(*, session: Session, document_ids: list[int]) -> dict[int, Document]:

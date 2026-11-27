@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlmodel import Session
 
+from app.ai.chunking import NoteChunk
 from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
 from app.models.chat import ChatMessages, ChatRole, ChatSession
@@ -91,7 +92,10 @@ def test_note_search_ignores_notes_from_another_model(
         session.refresh(note)
         assert note.id is not None
         store.store_note_embeddings(
-            notes=[(note.id, "hash")], embeddings=[_vector()], user_id=_user_id(user), model=model
+            chunks=[NoteChunk(note.id, 0, "body", "body", "hash")],
+            embeddings=[_vector()],
+            user_id=_user_id(user),
+            model=model,
         )
 
     hits = store.note_similarity_search(

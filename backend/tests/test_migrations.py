@@ -41,7 +41,11 @@ def _alembic_config() -> Config:
 def test_embedding_tables_is_the_migration_head() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_current_head() == "0010_account_security"
+    assert script.get_current_head() == "0011_note_chunk_embeddings"
+    assert (
+        script.get_revision("0011_note_chunk_embeddings").down_revision
+        == "0010_account_security"
+    )
     assert (
         script.get_revision("0010_account_security").down_revision == "0009_embedding_tables"
     )
@@ -385,4 +389,37 @@ def test_account_security_migration_rejects_case_duplicates() -> None:
         )
     with engine.begin() as connection:
         connection.execute(text("DELETE FROM users"))
+    command.upgrade(config, "head")
+
+
+def _column_names(connection: Connection, table: str) -> set[str]:
+    # Read from the catalog: reflecting the table warns on pgvector's vector type
+    rows = connection.execute(
+        text("SELECT column_name FROM information_schema.columns WHERE table_name = :table"),
+        {"table": table},
+    )
+    return {row.column_name for row in rows}
+
+
+def test_note_chunk_migration_keys_note_embeddings_by_chunk() -> None:
+    config = _alembic_config()
+    SQLModel.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        columns = _column_names(connection, "note_embeddings")
+        primary_key = inspector.get_pk_constraint("note_embeddings")["constrained_columns"]
+    assert {"chunk_index", "content"} <= columns
+    assert primary_key == ["note_id", "chunk_index"]
+
+    command.downgrade(config, "0010_account_security")
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        columns = _column_names(connection, "note_embeddings")
+        primary_key = inspector.get_pk_constraint("note_embeddings")["constrained_columns"]
+    assert not {"chunk_index", "content"} & columns
+    assert primary_key == ["note_id"]
     command.upgrade(config, "head")
