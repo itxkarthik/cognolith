@@ -9,6 +9,7 @@ from sqlmodel import Session
 
 from app.ai.rag import RAGResult
 from app.core.exceptions import AIServiceUnavailableError
+from app.models.chat import ChatMessages, ChatRole
 from app.models.user import User
 from app.schemas.chat import ChatMessageCreate
 from app.services.chat_service import send_message_and_get_response
@@ -104,9 +105,11 @@ class ChatServiceTests(TestCase):
     def test_chat_history_passes_assistant_source_metadata_to_rag(self) -> None:
         session, current_user, chat_session = _chat_context()
         chat_session.messages = [
-            SimpleNamespace(role="user", content="What are my projects?", sources=None),
-            SimpleNamespace(
-                role="assistant",
+            ChatMessages(id=1, session_id=7, role=ChatRole.user, content="What are my projects?"),
+            ChatMessages(
+                id=2,
+                session_id=7,
+                role=ChatRole.assistant,
                 content="GoTorrent [1]",
                 sources={
                     "documents": [{"document_id": 22}],

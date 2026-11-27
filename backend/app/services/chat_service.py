@@ -18,6 +18,7 @@ from app.models.note import Notes
 from app.models.user import User
 from app.schemas.chat import ChatCreate, ChatMessageCreate
 from app.services.chat_generation import generation_coordinator
+from app.services.chat_history import build_conversation_history
 from app.utils.text_processing import create_content_preview
 
 logger = logging.getLogger(__name__)
@@ -134,18 +135,9 @@ def _generate_and_store_reply(
             session=session,
             current_user=current_user,
             query=payload.content,
-            conversation_history=[
-                {
-                    "role": (
-                        message.role.value
-                        if isinstance(message.role, ChatRole)
-                        else str(message.role)
-                    ),
-                    "content": message.content,
-                    "sources": message.sources,
-                }
-                for message in getattr(chat_session, "messages", [])[-6:]
-            ],
+            conversation_history=build_conversation_history(
+                getattr(chat_session, "messages", [])
+            ),
         )
     except Exception as exc:
         session.rollback()

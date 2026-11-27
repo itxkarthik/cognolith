@@ -18,12 +18,14 @@ from app.ai.rag import PreparedRAGResponse, finalize_prepared_answer, prepare_ra
 from app.core.database import engine
 from app.models.chat import ChatGenerationStatus, ChatMessages, ChatRole, ChatSession
 from app.models.user import User, UserSettings
+from app.services.chat_history import REPLY_TO_KEY, build_conversation_history
 from app.services.generation_coordinator import generation_coordinator
 
 logger = logging.getLogger(__name__)
 
 GENERATION_FAILED_MESSAGE = "The AI response could not be completed."
-REPLY_TO_KEY = "reply_to_message_id"
+# Recent messages read to build the history (several attempts can share one question)
+HISTORY_SCAN_LIMIT = 40
 
 
 def encode_sse(event: str, payload: dict[str, Any]) -> str:
@@ -272,23 +274,17 @@ async def stream_chat_generation(
             },
         )
         try:
-            history_rows = session.exec(
+            # Scan further back than the turns kept: failed drafts and retries are skipped
+            recent_rows = session.exec(
                 select(ChatMessages)
                 .where(
                     ChatMessages.session_id == session_id,
                     col(ChatMessages.id) < user_message_id,
                 )
-                .order_by(col(ChatMessages.created_at).desc())
-                .limit(6)
+                .order_by(col(ChatMessages.created_at).desc(), col(ChatMessages.id).desc())
+                .limit(HISTORY_SCAN_LIMIT)
             ).all()
-            history = [
-                {
-                    "role": row.role.value if isinstance(row.role, ChatRole) else str(row.role),
-                    "content": row.content,
-                    "sources": row.sources,
-                }
-                for row in reversed(history_rows)
-            ]
+            history = build_conversation_history(list(reversed(recent_rows)))
             # Retrieval is synchronous (DB queries + embedding calls); keep it off the
             # event loop so other users' streams aren't stalled while it runs
             prepared = await asyncio.to_thread(
