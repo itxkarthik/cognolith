@@ -1,4 +1,4 @@
-"""Background document processing inside the API process."""
+"""Background document processing, queued in the documents table."""
 
 import asyncio
 import threading
@@ -25,10 +25,41 @@ from app.services.document_processing import (
     document_processor,
 )
 
-# Scheduling (no database)
+# Scheduling
 
 
-def test_processing_is_limited_to_the_configured_concurrency() -> None:
+@pytest.fixture
+def queued(session: Session):
+    """Create `count` documents waiting in the queue; returns (user id, document ids)."""
+
+    def create(count: int) -> tuple[int, list[int]]:
+        user = crud.create_user(
+            session=session,
+            user_create=UserCreate(email="queue@example.com", password="secure-password"),
+        )
+        assert user.id is not None
+        documents = [
+            Document(
+                user_id=user.id,
+                title=f"Doc {index}",
+                file_name="d.txt",
+                file_path="/tmp/d.txt",
+                file_size=1,
+                file_type=".txt",
+                mime_type="text/plain",
+                status="processing",
+            )
+            for index in range(count)
+        ]
+        session.add_all(documents)
+        session.commit()
+        return user.id, [document.id for document in documents if document.id is not None]
+
+    return create
+
+
+def test_processing_is_limited_to_the_configured_concurrency(queued) -> None:
+    user_id, document_ids = queued(5)
     running = 0
     peak = 0
     lock = threading.Lock()
@@ -44,8 +75,8 @@ def test_processing_is_limited_to_the_configured_concurrency() -> None:
 
     async def scenario() -> None:
         processor = DocumentProcessor(concurrency=2, process=process)
-        for document_id in range(1, 6):
-            processor.schedule(user_id=1, document_id=document_id)
+        for document_id in document_ids:
+            processor.schedule(user_id=user_id, document_id=document_id)
         await processor.wait_idle()
 
     asyncio.run(scenario())
@@ -53,7 +84,8 @@ def test_processing_is_limited_to_the_configured_concurrency() -> None:
     assert peak == 2
 
 
-def test_a_document_already_processing_is_not_scheduled_twice() -> None:
+def test_a_document_already_processing_is_not_scheduled_twice(queued) -> None:
+    user_id, [document_id] = queued(1)
     calls: list[int] = []
 
     def process(*, document_id: int, **_: Any) -> None:
@@ -62,35 +94,39 @@ def test_a_document_already_processing_is_not_scheduled_twice() -> None:
 
     async def scenario() -> bool:
         processor = DocumentProcessor(process=process)
-        assert processor.schedule(user_id=1, document_id=7) is True
-        second = processor.schedule(user_id=1, document_id=7)
+        assert processor.schedule(user_id=user_id, document_id=document_id) is True
+        second = processor.schedule(user_id=user_id, document_id=document_id)
         await processor.wait_idle()
         return second
 
     assert asyncio.run(scenario()) is False
-    assert calls == [7]
+    assert calls == [document_id]
 
 
-def test_a_failing_document_does_not_stop_the_others() -> None:
+def test_a_failing_document_does_not_stop_the_others(queued) -> None:
+    user_id, (broken, healthy) = queued(2)
     done: list[int] = []
 
     def process(*, document_id: int, **_: Any) -> None:
-        if document_id == 1:
+        if document_id == broken:
             raise RuntimeError("corrupt file")
         done.append(document_id)
 
     async def scenario() -> None:
         processor = DocumentProcessor(process=process)
-        for document_id in (1, 2):
-            processor.schedule(user_id=1, document_id=document_id)
+        for document_id in (broken, healthy):
+            processor.schedule(user_id=user_id, document_id=document_id)
         await processor.wait_idle()
 
     asyncio.run(scenario())
 
-    assert done == [2]
+    assert done == [healthy]
 
 
-def test_shutdown_stops_in_flight_processing_and_waits_for_it() -> None:
+def test_shutdown_stops_in_flight_processing_and_frees_the_document(
+    session: Session, queued
+) -> None:
+    user_id, [document_id] = queued(1)
     events: list[str] = []
 
     def process(*, stop: threading.Event, **_: Any) -> None:
@@ -102,16 +138,23 @@ def test_shutdown_stops_in_flight_processing_and_waits_for_it() -> None:
 
     async def scenario() -> None:
         processor = DocumentProcessor(process=process)
-        processor.schedule(user_id=1, document_id=1)
-        await asyncio.sleep(0.05)
+        processor.schedule(user_id=user_id, document_id=document_id)
+        await asyncio.sleep(0.1)
         await processor.shutdown()
         # Returned only once the run had stopped
         assert events == ["stopped"]
 
     asyncio.run(scenario())
 
+    session.expire_all()
+    stopped = session.get(Document, document_id)
+    assert stopped is not None
+    # Free for any process to resume at once
+    assert (stopped.status, stopped.processing_lease_until) == ("processing", None)
 
-def test_processing_runs_off_the_event_loop() -> None:
+
+def test_processing_runs_off_the_event_loop(queued) -> None:
+    user_id, [document_id] = queued(1)
     gaps: list[float] = []
 
     def process(**_: Any) -> None:
@@ -119,7 +162,7 @@ def test_processing_runs_off_the_event_loop() -> None:
 
     async def scenario() -> None:
         processor = DocumentProcessor(process=process)
-        processor.schedule(user_id=1, document_id=1)
+        processor.schedule(user_id=user_id, document_id=document_id)
         last = time.perf_counter()
         for _ in range(20):
             await asyncio.sleep(0.01)
@@ -131,6 +174,116 @@ def test_processing_runs_off_the_event_loop() -> None:
     asyncio.run(scenario())
 
     assert max(gaps) < 0.1
+
+
+# Several processes (issue #29): two processors stand in for two processes
+
+
+def test_a_document_is_processed_by_one_process_only(queued) -> None:
+    user_id, document_ids = queued(4)
+    runs: list[tuple[str, int]] = []
+    lock = threading.Lock()
+
+    def processing(name: str):
+        def process(*, document_id: int, **_: Any) -> None:
+            with lock:
+                runs.append((name, document_id))
+            time.sleep(0.05)
+
+        return process
+
+    async def scenario() -> None:
+        first = DocumentProcessor(process=processing("first"))
+        second = DocumentProcessor(process=processing("second"))
+        # Both see every waiting document, as their pollers would
+        for document_id in document_ids:
+            first.schedule(user_id=user_id, document_id=document_id)
+            second.schedule(user_id=user_id, document_id=document_id)
+        await asyncio.gather(first.wait_idle(), second.wait_idle())
+
+    asyncio.run(scenario())
+
+    assert sorted(document_id for _, document_id in runs) == sorted(document_ids)
+
+
+def test_a_crashed_processs_document_is_picked_up_after_its_lease(session: Session, queued) -> None:
+    user_id, [document_id] = queued(1)
+    # A process claimed it, then died without freeing it
+    document = session.get(Document, document_id)
+    assert document is not None
+    session.connection().exec_driver_sql(
+        "UPDATE documents SET processing_lease_until = now() + interval '1 minute'"
+    )
+    session.commit()
+    runs: list[int] = []
+
+    def process(*, document_id: int, **_: Any) -> None:
+        runs.append(document_id)
+
+    async def scenario() -> tuple[int, int]:
+        processor = DocumentProcessor(process=process)
+        while_held = await processor.schedule_waiting()
+        session.connection().exec_driver_sql(
+            "UPDATE documents SET processing_lease_until = now() - interval '1 second'"
+        )
+        session.commit()
+        after_expiry = await processor.schedule_waiting()
+        await processor.wait_idle()
+        return while_held, after_expiry
+
+    assert asyncio.run(scenario()) == (0, 1)
+    assert runs == [document_id]
+
+
+def test_the_poller_picks_up_another_processs_upload(queued) -> None:
+    user_id, [document_id] = queued(1)  # uploaded through another process
+    runs: list[int] = []
+
+    def process(*, session: Session, document_id: int, **_: Any) -> None:
+        runs.append(document_id)
+        document = session.get(Document, document_id)
+        assert document is not None
+        document.status = "completed"  # as real processing ends it
+        session.add(document)
+        session.commit()
+
+    async def scenario() -> None:
+        processor = DocumentProcessor(process=process, poll_seconds=0.02)
+        await processor.start()
+        await asyncio.sleep(0.1)
+        await processor.wait_idle()
+        await processor.shutdown()
+
+    asyncio.run(scenario())
+    # Polled several times, processed once
+    assert runs == [document_id]
+    del user_id
+
+
+def test_runs_waiting_for_a_slot_do_not_start_after_shutdown(session: Session, queued) -> None:
+    user_id, (running, waiting) = queued(2)
+    started: list[int] = []
+
+    def process(*, document_id: int, stop: threading.Event, **_: Any) -> None:
+        started.append(document_id)
+        while not stop.wait(0.01):
+            pass
+        raise ProcessingStoppedError
+
+    async def scenario() -> bool:
+        processor = DocumentProcessor(concurrency=1, process=process)
+        processor.schedule(user_id=user_id, document_id=running)
+        processor.schedule(user_id=user_id, document_id=waiting)
+        await asyncio.sleep(0.1)
+        await processor.shutdown()
+        return processor.schedule(user_id=user_id, document_id=waiting)
+
+    assert asyncio.run(scenario()) is False
+    assert started == [running]
+    session.expire_all()
+    left = session.get(Document, waiting)
+    assert left is not None
+    assert (left.status, left.processing_lease_until) == ("processing", None)
 
 
 # With the database
@@ -218,7 +371,7 @@ async def test_startup_resumes_only_interrupted_documents(session: Session, tmp_
         resumed.append(document_id)
 
     processor = DocumentProcessor(process=process)
-    assert processor.resume_interrupted() == 1
+    assert await processor.schedule_waiting() == 1
     await processor.wait_idle()
 
     assert resumed == [interrupted.id]
@@ -283,9 +436,7 @@ def test_an_embedded_document_is_marked_indexed(session: Session, tmp_path, monk
     assert processed.processing_attempts == 1
 
 
-def test_the_indexer_reindexes_a_failed_document(
-    session: Session, tmp_path, monkeypatch
-) -> None:
+def test_the_indexer_reindexes_a_failed_document(session: Session, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(document_service, "generate_embeddings", _fake_embeddings(fail=True))
     monkeypatch.setattr(document_service, "generate_document_summary", _no_summary)
     monkeypatch.setattr(rag, "generate_embeddings", _fake_embeddings())
@@ -365,7 +516,7 @@ async def test_startup_gives_up_on_a_document_after_repeated_crashes(
         resumed.append(document_id)
 
     processor = DocumentProcessor(process=process)
-    assert processor.resume_interrupted() == 1
+    assert await processor.schedule_waiting() == 1
     await processor.wait_idle()
 
     assert resumed == [retry.id]
@@ -383,3 +534,34 @@ async def _no_summary(**_: Any) -> None:
 def _slow_extract(_: str) -> str:
     time.sleep(0.5)
     return "late text"
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_lost_its_lease_stops_counted_and_leaves_the_new_holder(
+    session: Session, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(document_service, "extract_text_from_file", _slow_extract)
+    user = _user(session)
+    document = _text_document(session, user, tmp_path)
+    assert user.id is not None and document.id is not None
+    # Renews every 0.1 s
+    processor = DocumentProcessor(lease_seconds=0.3)
+    processor.schedule(user_id=user.id, document_id=document.id)
+    await asyncio.sleep(0.05)
+    # The process stalled past its lease and another one claimed the document
+    session.connection().exec_driver_sql(
+        "UPDATE documents SET processing_lease_token = 'other', "
+        "processing_lease_until = now() + interval '1 minute'"
+    )
+    session.commit()
+
+    await asyncio.wait_for(processor.wait_idle(), timeout=5)
+
+    session.expire_all()
+    stalled = session.get(Document, document.id)
+    assert stalled is not None
+    # Stopped before finishing, without touching the new holder's lease
+    assert stalled.status == "processing"
+    assert stalled.processing_lease_token == "other"
+    # A process that stalls on a file uses up an attempt
+    assert stalled.processing_attempts == 1

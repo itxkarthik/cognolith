@@ -25,7 +25,11 @@ from app.core.exceptions import AIServiceUnavailableError
 from app.models.document import Document, DocumentChunks, DocumentEmbeddingStatus
 from app.models.user import User
 from app.schemas.document import DocumentUpdate
-from app.services.document_processing import ProcessingStoppedError, document_processor
+from app.services.document_processing import (
+    ProcessingStoppedError,
+    StopRequest,
+    document_processor,
+)
 from app.utils.file_processing import extract_text_from_file
 from app.utils.file_validation import validate_upload_file
 from app.utils.search import contains_ignoring_case
@@ -245,7 +249,9 @@ def process_existing_document(
         session.refresh(document)
         return document
     except ProcessingStoppedError:
-        _uncount_attempt(session=session, document_id=document_id)
+        session.rollback()
+        if not (isinstance(stop, StopRequest) and stop.lease_lost):
+            _uncount_attempt(session=session, document_id=document_id)
         raise
     except Exception as exc:
         logger.exception(

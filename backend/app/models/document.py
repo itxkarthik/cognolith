@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import ARRAY, String, text
+from sqlalchemy import ARRAY, DateTime, String, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlmodel import Column, Field, Index, Relationship, SQLModel, UniqueConstraint
 
@@ -63,6 +63,13 @@ class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     processing_error: str | None = Field(default=None)
     # Runs started, so a file that crashes the process isn't retried forever
     processing_attempts: int = Field(default=0)
+    # Held by the backend process running this document; past it, any process may
+    # claim it. Written and compared with the database clock only.
+    processing_lease_until: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    # Identifies the current lease, so a holder that lost it can't renew or free it
+    processing_lease_token: str | None = Field(default=None, max_length=32)
     embedding_status: DocumentEmbeddingStatus = Field(
         default=DocumentEmbeddingStatus.pending,
         sa_column=Column(String(20), nullable=False, server_default="pending"),

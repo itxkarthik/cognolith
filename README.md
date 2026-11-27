@@ -404,7 +404,7 @@ docker compose -f docker-compose.production.yml exec backend python -m scripts.c
 
 Deployment notes:
 
-- Run a single backend process (the default `python run.py`). Chat generation locks, cancel signals and rate limits are kept in memory.
+- Chat generation claims, cancel requests and the document processing queue are kept in PostgreSQL, so `BACKEND_WORKERS` can be raised above 1, or the backend run as several replicas. Either way rate limits need `REDIS_URL`, since in-memory counters are per process. The backend refuses to start with several workers and no reachable Redis; it cannot tell that it has replicas, so set `REDIS_URL` for those yourself. Several workers also need a fixed `SECRET_KEY`, so every worker accepts the same sign-ins. The chat WebSocket endpoint (not used by the web app) relays only between clients connected to the same process.
 - The Compose network uses the fixed subnet `172.30.0.0/24` so the backend can trust the frontend's forwarded client IP. Recreate the stack with `down` and `up -d` after upgrading from a release without it.
 - If another reverse proxy (nginx, Caddy) sits in front of the frontend, add its address to `FORWARDED_ALLOW_IPS`, or every user shares one rate-limit bucket.
 - Use `scripts.reindex_embeddings` when changing to an embedding model with a different vector size; the backend refuses to start until the sizes match.

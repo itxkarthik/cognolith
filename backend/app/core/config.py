@@ -105,12 +105,21 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_secret_key(self) -> Self:
-        """Require SECRET_KEY outside local mode; generate an ephemeral key locally."""
+        """
+        Require SECRET_KEY outside local mode, or with several workers; otherwise
+        generate an ephemeral key.
+        """
         if not self.SECRET_KEY:
-            # Staging too: an ephemeral key differs per worker and per restart
-            if self.ENVIRONMENT != "local":
+            # An ephemeral key differs per worker and per restart: with several
+            # workers a token signed by one would be refused by the others
+            if self.ENVIRONMENT != "local" or self.BACKEND_WORKERS > 1:
+                context = (
+                    self.ENVIRONMENT
+                    if self.ENVIRONMENT != "local"
+                    else f"with {self.BACKEND_WORKERS} workers"
+                )
                 raise ValueError(
-                    f"SECRET_KEY environment variable must be set in {self.ENVIRONMENT}. "
+                    f"SECRET_KEY environment variable must be set in {context}. "
                     'Generate a secure key with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
                 )
             # Local development: generate ephemeral key (sessions won't persist across restarts)
@@ -264,9 +273,12 @@ class Settings(BaseSettings):
     # (nomic-embed-text: 768). HNSW indexes support at most 2000.
     EMBEDDING_DIMENSIONS: int = Field(default=768, ge=1, le=2000)
 
-    # Redis for distributed rate limiting (required in multi-worker deployments)
-    # Set via REDIS_URL environment variable, e.g., redis://localhost:6379/0
+    # Redis for rate limiting shared across processes, e.g. redis://localhost:6379/0.
+    # Required when BACKEND_WORKERS > 1; one process keeps its counters in memory.
     REDIS_URL: str | None = None
+    # Uvicorn worker processes. Chat claims and the document queue live in Postgres;
+    # rate limits need REDIS_URL. Separate replicas need REDIS_URL just the same.
+    BACKEND_WORKERS: int = Field(default=1, ge=1)
     # Uploads processed at once in the background; extraction is CPU-bound
     DOCUMENT_PROCESSING_CONCURRENCY: int = Field(default=2, ge=1)
     # Text extraction longer than this fails the document instead of holding a slot

@@ -4,6 +4,7 @@ import asyncio
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -233,3 +234,72 @@ async def test_leaving_while_the_reply_is_starting_releases_its_claim(
             break
     assert not generation_coordinator.is_session_active(chat_session_id)
     assert _reply(session, chat_session_id).generation_status == ChatGenerationStatus.cancelled
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_model")
+async def test_the_session_is_free_when_the_client_sees_the_final_event(
+    chat: tuple[int, int],
+) -> None:
+    user_id, chat_session_id = chat
+    stream = stream_new_reply(user_id=user_id, session_id=chat_session_id, content="Question")
+
+    async for sse in stream:
+        if sse.startswith("event: completed"):
+            # The client may send its next message right away
+            busy = await asyncio.to_thread(
+                generation_coordinator.is_session_active, chat_session_id
+            )
+            assert not busy
+            break
+    else:
+        pytest.fail("the stream never completed")
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_model")
+async def test_a_client_leaving_while_the_release_waits_for_a_thread_still_frees_the_session(
+    chat: tuple[int, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id, chat_session_id = chat
+    # One worker thread, busy from right after the final write: the release that
+    # follows waits in the queue, where cancelling the stream would drop it
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(executor)
+    final_written = threading.Event()
+    gate = threading.Event()
+    original_finish_reply = chat_generation._finish_reply  # pyright: ignore[reportPrivateUsage]
+
+    def finish_reply_then_hold_the_thread(*args: Any, **kwargs: Any) -> Any:
+        result = original_finish_reply(*args, **kwargs)
+        if kwargs.get("generation_status") == ChatGenerationStatus.completed:
+            # Queued before the stream resumes, so its release queues behind it
+            loop.call_soon_threadsafe(loop.run_in_executor, None, gate.wait, 5)
+            final_written.set()
+        return result
+
+    monkeypatch.setattr(chat_generation, "_finish_reply", finish_reply_then_hold_the_thread)
+    consuming = asyncio.create_task(
+        _collect(stream_new_reply(user_id=user_id, session_id=chat_session_id, content="Q"))
+    )
+    for _ in range(500):
+        if final_written.is_set():
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)  # the stream moves on to the release, which queues
+
+    consuming.cancel()  # the client disconnects
+    with pytest.raises(asyncio.CancelledError):
+        await consuming
+    gate.set()
+
+    try:
+        for _ in range(100):
+            if not generation_coordinator.is_session_active(chat_session_id):
+                break
+            await asyncio.sleep(0.02)
+        assert not generation_coordinator.is_session_active(chat_session_id)
+    finally:
+        executor.shutdown(wait=True)

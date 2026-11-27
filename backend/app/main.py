@@ -8,7 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlmodel import Session
 
 from app.ai.embedding_validation import validate_embedding_setup
 from app.api.main import api_router
@@ -16,7 +15,7 @@ from app.api.routes.test import router as test_router
 from app.core.cache_middleware import ETagAndCacheMiddleware
 from app.core.config import settings
 from app.core.csrf import CSRFMiddleware
-from app.core.database import engine, test_db_connection
+from app.core.database import test_db_connection
 from app.core.exceptions import AppError, global_exception_handler
 from app.core.middleware import (
     MaxRequestBodySizeMiddleware,
@@ -27,7 +26,7 @@ from app.core.middleware import (
 )
 from app.core.rate_limit import limiter
 from app.services.backup_scheduler import BackupScheduler
-from app.services.chat_generation import fail_interrupted_generations
+from app.services.chat_generation import abandoned_reply_sweeper
 from app.services.document_processing import document_processor
 from app.services.maintenance_scheduler import MaintenanceScheduler
 from app.services.workspace_indexer import workspace_indexer
@@ -53,16 +52,12 @@ async def lifespan(_: FastAPI):
 
         await validate_embedding_setup()
 
-        # Replies cut off by the last shutdown or crash become retryable
-        with Session(engine) as session:
-            interrupted = fail_interrupted_generations(session)
-        if interrupted:
-            logger.info("Marked %s interrupted chat repl(ies) as failed", interrupted)
+        # Replies cut off by a stopped or crashed process become retryable
+        await abandoned_reply_sweeper.start()
 
-        # Uploads interrupted by the last shutdown or crash are processed again
-        resumed = document_processor.resume_interrupted()
-        if resumed:
-            logger.info("Resumed processing of %s interrupted document(s)", resumed)
+        # Processes documents waiting in the queue: new uploads, and those of a
+        # stopped or crashed process
+        await document_processor.start()
 
         await backup_scheduler.start()
         await maintenance_scheduler.start()
@@ -78,6 +73,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await workspace_indexer.stop()
+        await abandoned_reply_sweeper.stop()
         await maintenance_scheduler.stop()
         await backup_scheduler.stop()
         await document_processor.shutdown()

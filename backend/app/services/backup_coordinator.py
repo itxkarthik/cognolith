@@ -43,7 +43,7 @@ from app.services.backup_store import (
     is_valid_stored_backup,
     prune_successful_backups,
 )
-from app.services.document_service import process_existing_document
+from app.services.document_processing import document_processor
 from app.services.google_drive_oauth import GoogleDriveOAuthService, derive_drive_owner_id
 from app.services.google_drive_store import (
     GoogleDriveReauthorizationRequiredError,
@@ -105,12 +105,14 @@ class BackupImporterFactory(Protocol):
     def __call__(self, session: Session) -> BackupImporterProtocol: ...
 
 
-class RestoredDocumentProcessor(Protocol):
-    """Blocking; called in a worker thread."""
+class RestoredDocumentScheduler(Protocol):
+    """Queues a restored document for processing; called on the event loop."""
 
-    def __call__(
-        self, session: Session, user_id: int, document_id: int
-    ) -> Any: ...
+    def __call__(self, user_id: int, document_id: int) -> Any: ...
+
+
+def _schedule_on_processor(user_id: int, document_id: int) -> bool:
+    return document_processor.schedule(user_id=user_id, document_id=document_id)
 
 
 class BackupCoordinator:
@@ -124,7 +126,7 @@ class BackupCoordinator:
         exporter_factory: BackupExporterFactory | None = None,
         importer_factory: BackupImporterFactory | None = None,
         store_factory: BackupStoreFactory | None = None,
-        document_processor: RestoredDocumentProcessor | None = None,
+        schedule_document: RestoredDocumentScheduler | None = None,
         clock: Callable[[], datetime] | None = None,
         temporary_directory: Path | None = None,
         close_sessions: bool = True,
@@ -136,7 +138,7 @@ class BackupCoordinator:
             lambda session: BackupImporter(session=session)
         )
         self.store_factory = store_factory or _default_store_factory
-        self.document_processor = document_processor or process_existing_document
+        self.schedule_document = schedule_document or _schedule_on_processor
         self.clock = clock or (lambda: datetime.now(UTC))
         self.temporary_directory = Path(temporary_directory or settings.BACKUP_TEMP_DIR)
         self.close_sessions = close_sessions
@@ -366,10 +368,8 @@ class BackupCoordinator:
                             operation=operation,
                             completed_at=self.clock(),
                         )
-                        await self._reprocess_restored_documents(
-                            session,
-                            user_id,
-                            restore_result.reprocessing_document_ids,
+                        self._reprocess_restored_documents(
+                            user_id, restore_result.reprocessing_document_ids
                         )
                         return BackupOperationStatusResponse(
                             status=operation.status,
@@ -401,17 +401,14 @@ class BackupCoordinator:
                 if locked_user_id is not None:
                     self._release_session_lock(lock_session, locked_user_id)
 
-    async def _reprocess_restored_documents(
-        self,
-        session: Session,
-        user_id: int,
-        document_ids: list[int],
-    ) -> None:
+    def _reprocess_restored_documents(self, user_id: int, document_ids: list[int]) -> None:
+        """
+        Queue restored documents like uploads. Processing them here would race the
+        queue, which picks up every document left "processing".
+        """
         for document_id in document_ids:
             try:
-                await asyncio.to_thread(
-                    self.document_processor, session, user_id, document_id
-                )
+                self.schedule_document(user_id, document_id)
             except Exception:
                 logger.exception(
                     "Restored document reprocessing failed",

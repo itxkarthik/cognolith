@@ -1468,9 +1468,7 @@ def coordinator_restore(
     exporter = CoordinatorExporter(now)
     processed_document_ids: list[int] = []
 
-    def process_document(
-        session: Session, user_id: int, document_id: int
-    ) -> None:
+    def process_document(user_id: int, document_id: int) -> None:
         assert user_id == user.id
         processed_document_ids.append(document_id)
 
@@ -1481,7 +1479,7 @@ def coordinator_restore(
         exporter_factory=lambda session: exporter,
         importer_factory=lambda session: importer,
         store_factory=lambda session, user, connection: store,
-        document_processor=process_document,
+        schedule_document=process_document,
         clock=lambda: now,
         temporary_directory=tmp_path / "coordinator-temp",
         close_sessions=False,

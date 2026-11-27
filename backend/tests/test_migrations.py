@@ -41,7 +41,11 @@ def _alembic_config() -> Config:
 def test_embedding_tables_is_the_migration_head() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_current_head() == "0015_full_text_search_vectors"
+    assert script.get_current_head() == "0016_multi_process_coordination"
+    assert (
+        script.get_revision("0016_multi_process_coordination").down_revision
+        == "0015_full_text_search_vectors"
+    )
     assert (
         script.get_revision("0015_full_text_search_vectors").down_revision
         == "0014_note_client_request_id"
