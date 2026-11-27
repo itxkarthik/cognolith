@@ -51,6 +51,25 @@ class FolderCreate(BaseModel):
         return sanitize_plain_text(value)
 
 
+class FolderUpdate(BaseModel):
+    """Fields left out are unchanged; `parent_folder_id: null` moves the folder to the root."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    parent_folder_id: int | None = None
+    color: str | None = Field(default=None, max_length=20)
+    icon: str | None = Field(default=None, max_length=50)
+    emoji: str | None = Field(default=None, max_length=10)
+
+    @field_validator("name", "description", "color", "icon", "emoji", mode="before")
+    @classmethod
+    def sanitize_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        validate_no_xss(value)
+        return sanitize_plain_text(value)
+
+
 class TagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     color: str | None = Field(default=None, max_length=20)

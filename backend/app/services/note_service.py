@@ -3,14 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import ColumnElement, func, update
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, or_, select
 
 from app.models.document import Document
 from app.models.note import NoteFolders, NoteLinks, NoteLinkType, Notes, NoteTagRelations, NoteTags
 from app.models.user import User
-from app.schemas.note import FolderCreate, NoteCreate, NoteUpdate, TagCreate
+from app.schemas.note import FolderCreate, FolderUpdate, NoteCreate, NoteUpdate, TagCreate
 from app.utils.sanitization import strip_all_html
 from app.utils.search import contains_ignoring_case
 from app.utils.text_processing import (
@@ -271,6 +271,9 @@ def soft_delete_note(*, session: Session, current_user: User, note_id: int) -> N
 def create_folder(*, session: Session, current_user: User, payload: FolderCreate) -> NoteFolders:
     user_id = _require_persisted_id(current_user.id, "User")
     _validate_folder_access(session=session, user_id=user_id, folder_id=payload.parent_folder_id)
+    _ensure_folder_name_free(
+        session=session, user_id=user_id, parent_id=payload.parent_folder_id, name=payload.name
+    )
     folder = NoteFolders(
         user_id=user_id,
         name=payload.name,
@@ -286,19 +289,140 @@ def create_folder(*, session: Session, current_user: User, payload: FolderCreate
     return folder
 
 
+def update_folder(
+    *, session: Session, current_user: User, folder_id: int, payload: FolderUpdate
+) -> NoteFolders:
+    user_id = _require_persisted_id(current_user.id, "User")
+    folder = _get_folder(session=session, user_id=user_id, folder_id=folder_id)
+    changes = payload.model_dump(exclude_unset=True)
+    if "name" in changes and changes["name"] is None:
+        raise HTTPException(status_code=422, detail="Folder name cannot be empty")
+
+    parent_id = changes.get("parent_folder_id", folder.parent_folder_id)
+    if "parent_folder_id" in changes and parent_id is not None:
+        _validate_folder_access(session=session, user_id=user_id, folder_id=parent_id)
+        if parent_id in _folder_subtree_ids(session=session, user_id=user_id, root_id=folder_id):
+            raise HTTPException(
+                status_code=409, detail="A folder can't be moved into itself or its subfolders"
+            )
+    name = changes.get("name", folder.name)
+    if name != folder.name or parent_id != folder.parent_folder_id:
+        _ensure_folder_name_free(
+            session=session, user_id=user_id, parent_id=parent_id, name=name, exclude_id=folder_id
+        )
+
+    for field, value in changes.items():
+        setattr(folder, field, value)
+    session.add(folder)
+    session.commit()
+    session.refresh(folder)
+    return folder
+
+
 def delete_folder(*, session: Session, current_user: User, folder_id: int) -> None:
+    """
+    Delete a folder and move its notes and subfolders up to its parent (the root for a
+    top-level folder), in one transaction. Nothing inside is hidden or lost; a subfolder
+    whose name is taken in the parent gets a numbered suffix.
+    """
+    user_id = _require_persisted_id(current_user.id, "User")
+    folder = _get_folder(session=session, user_id=user_id, folder_id=folder_id)
+    parent_id = folder.parent_folder_id
+
+    session.exec(
+        update(Notes)
+        .where(col(Notes.user_id) == user_id, col(Notes.folder_id) == folder_id)
+        .values(folder_id=parent_id)
+    )
+    children = session.exec(
+        select(NoteFolders)
+        .where(NoteFolders.user_id == user_id, NoteFolders.parent_folder_id == folder_id)
+        .order_by(col(NoteFolders.name).asc(), col(NoteFolders.id).asc())
+    ).all()
+    taken = _folder_names(session=session, user_id=user_id, parent_id=parent_id)
+    for child in children:
+        child.name = _unique_folder_name(child.name, taken)
+        taken.add(child.name)
+        child.parent_folder_id = parent_id
+        session.add(child)
+    # Write the moves first: `subfolders` cascades delete-orphan, so the folder must
+    # have no children left when it is deleted
+    session.flush()
+    session.expire(folder, ["subfolders", "notes"])
+    # The emptied row is removed rather than flagged: a flagged row would still hold
+    # its name in the unique (user, name, parent) constraint
+    session.delete(folder)
+    session.commit()
+
+
+def _get_folder(*, session: Session, user_id: int, folder_id: int) -> NoteFolders:
     folder = session.exec(
         select(NoteFolders).where(
             NoteFolders.id == folder_id,
-            NoteFolders.user_id == current_user.id,
+            NoteFolders.user_id == user_id,
             col(NoteFolders.is_deleted).is_not(True),
         )
     ).first()
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
-    folder.is_deleted = True
-    session.add(folder)
-    session.commit()
+    return folder
+
+
+def _in_folder_parent(parent_id: int | None) -> ColumnElement[bool]:
+    column = col(NoteFolders.parent_folder_id)
+    return column.is_(None) if parent_id is None else column == parent_id
+
+
+def _folder_names(*, session: Session, user_id: int, parent_id: int | None) -> set[str]:
+    # Soft-deleted rows count: the unique constraint covers them too
+    return set(
+        session.exec(
+            select(NoteFolders.name).where(
+                NoteFolders.user_id == user_id, _in_folder_parent(parent_id)
+            )
+        ).all()
+    )
+
+
+def _ensure_folder_name_free(
+    *,
+    session: Session,
+    user_id: int,
+    parent_id: int | None,
+    name: str,
+    exclude_id: int | None = None,
+) -> None:
+    statement = select(NoteFolders.id).where(
+        NoteFolders.user_id == user_id, NoteFolders.name == name, _in_folder_parent(parent_id)
+    )
+    if exclude_id is not None:
+        statement = statement.where(NoteFolders.id != exclude_id)
+    if session.exec(statement).first() is not None:
+        raise HTTPException(status_code=409, detail="A folder with this name already exists here")
+
+
+def _unique_folder_name(name: str, taken: set[str]) -> str:
+    if name not in taken:
+        return name
+    suffix = 2
+    while f"{name} ({suffix})" in taken:
+        suffix += 1
+    return f"{name} ({suffix})"
+
+
+def _folder_subtree_ids(*, session: Session, user_id: int, root_id: int) -> set[int]:
+    """The folder and all folders below it."""
+    subtree = {root_id}
+    frontier = {root_id}
+    while frontier:
+        children = session.exec(
+            select(NoteFolders.id).where(
+                NoteFolders.user_id == user_id, col(NoteFolders.parent_folder_id).in_(frontier)
+            )
+        ).all()
+        frontier = {child for child in children if child is not None} - subtree
+        subtree |= frontier
+    return subtree
 
 
 def move_note_to_folder(
