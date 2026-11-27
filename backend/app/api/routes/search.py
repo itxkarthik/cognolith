@@ -143,6 +143,7 @@ def unified_search(
             best_documents: dict[int, tuple[float, str]] = {}
             for hit in vector_store.similarity_search(
                 user_id=current_user.id,
+                model=embedding_model,
                 query_embedding=query_embedding,
                 top_k=SEARCH_CANDIDATE_LIMIT,
                 similarity_threshold=SEMANTIC_SIMILARITY_THRESHOLD,
@@ -192,6 +193,7 @@ def unified_search(
             best_notes: dict[int, tuple[float, str]] = {}
             for hit in vector_store.note_similarity_search(
                 user_id=current_user.id,
+                model=embedding_model,
                 query_embedding=query_embedding,
                 top_k=SEARCH_CANDIDATE_LIMIT,
                 similarity_threshold=SEMANTIC_SIMILARITY_THRESHOLD,
@@ -240,6 +242,7 @@ def unified_search(
         if "chat" in enabled_types:
             chat_hits = vector_store.chat_similarity_search(
                 user_id=current_user.id,
+                model=embedding_model,
                 query_embedding=query_embedding,
                 top_k=SEARCH_CANDIDATE_LIMIT,
                 similarity_threshold=SEMANTIC_SIMILARITY_THRESHOLD,

@@ -431,6 +431,7 @@ class PgVectorStore:
         self,
         *,
         user_id: int,
+        model: str,
         query_embedding: Sequence[float],
         top_k: int = 5,
         similarity_threshold: float | None = None,
@@ -441,9 +442,11 @@ class PgVectorStore:
 
         self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
-        where_clauses = ["ce.user_id = :user_id"]
+        # Vectors from another model live in a different space even at equal dimensions
+        where_clauses = ["ce.user_id = :user_id", "ce.model = :model"]
         params: dict[str, object] = {
             "user_id": user_id,
+            "model": model,
             "embedding": embedding_literal,
             "top_k": max(1, top_k),
         }
@@ -491,6 +494,7 @@ class PgVectorStore:
         self,
         *,
         user_id: int,
+        model: str,
         query_embedding: Sequence[float],
         top_k: int = 5,
         similarity_threshold: float | None = None,
@@ -501,9 +505,10 @@ class PgVectorStore:
 
         self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
-        where_clauses = ["ne.user_id = :user_id", "n.is_deleted = FALSE"]
+        where_clauses = ["ne.user_id = :user_id", "ne.model = :model", "n.is_deleted = FALSE"]
         params: dict[str, object] = {
             "user_id": user_id,
+            "model": model,
             "embedding": embedding_literal,
             "top_k": max(1, top_k),
         }
@@ -707,6 +712,7 @@ class PgVectorStore:
         self,
         *,
         user_id: int,
+        model: str,
         query_embedding: Sequence[float],
         top_k: int = 20,
         similarity_threshold: float | None = None,
@@ -718,9 +724,10 @@ class PgVectorStore:
 
         self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
-        where_clauses = ["cme.user_id = :user_id"]
+        where_clauses = ["cme.user_id = :user_id", "cme.model = :model"]
         params: dict[str, object] = {
             "user_id": user_id,
+            "model": model,
             "embedding": embedding_literal,
             "top_k": max(1, top_k),
         }

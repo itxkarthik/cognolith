@@ -324,6 +324,7 @@ def prepare_rag_pipeline(
         vector_store=vector_store,
         user_id=user_id,
         query_embedding=query_embedding,
+        embedding_model=embedding_model,
         query=retrieval_query,
         lexical_query=lexical_query,
         retrieval_limit=max(20, top_k * 4),
@@ -340,6 +341,7 @@ def prepare_rag_pipeline(
             vector_store=vector_store,
             user_id=user_id,
             query_embedding=query_embedding,
+            embedding_model=embedding_model,
             query=retrieval_query,
             lexical_query=lexical_query,
             retrieval_limit=max(20, top_k * 4),
@@ -764,6 +766,7 @@ def _search_ranked_sources(
     vector_store: PgVectorStore,
     user_id: int,
     query_embedding: Sequence[float],
+    embedding_model: str,
     query: str,
     lexical_query: LexicalQuery,
     retrieval_limit: int,
@@ -777,6 +780,7 @@ def _search_ranked_sources(
     chunk_hits = (
         vector_store.similarity_search(
             user_id=user_id,
+            model=embedding_model,
             query_embedding=query_embedding,
             top_k=retrieval_limit,
             similarity_threshold=None,
@@ -788,6 +792,7 @@ def _search_ranked_sources(
     note_hits = (
         vector_store.note_similarity_search(
             user_id=user_id,
+            model=embedding_model,
             query_embedding=query_embedding,
             top_k=retrieval_limit,
             similarity_threshold=None,
