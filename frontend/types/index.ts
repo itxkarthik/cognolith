@@ -127,6 +127,8 @@ export interface NoteCreate {
 	is_pinned?: boolean;
 	linked_document_id?: number | null;
 	linked_chat_session_id?: number | null;
+	// Set on creates queued offline, so a repeated send returns the same note
+	client_request_id?: string;
 }
 
 export interface NoteUpdate {

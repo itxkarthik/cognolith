@@ -143,3 +143,35 @@ describe("offline edits refused on replay", () => {
     expect(getNoteById).not.toHaveBeenCalled();
   });
 });
+
+describe("refused offline edits for several notes", () => {
+  const OWNER = 7;
+
+  beforeEach(() => {
+    getNoteById.mockReset();
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+      removeItem: (key: string) => void stored.delete(key),
+    });
+    useAuthStore.setState({ user: { id: OWNER } as User, isAuthenticated: true });
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("show the opened note's edits even while another note has a conflict", async () => {
+    saveConflictDraft(1, OWNER, { content: "A offline" });
+    saveConflictDraft(2, OWNER, { content: "B offline" });
+    getNoteById.mockImplementation(async (id) => ({ ...note(5), id }));
+    useNoteStore.setState({ selectedNote: note(1), noteConflict: null });
+    await useNoteStore.getState().restoreNoteConflict(1);
+
+    useNoteStore.setState({ selectedNote: { ...note(5), id: 2 } });
+    await useNoteStore.getState().restoreNoteConflict(2);
+
+    expect(useNoteStore.getState().noteConflict).toMatchObject({ noteId: 2, draft: { content: "B offline" } });
+    // A's edits are still kept for when it is opened again
+    expect(loadConflictDraft(1, OWNER)).toEqual({ content: "A offline" });
+  });
+});

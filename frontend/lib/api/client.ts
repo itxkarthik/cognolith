@@ -120,6 +120,18 @@ declare module "axios" {
 	}
 }
 
+// Note creates are the one queued write a repeat would duplicate (a replay whose response
+// was lost, or two tabs without Web Locks). The key makes the server return the note
+// the first send created.
+const NOTE_CREATE_URL = /^\/notes\/?$/;
+
+function withCreateKey(method: string, url: string, data: unknown): unknown {
+	if (method !== "POST" || !NOTE_CREATE_URL.test(url)) return data;
+	if (typeof data !== "object" || data === null || Array.isArray(data) || "client_request_id" in data) return data;
+	const key = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+	return { ...data, client_request_id: key };
+}
+
 apiClient.interceptors.request.use((config) => {
 	const isOnline = typeof navigator === "undefined" || navigator.onLine;
 	const method = (config.method ?? "get").toUpperCase();
@@ -136,7 +148,7 @@ apiClient.interceptors.request.use((config) => {
 				})
 			);
 		}
-		requestQueue.add(ownerId, method, url, { data: config.data, params: config.params });
+		requestQueue.add(ownerId, method, url, { data: withCreateKey(method, url, config.data), params: config.params });
 		return Promise.reject(
 			new APIRequestError("Saved offline; it will sync when the connection is back.", {
 				statusCode: 0,
@@ -214,7 +226,10 @@ function refreshSession(): Promise<void> {
 
 apiClient.interceptors.response.use(
 	(response) => response,
-	async (error: AxiosError<ApiError>) => {
+	async (error: AxiosError<ApiError> | APIRequestError) => {
+		// Raised by the request interceptor (offline): already final, and wrapping it
+		// again would drop its errorCode (OFFLINE, OFFLINE_QUEUED)
+		if (error instanceof APIRequestError) return Promise.reject(error);
 		const originalRequest = error.config as RequestWithRetry | undefined;
 
 		// Handle token refresh on 401

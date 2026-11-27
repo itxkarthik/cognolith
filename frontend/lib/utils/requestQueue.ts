@@ -77,6 +77,8 @@ export class RequestQueue {
   private readonly loaded: Promise<void>;
   // Persistence runs in order, so a delete never lands before the put it follows
   private writes: Promise<void> = Promise.resolve();
+  // Ids added, merged into or removed while the stored queue is being read
+  private changedDuringSync: Set<string> | null = null;
 
   constructor(
     private readonly storage: QueueStorage,
@@ -114,8 +116,7 @@ export class RequestQueue {
             ? { ...pending.data, ...plainCopy(config.data) }
             : plainCopy(config.data);
         const merged: QueuedRequest = { ...pending, data, params: plainCopy(config.params) };
-        this.queue.set(pending.id, merged);
-        this.persist(() => this.storage.put(merged));
+        this.set(merged);
         return pending.id;
       }
     }
@@ -128,14 +129,20 @@ export class RequestQueue {
       params: plainCopy(config.params),
       timestamp: Date.now(),
     };
-    this.queue.set(request.id, request);
-    this.persist(() => this.storage.put(request));
+    this.set(request);
     return request.id;
   }
 
   remove(id: string): void {
     this.queue.delete(id);
+    this.changedDuringSync?.add(id);
     this.persist(() => this.storage.delete(id));
+  }
+
+  private set(request: QueuedRequest): void {
+    this.queue.set(request.id, request);
+    this.changedDuringSync?.add(request.id);
+    this.persist(() => this.storage.put(request));
   }
 
   getAll(): QueuedRequest[] {
@@ -195,17 +202,22 @@ export class RequestQueue {
    */
   private async syncFromStorage(): Promise<void> {
     await this.writes;
-    const known = new Set(this.queue.keys());
+    const changed = new Set<string>();
+    this.changedDuringSync = changed;
     let stored: QueuedRequest[];
     try {
       stored = await this.storage.load();
     } catch {
       return; // storage unavailable: this tab's own copy is all there is
+    } finally {
+      this.changedDuringSync = null;
     }
     const synced = new Map(stored.map((request) => [request.id, request]));
-    // Keep writes this tab queued while the storage was being read
-    for (const [id, request] of this.queue) {
-      if (!known.has(id) && !synced.has(id)) synced.set(id, request);
+    // What this tab changed during the read is newer than what the read returned
+    for (const id of changed) {
+      const current = this.queue.get(id);
+      if (current) synced.set(id, current);
+      else synced.delete(id);
     }
     this.queue = synced;
   }

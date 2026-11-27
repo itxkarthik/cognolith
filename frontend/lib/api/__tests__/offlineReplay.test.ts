@@ -1,8 +1,10 @@
 import type { AxiosAdapter } from "axios";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { apiClient, onOfflineReplay, processOfflineQueue, type OfflineReplayResult } from "../client";
 import { requestQueue } from "@/lib/utils/requestQueue";
+import { useAuthStore } from "@/store/authStore";
+import type { User } from "@/types";
 
 const OWNER = 7;
 const originalAdapter = apiClient.defaults.adapter;
@@ -75,5 +77,23 @@ describe("replaying the offline queue", () => {
     await processOfflineQueue();
 
     expect(requestQueue.size()).toBe(1);
+  });
+
+  it("gives a note create queued offline a key, so a repeat returns the same note", async () => {
+    useAuthStore.setState({ user: { id: OWNER } as User, isAuthenticated: true });
+    vi.stubGlobal("navigator", { onLine: false });
+    try {
+      await expect(apiClient.post("/notes/", { title: "Offline", content: "body" })).rejects.toMatchObject({
+        errorCode: "OFFLINE_QUEUED",
+      });
+      await apiClient.patch("/notes/4", { content: "edit" }).catch(() => undefined);
+    } finally {
+      vi.unstubAllGlobals();
+      useAuthStore.setState({ user: null, isAuthenticated: false });
+    }
+
+    const [create, edit] = requestQueue.getAll();
+    expect(create.data).toMatchObject({ title: "Offline", client_request_id: expect.stringMatching(/^[A-Za-z0-9-]{8,64}$/) });
+    expect(edit.data).toEqual({ content: "edit" });
   });
 });

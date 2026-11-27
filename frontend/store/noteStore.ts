@@ -293,7 +293,9 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 		const draft = ownerId === undefined ? null : loadConflictDraft(id, ownerId);
 		if (!draft) return;
 		const latest = await getNoteById(id);
-		if (!get().noteConflict) set({ noteConflict: { noteId: id, latest, draft } });
+		// The open note's conflict takes the banner. Another note's refused edits stay
+		// stored and come back when that note is opened again.
+		if (get().selectedNote?.id === id) set({ noteConflict: { noteId: id, latest, draft } });
 	},
 
 	deleteNoteById: async (id) => {

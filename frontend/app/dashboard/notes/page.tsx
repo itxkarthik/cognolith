@@ -15,7 +15,7 @@ import {
   extractWikiLinkTitles,
   markdownToPlainText,
 } from "@/lib/markdown";
-import type { NoteDraftUpdate } from "@/store/noteStore";
+import type { NoteConflict, NoteDraftUpdate } from "@/store/noteStore";
 import type { NoteResponse } from "@/types";
 
 function formatDateTime(value: string): string {
@@ -64,6 +64,13 @@ function draftFromConflict(draft: NoteDraftUpdate, latest: NoteResponse): DraftS
     content: draft.content ?? server.content,
     tagIds: draft.tag_ids ?? server.tagIds,
   };
+}
+
+// The draft an editor starts from: offline edits the server refused (e.g. after a
+// reload) when there are some, so "Keep mine" saves what was typed; else the note
+function startingDraft(note: NoteResponse, conflict: NoteConflict | null): DraftState {
+  if (conflict?.noteId === note.id && conflict.draft) return draftFromConflict(conflict.draft, conflict.latest);
+  return draftFromNote(note);
 }
 
 export default function NotesPage() {
@@ -118,14 +125,7 @@ export default function NotesPage() {
       return EMPTY_DRAFT;
     }
 
-    const edited = draftsByNoteId[selectedNote.id];
-    if (edited) return edited;
-    // Offline edits the server refused (e.g. after a reload): show them, so "Keep
-    // mine" saves what was typed rather than the server copy
-    if (noteConflict?.noteId === selectedNote.id && noteConflict.draft) {
-      return draftFromConflict(noteConflict.draft, noteConflict.latest);
-    }
-    return draftFromNote(selectedNote);
+    return draftsByNoteId[selectedNote.id] ?? startingDraft(selectedNote, noteConflict);
   }, [draftsByNoteId, noteConflict, selectedNote]);
 
   useEffect(() => {
@@ -164,14 +164,15 @@ export default function NotesPage() {
       if (!selectedNote) return;
 
       setDraftsByNoteId((prev) => {
-        const current = prev[selectedNote.id] ?? draftFromNote(selectedNote);
+        // Start from what the editor shows, recovered offline edits included
+        const current = prev[selectedNote.id] ?? startingDraft(selectedNote, noteConflict);
         return {
           ...prev,
           [selectedNote.id]: updater(current),
         };
       });
     },
-    [selectedNote]
+    [noteConflict, selectedNote]
   );
 
   const saveDraft = useCallback(

@@ -97,6 +97,38 @@ describe("offline request queue", () => {
     expect(await storage.load()).toEqual([]);
   });
 
+  it("keeps an edit merged in while the shared queue is being read", async () => {
+    const stored = memoryStorage();
+    let releaseLoad = () => {};
+    let holdLoads = false;
+    const storage: QueueStorage = {
+      ...stored,
+      // Returns what was stored when the read began, after a delay
+      load: async () => {
+        const snapshot = await stored.load();
+        if (holdLoads) await new Promise<void>((resolve) => (releaseLoad = resolve));
+        return snapshot;
+      },
+    };
+    const queue = new RequestQueue(storage);
+    queue.add(OWNER, "PATCH", "/notes/1", { data: { content: "old" } });
+    await settled(queue);
+    holdLoads = true;
+    const sent: unknown[] = [];
+
+    const replay = queue.execute(async (request) => {
+      sent.push(request.data);
+      return "done";
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // An autosave lands while the replay is still reading the stored queue
+    queue.add(OWNER, "PATCH", "/notes/1", { data: { content: "new" } });
+    releaseLoad();
+    await replay;
+
+    expect(sent).toEqual([{ content: "new" }]);
+  });
+
   it("does not replay what another tab cleared on logout", async () => {
     const storage = memoryStorage();
     const otherTab = new RequestQueue(storage);
