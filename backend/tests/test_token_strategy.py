@@ -674,6 +674,23 @@ class TestRefreshRoute:
         # The tab that refreshed is still signed in
         assert first_tab.post(f"{settings.API_V1_STR}/auth/refresh").status_code == 200
 
+    def test_a_failed_refresh_deletes_the_auth_cookies(
+        self, db_session: Session, test_user: User
+    ):
+        pair = auth_service.create_token_pair(session=db_session, user=test_user)
+        assert test_user.id is not None
+        crud.revoke_all_user_refresh_tokens(session=db_session, user_id=test_user.id)
+        browser = TestClient(app)
+        browser.cookies.set(settings.ACCESS_TOKEN_COOKIE_NAME, pair.access_token)
+        browser.cookies.set(settings.REFRESH_TOKEN_COOKIE_NAME, pair.refresh_token)
+
+        response = browser.post(f"{settings.API_V1_STR}/auth/refresh")
+
+        assert response.status_code == 401
+        cleared = response.headers.get_list("set-cookie")
+        for name in (settings.ACCESS_TOKEN_COOKIE_NAME, settings.REFRESH_TOKEN_COOKIE_NAME):
+            assert any(header.startswith(f"{name}=") and "Max-Age=0" in header for header in cleared)
+
     def test_refresh_ignores_a_refresh_token_in_the_body(
         self, db_session: Session, test_user: User
     ):
