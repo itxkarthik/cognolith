@@ -15,6 +15,18 @@ logger = logging.getLogger(__name__)
 REFRESH_REUSE_GRACE_SECONDS = 30
 
 
+class RefreshAlreadyRotatedError(ValueError):
+    """
+    The token was rotated moments ago by a concurrent refresh, typically another tab
+    sharing the cookies. No tokens are issued, as for any failed refresh, but those
+    cookies already hold the new tokens: the caller should retry its request rather
+    than treat the session as ended.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Refresh token was already rotated by a concurrent refresh")
+
+
 class TokenPair(NamedTuple):
     """Response model for token creation - contains both JWT and refresh token."""
 
@@ -82,8 +94,9 @@ def refresh_access_token_from_refresh(
     The user is always the refresh token's owner; no other credential is consulted.
 
     Presenting an already-rotated token is treated as theft and the whole token
-    family is revoked. A token rotated moments ago is exempt, so two tabs
-    refreshing at the same time don't log each other out.
+    family is revoked. A token rotated moments ago is exempt and raises
+    RefreshAlreadyRotatedError instead, so two tabs refreshing at the same time don't
+    log each other out.
 
     Args:
         session: Database session
@@ -93,6 +106,7 @@ def refresh_access_token_from_refresh(
         New TokenPair with fresh access and refresh tokens
 
     Raises:
+        RefreshAlreadyRotatedError: The token was rotated within the grace window
         ValueError: If token is invalid, revoked, or expired
     """
     hashed = security.hash_refresh_token(refresh_token)
@@ -110,9 +124,13 @@ def refresh_access_token_from_refresh(
     if db_token.revoked:
         # Reuse only signals theft while a newer token in the family is still live.
         # A family revoked as a whole (logout, password change) is just a stale session.
-        if _within_reuse_grace(db_token.revoked_at, now) or not crud.family_has_active_token(
+        family_active = crud.family_has_active_token(
             session=session, family_id=db_token.family_id
-        ):
+        )
+        if family_active and _within_reuse_grace(db_token.revoked_at, now):
+            session.rollback()
+            raise RefreshAlreadyRotatedError()
+        if not family_active:
             session.rollback()
         else:
             logger.warning(

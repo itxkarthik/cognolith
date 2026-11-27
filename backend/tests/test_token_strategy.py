@@ -196,8 +196,8 @@ class TestTokenRefresh:
         )
         assert new_pair1 is not None
 
-        # Second refresh with same token should fail
-        with pytest.raises(ValueError, match="Invalid or expired refresh token"):
+        # Second refresh with same token fails; moments later it's a concurrent refresh
+        with pytest.raises(auth_service.RefreshAlreadyRotatedError):
             auth_service.refresh_access_token_from_refresh(
                 session=db_session,
                 refresh_token=refresh_token,  # Same token, already revoked
@@ -576,7 +576,7 @@ class TestRefreshTokenReuseDetection:
             session=db_session, refresh_token=initial_pair.refresh_token
         )
 
-        with pytest.raises(ValueError):
+        with pytest.raises(auth_service.RefreshAlreadyRotatedError):
             auth_service.refresh_access_token_from_refresh(
                 session=db_session, refresh_token=initial_pair.refresh_token
             )
@@ -584,6 +584,25 @@ class TestRefreshTokenReuseDetection:
         assert auth_service.refresh_access_token_from_refresh(
             session=db_session, refresh_token=new_pair.refresh_token
         )
+
+    def test_reuse_within_grace_after_sign_out_is_an_ended_session(
+        self, db_session: Session, test_user: User
+    ):
+        initial_pair = auth_service.create_token_pair(session=db_session, user=test_user)
+        new_pair = auth_service.refresh_access_token_from_refresh(
+            session=db_session, refresh_token=initial_pair.refresh_token
+        )
+        rotated = crud.get_refresh_token_by_hash(
+            session=db_session, hashed_token=security.hash_refresh_token(new_pair.refresh_token)
+        )
+        assert rotated is not None
+        crud.revoke_refresh_token_family(session=db_session, family_id=rotated.family_id)
+
+        # Not "already refreshed": nothing in the family is valid any more
+        with pytest.raises(ValueError):
+            auth_service.refresh_access_token_from_refresh(
+                session=db_session, refresh_token=initial_pair.refresh_token
+            )
 
     def test_reuse_does_not_touch_other_sessions(self, db_session: Session, test_user: User):
         stolen_pair = auth_service.create_token_pair(session=db_session, user=test_user)
@@ -636,6 +655,24 @@ class TestRefreshRoute:
         )
         assert payload["sub"] == str(test_user.id)
         assert "refresh_token" not in response.json()
+
+    def test_a_concurrent_refresh_gets_409_and_keeps_the_cookies(
+        self, db_session: Session, test_user: User
+    ):
+        pair = auth_service.create_token_pair(session=db_session, user=test_user)
+        first_tab = TestClient(app)
+        second_tab = TestClient(app)
+        for tab in (first_tab, second_tab):
+            tab.cookies.set(settings.REFRESH_TOKEN_COOKIE_NAME, pair.refresh_token)
+
+        first = first_tab.post(f"{settings.API_V1_STR}/auth/refresh")
+        second = second_tab.post(f"{settings.API_V1_STR}/auth/refresh")
+
+        assert first.status_code == 200
+        assert second.status_code == 409
+        assert "set-cookie" not in second.headers
+        # The tab that refreshed is still signed in
+        assert first_tab.post(f"{settings.API_V1_STR}/auth/refresh").status_code == 200
 
     def test_refresh_ignores_a_refresh_token_in_the_body(
         self, db_session: Session, test_user: User

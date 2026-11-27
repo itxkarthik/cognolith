@@ -70,6 +70,9 @@ def set_auth_cookies(
     set_csrf_cookie(response, csrf_token or generate_csrf_token())
 
 
+REFRESH_ALREADY_ROTATED_DETAIL = "Session already refreshed by another request"
+
+
 def clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(key=settings.ACCESS_TOKEN_COOKIE_NAME, path="/")
     response.delete_cookie(key=settings.REFRESH_TOKEN_COOKIE_NAME, path="/")
@@ -134,6 +137,10 @@ def login_access_token(
             "model": StandardErrorResponse,
             "description": "Invalid or expired refresh token",
         },
+        409: {
+            "model": StandardErrorResponse,
+            "description": "Already refreshed by a concurrent request; retry with the current cookies",
+        },
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
 )
@@ -156,6 +163,9 @@ def refresh_access_token(
         token_pair = auth_service.refresh_access_token_from_refresh(
             session=session, refresh_token=refresh_token
         )
+    except auth_service.RefreshAlreadyRotatedError:
+        # No new tokens and no cookie changes: the concurrent refresh set them
+        raise HTTPException(status_code=409, detail=REFRESH_ALREADY_ROTATED_DETAIL)
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
 

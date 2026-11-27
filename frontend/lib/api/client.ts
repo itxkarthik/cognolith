@@ -182,14 +182,30 @@ apiClient.interceptors.request.use((config) => {
 // Refresh tokens are single-use, so concurrent 401s must share one refresh call.
 let refreshInFlight: Promise<void> | null = null;
 
+// Tabs share the auth cookies. Holding this lock makes them refresh one after another,
+// so the next tab sends the token the previous one received instead of the rotated one.
+const REFRESH_LOCK = "cognolith-auth-refresh";
+
+async function postRefresh(): Promise<void> {
+	try {
+		await refreshClient.post(apiConfig.endpoints.refresh, {});
+	} catch (error) {
+		// 409: another tab refreshed with this token a moment ago and the shared cookies
+		// already hold the new tokens (browsers without Web Locks, or a lost race)
+		if (axios.isAxiosError(error) && error.response?.status === 409) return;
+		throw error;
+	}
+}
+
 function refreshSession(): Promise<void> {
 	if (!refreshInFlight) {
-		refreshInFlight = refreshClient
-			.post(apiConfig.endpoints.refresh, {})
-			.then(() => undefined)
-			.finally(() => {
-				refreshInFlight = null;
-			});
+		const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+		const refresh: Promise<void> = locks
+			? locks.request(REFRESH_LOCK, postRefresh).then(() => undefined)
+			: postRefresh();
+		refreshInFlight = refresh.finally(() => {
+			refreshInFlight = null;
+		});
 	}
 	return refreshInFlight;
 }
