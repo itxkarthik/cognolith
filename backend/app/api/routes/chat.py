@@ -23,6 +23,7 @@ from app.schemas.chat import (
     ChatMessageCreate,
     ChatMessageResponse,
     ChatResponse,
+    ChatSessionSummary,
     ChatSources,
 )
 from app.schemas.error import StandardErrorResponse
@@ -65,7 +66,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 class ChatSessionListResponse(BaseModel):
-    data: list[ChatResponse]
+    data: list[ChatSessionSummary]
     count: int
     page_size: int
     has_more: bool
@@ -266,7 +267,7 @@ def list_chat_sessions_endpoint(
     )
     has_more = (skip + limit) < count
     return ChatSessionListResponse(
-        data=[_to_chat_response(item) for item in sessions],
+        data=sessions,
         count=count,
         page_size=limit,
         has_more=has_more,

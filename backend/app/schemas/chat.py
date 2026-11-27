@@ -91,6 +91,28 @@ class ChatMessageResponse(BaseModel):
     updated_at: datetime
 
 
+class ChatMessagePreview(BaseModel):
+    role: str
+    # The start of the message, enough for a one- or two-line preview
+    content: str
+
+
+class ChatSessionSummary(BaseModel):
+    """A chat session as listed in the sidebar: no messages, just their count and the last."""
+
+    id: int
+    user_id: int
+    title: str | None = None
+    description: str | None = None
+    is_archived: bool
+    is_pinned: bool
+    last_message_at: datetime
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+    last_message: ChatMessagePreview | None = None
+
+
 class ChatResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
