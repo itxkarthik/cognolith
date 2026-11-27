@@ -10,6 +10,7 @@ import type {
 	ResendVerificationResponse,
 } from "@/types";
 import { APIRequestError } from "@/lib/api/client";
+import { requestQueue } from "@/lib/utils/requestQueue";
 
 export async function login(payload: LoginRequest): Promise<TokenResponse> {
 	const body = new URLSearchParams();
@@ -111,6 +112,9 @@ export async function getCurrentUser(): Promise<User> {
 }
 
 export async function logout(): Promise<MessageResponse> {
+	// Queued offline edits hold this account's content; they must not outlive the session
+	// or replay under the next account to sign in on this device
+	await requestQueue.clear();
 	try {
 		const response = await apiClient.post<MessageResponse>(apiConfig.endpoints.logout);
 		return response.data;

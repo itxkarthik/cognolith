@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { APIRequestError } from "@/lib/api/client";
+import { APIRequestError, onOfflineReplay } from "@/lib/api/client";
 import {
 	createFolder as createFolderRequest,
 	createNote as createNoteRequest,
@@ -369,3 +369,24 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 		set({ error: null });
 	},
 }));
+
+const NOTE_URL = /^\/notes\/(\d+)$/;
+
+// A note save queued offline has now been replayed
+onOfflineReplay((request, result) => {
+	const match = request.method === "PATCH" ? NOTE_URL.exec(request.url) : null;
+	if (!match) return;
+	const noteId = Number(match[1]);
+	if (result.status === "applied") {
+		const saved = result.data as NoteResponse;
+		// Take its revision, so the next save isn't mistaken for a stale one
+		useNoteStore.setState((state) => ({
+			notes: state.notes.map((note) => (note.id === noteId ? saved : note)),
+			selectedNote: state.selectedNote?.id === noteId ? saved : state.selectedNote,
+		}));
+	} else if (result.status === "conflict") {
+		void getNoteById(noteId)
+			.then((latest) => useNoteStore.setState({ noteConflict: { noteId, latest } }))
+			.catch(() => undefined);
+	}
+});

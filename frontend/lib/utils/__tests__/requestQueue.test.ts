@@ -1,77 +1,136 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { requestQueue } from '../requestQueue';
+import { describe, expect, it } from "vitest";
 
-describe('Offline Detection & Request Queueing', () => {
-  beforeEach(() => {
-    requestQueue.clear();
-  });
+import { RequestQueue, isQueueable, memoryStorage, type QueuedRequest, type QueueStorage } from "../requestQueue";
 
-  it('should queue a request when adding', () => {
-    requestQueue.add('POST', '/api/notes', { data: { title: 'Test' } });
-    expect(requestQueue.size()).toBe(1);
-  });
+async function settled(queue: RequestQueue) {
+  await queue.ready();
+  // Let queued persistence writes run
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
 
-  it('should return all queued requests in order', () => {
-    requestQueue.add('POST', '/api/notes', { data: { title: 'Note 1' } });
-    requestQueue.add('POST', '/api/notes', { data: { title: 'Note 2' } });
+describe("offline request queue", () => {
+  it("replays in the order the writes were made", async () => {
+    const queue = new RequestQueue(memoryStorage());
+    queue.add("POST", "/notes/", { data: { title: "first" } });
+    queue.add("DELETE", "/notes/3");
+    const replayed: string[] = [];
 
-    const all = requestQueue.getAll();
-    expect(all.length).toBe(2);
-    expect(all[0].timestamp <= all[1].timestamp).toBe(true);
-  });
-
-  it('should remove a request from queue', () => {
-    const id = requestQueue.add('POST', '/api/notes', { data: { title: 'Test' } });
-    requestQueue.remove(id);
-    expect(requestQueue.isEmpty()).toBe(true);
-  });
-
-  it('should return true when queue is empty', () => {
-    expect(requestQueue.isEmpty()).toBe(true);
-    requestQueue.add('POST', '/api/notes', { data: {} });
-    expect(requestQueue.isEmpty()).toBe(false);
-  });
-
-  it('should clear all requests', () => {
-    requestQueue.add('POST', '/api/notes', { data: {} });
-    requestQueue.add('PUT', '/api/documents/1', { data: {} });
-    requestQueue.clear();
-    expect(requestQueue.size()).toBe(0);
-  });
-
-  it('should execute queued requests in order', async () => {
-    const executed: number[] = [];
-
-    requestQueue.add('POST', '/api/notes', { data: { id: 1 } });
-    requestQueue.add('POST', '/api/notes', { data: { id: 2 } });
-
-    await requestQueue.execute(async (req) => {
-      const data = req.config.data as { id: number };
-      executed.push(data.id);
-      return true;
+    await queue.execute(async (request) => {
+      replayed.push(`${request.method} ${request.url}`);
+      return "done";
     });
 
-    expect(executed).toEqual([1, 2]);
-    expect(requestQueue.isEmpty()).toBe(true);
+    expect(replayed).toEqual(["POST /notes/", "DELETE /notes/3"]);
+    expect(queue.isEmpty()).toBe(true);
   });
 
-  it('should prevent concurrent execution', async () => {
-    const callCount = { value: 0 };
+  it("collapses repeated saves of one note into the latest, in its original place", async () => {
+    const queue = new RequestQueue(memoryStorage());
+    queue.add("PATCH", "/notes/1", { data: { content: "a", is_pinned: true, expected_revision: 4 } });
+    queue.add("POST", "/notes/", { data: { title: "other" } });
+    queue.add("PATCH", "/notes/1", { data: { content: "abc", expected_revision: 4 } });
 
-    requestQueue.add('POST', '/api/notes', { data: {} });
+    const [first, second] = queue.getAll();
 
-    const promise1 = requestQueue.execute(async () => {
-      callCount.value++;
-      await new Promise(resolve => setTimeout(resolve, 100));
-      return true;
+    expect(queue.size()).toBe(2);
+    expect(first.url).toBe("/notes/1");
+    expect(first.data).toEqual({ content: "abc", is_pinned: true, expected_revision: 4 });
+    expect(second.url).toBe("/notes/");
+  });
+
+  it("keeps an edit merged into a save that was already being sent", async () => {
+    const queue = new RequestQueue(memoryStorage());
+    queue.add("PATCH", "/notes/1", { data: { content: "old" } });
+    const sent: unknown[] = [];
+
+    await queue.execute(async (request) => {
+      sent.push(request.data);
+      // Offline again while this save is in flight: the next autosave merges into it
+      queue.add("PATCH", "/notes/1", { data: { content: "new" } });
+      return "done";
     });
 
-    const promise2 = requestQueue.execute(async () => {
-      callCount.value++;
-      return true;
+    expect(sent).toEqual([{ content: "old" }]);
+    expect(queue.getAll().map((request) => request.data)).toEqual([{ content: "new" }]);
+  });
+
+  it("stops at a write that must be retried and keeps everything after it", async () => {
+    const queue = new RequestQueue(memoryStorage());
+    queue.add("PATCH", "/notes/1", { data: { content: "a" } });
+    queue.add("PATCH", "/notes/2", { data: { content: "b" } });
+    const attempted: string[] = [];
+
+    await queue.execute(async (request) => {
+      attempted.push(request.url);
+      return "retry";
     });
 
-    await Promise.all([promise1, promise2]);
-    expect(callCount.value).toBe(1);
+    expect(attempted).toEqual(["/notes/1"]);
+    expect(queue.getAll().map((request) => request.url)).toEqual(["/notes/1", "/notes/2"]);
+  });
+
+  it("survives a reload through its storage", async () => {
+    const storage = memoryStorage();
+    const before = new RequestQueue(storage);
+    before.add("PATCH", "/notes/1", { data: { content: "offline edit" } });
+    await settled(before);
+
+    const after = new RequestQueue(storage);
+    await settled(after);
+
+    expect(after.getAll().map((request) => request.data)).toEqual([{ content: "offline edit" }]);
+  });
+
+  it("clearing also empties the storage", async () => {
+    const storage = memoryStorage();
+    const queue = new RequestQueue(storage);
+    queue.add("PATCH", "/notes/1", { data: {} });
+
+    await queue.clear();
+
+    expect(await storage.load()).toEqual([]);
+  });
+
+  it("keeps working when storage is unavailable", async () => {
+    const failing: QueueStorage = {
+      load: () => Promise.reject(new Error("blocked")),
+      put: () => Promise.reject(new Error("blocked")),
+      delete: () => Promise.reject(new Error("blocked")),
+      clear: () => Promise.reject(new Error("blocked")),
+    };
+    const queue = new RequestQueue(failing);
+    queue.add("PATCH", "/notes/1", { data: { content: "a" } });
+    const replayed: QueuedRequest[] = [];
+
+    await queue.execute(async (request) => {
+      replayed.push(request);
+      return "done";
+    });
+
+    expect(replayed).toHaveLength(1);
+  });
+
+  it("runs one replay at a time", async () => {
+    const queue = new RequestQueue(memoryStorage());
+    queue.add("POST", "/notes/", { data: {} });
+    let calls = 0;
+    const slow = async () => {
+      calls++;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return "done" as const;
+    };
+
+    await Promise.all([queue.execute(slow), queue.execute(slow)]);
+
+    expect(calls).toBe(1);
+  });
+
+  it("only queues serializable note writes", () => {
+    expect(isQueueable("PATCH", "/notes/1", { content: "x" })).toBe(true);
+    expect(isQueueable("POST", "/notes/folders", { name: "x" })).toBe(true);
+    expect(isQueueable("POST", "/documents/upload", new FormData())).toBe(false);
+    expect(isQueueable("POST", "/notes/", new FormData())).toBe(false);
+    expect(isQueueable("POST", "/login/access-token", {})).toBe(false);
+    expect(isQueueable("POST", "/chat/sessions/1/messages", { content: "x" })).toBe(false);
   });
 });

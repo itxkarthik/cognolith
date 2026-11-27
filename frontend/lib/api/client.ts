@@ -3,7 +3,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { apiConfig, tokenKeys, getTimeoutForEndpoint } from "@/config/api";
 import { useAuthStore } from "@/store/authStore";
 import { isRetryableError, retryWithExponentialBackoff, DEFAULT_RETRY_CONFIG } from "@/lib/utils/retry";
-import { requestQueue, type QueuedRequest } from "@/lib/utils/requestQueue";
+import { isQueueable, requestQueue, type QueuedRequest } from "@/lib/utils/requestQueue";
 import type { ApiError } from "@/types";
 
 type RequestWithRetry = InternalAxiosRequestConfig & {
@@ -113,22 +113,32 @@ const refreshClient = axios.create({
 	},
 });
 
+declare module "axios" {
+	interface AxiosRequestConfig {
+		// Set on queue replays, which must not be queued again
+		offlineReplay?: boolean;
+	}
+}
+
 apiClient.interceptors.request.use((config) => {
-	// Queue requests if offline (for POST, PUT, PATCH)
-	const isOnline = typeof navigator !== "undefined" && navigator.onLine;
+	const isOnline = typeof navigator === "undefined" || navigator.onLine;
 	const method = (config.method ?? "get").toUpperCase();
 
-	if (!isOnline && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-		// Queue the request for later
-		requestQueue.add(method, config.url || "", {
-			data: config.data,
-			params: config.params,
-		});
-
+	if (!isOnline && !config.offlineReplay && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+		const url = config.url || "";
+		if (!isQueueable(method, url, config.data)) {
+			return Promise.reject(
+				new APIRequestError("You are offline. Try again once the connection is back.", {
+					statusCode: 0,
+					errorCode: "OFFLINE",
+				})
+			);
+		}
+		requestQueue.add(method, url, { data: config.data, params: config.params });
 		return Promise.reject(
-			new APIRequestError("Request queued - you are currently offline", {
+			new APIRequestError("Saved offline; it will sync when the connection is back.", {
 				statusCode: 0,
-				errorCode: "OFFLINE",
+				errorCode: "OFFLINE_QUEUED",
 			})
 		);
 	}
@@ -255,29 +265,55 @@ apiClient.interceptors.response.use(
 	}
 );
 
-export async function processOfflineQueue(): Promise<{ succeeded: number; failed: number }> {
-	if (requestQueue.isEmpty()) {
-		return { succeeded: 0, failed: 0 };
-	}
+export type OfflineReplayResult =
+	| { status: "applied"; data: unknown }
+	// The server copy changed since the write was queued; it was not applied
+	| { status: "conflict" }
+	| { status: "rejected"; statusCode: number };
 
+type OfflineReplayListener = (request: QueuedRequest, result: OfflineReplayResult) => void;
+
+const replayListeners = new Set<OfflineReplayListener>();
+
+/** Be told how each replayed offline write ended, e.g. to refresh what it changed. */
+export function onOfflineReplay(listener: OfflineReplayListener): () => void {
+	replayListeners.add(listener);
+	return () => replayListeners.delete(listener);
+}
+
+export async function processOfflineQueue(): Promise<{ succeeded: number; failed: number; conflicts: number }> {
+	await requestQueue.ready();
 	let succeeded = 0;
 	let failed = 0;
+	let conflicts = 0;
 
 	await requestQueue.execute(async (req: QueuedRequest) => {
+		let result: OfflineReplayResult;
 		try {
-			await apiClient({
+			const response = await apiClient({
 				method: req.method.toLowerCase(),
 				url: req.url,
-				data: req.config.data,
-				params: req.config.params,
+				data: req.data,
+				params: req.params,
+				offlineReplay: true,
 			});
 			succeeded++;
-			return true;
-		} catch {
-			failed++;
-			return false;
+			result = { status: "applied", data: response.data };
+		} catch (error) {
+			const statusCode = error instanceof APIRequestError ? error.statusCode : undefined;
+			// Offline again, or the server failing: keep it, and everything after it
+			if (!statusCode || statusCode >= 500 || statusCode === 408 || statusCode === 429) return "retry";
+			if (statusCode === 409) {
+				conflicts++;
+				result = { status: "conflict" };
+			} else {
+				failed++;
+				result = { status: "rejected", statusCode };
+			}
 		}
+		replayListeners.forEach((listener) => listener(req, result));
+		return "done";
 	});
 
-	return { succeeded, failed };
+	return { succeeded, failed, conflicts };
 }
