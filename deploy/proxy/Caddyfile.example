@@ -1,0 +1,30 @@
+# Optional reverse proxy in front of Cognolith (issue #28).
+#
+# Chat replies are streamed with Server-Sent Events. This config sends the two
+# streaming routes straight to the backend and everything else to the frontend.
+# Caddy flushes text/event-stream responses as they arrive.
+#
+# Caddy must reach backend:3000 and frontend:3000: run it on the compose network
+# "cognolith" (or publish those ports on 127.0.0.1 and change the upstreams).
+# Add Caddy's address on that network to FORWARDED_ALLOW_IPS, so the backend
+# trusts the X-Forwarded-For it sets and rate limits stay per client.
+# Check the result with scripts/release/smoke.sh and SMOKE_STREAM_URL set to the
+# public URL.
+
+cognolith.example.com {
+	# POST /api/v1/chat/sessions/{id}/messages/stream
+	# POST /api/v1/chat/sessions/{id}/messages/{message id}/retry/stream
+	@chat_stream path_regexp ^/api/v1/chat/sessions/[0-9]+/messages/(?:[0-9]+/retry/)?stream$
+
+	handle @chat_stream {
+		reverse_proxy backend:3000 {
+			# Never hold events back, whatever the response type
+			flush_interval -1
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy frontend:3000
+	}
+}

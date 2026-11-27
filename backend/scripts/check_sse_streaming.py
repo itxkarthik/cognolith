@@ -3,16 +3,20 @@ Check that chat replies stream token by token through the deployed stack.
 
     python -m scripts.check_sse_streaming --base-url https://cognolith.example.com --email you@example.com
 
-Signs in, opens a chat session titled "SSE streaming check", streams one short
-reply through the public URL (the same path a browser uses) and reports when
-each event arrived. A proxy that buffers the stream shows every token arriving
-at once; a working stack shows them spread over the generation time.
+Signs in, streams one short reply through the given URL (the same path a browser
+uses) into a chat session titled "SSE streaming check", reused across runs, and
+reports when each event arrived. A proxy that buffers the stream shows every token
+arriving at once; a working stack shows them spread over the generation time.
+
+The password is read from SSE_CHECK_PASSWORD, else prompted for. Exit status: 0
+streaming, 1 buffered or inconclusive, 2 the request failed.
 """
 
 from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 import time
 
@@ -21,20 +25,32 @@ import httpx
 CSRF_COOKIE = "csrf-token"
 CSRF_HEADER = "X-CSRF-Token"
 QUESTION = "Reply with a sentence of about twenty words about the ocean."
+SESSION_TITLE = "SSE streaming check"
+PASSWORD_ENV = "SSE_CHECK_PASSWORD"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check token-by-token SSE streaming.")
     parser.add_argument("--base-url", required=True, help="Public frontend URL, e.g. http://localhost:8080")
     parser.add_argument("--email", required=True)
-    parser.add_argument("--password", help="Prompted for when omitted")
     return parser.parse_args()
+
+
+def _check_session(client: httpx.Client, csrf: dict[str, str]) -> int:
+    listed = client.get("/api/v1/chat/sessions", params={"limit": 100})
+    listed.raise_for_status()
+    for chat in listed.json()["data"]:
+        if chat["title"] == SESSION_TITLE:
+            return chat["id"]
+    created = client.post("/api/v1/chat/sessions", json={"title": SESSION_TITLE}, headers=csrf)
+    created.raise_for_status()
+    return created.json()["id"]
 
 
 def main() -> int:
     args = parse_args()
     base_url = args.base_url.rstrip("/")
-    password = args.password or getpass.getpass("Password: ")
+    password = os.environ.get(PASSWORD_ENV) or getpass.getpass("Password: ")
     # The auth endpoints refuse cross-site requests, so present the site's own origin
     with httpx.Client(base_url=base_url, headers={"Origin": base_url}, timeout=30) as client:
         client.get("/api/v1/csrf-token").raise_for_status()
@@ -46,9 +62,7 @@ def main() -> int:
             return 2
         csrf = {CSRF_HEADER: client.cookies.get(CSRF_COOKIE) or ""}
 
-        created = client.post("/api/v1/chat/sessions", json={"title": "SSE streaming check"}, headers=csrf)
-        created.raise_for_status()
-        session_id = created.json()["id"]
+        session_id = _check_session(client, csrf)
 
         started = time.perf_counter()
         token_times: list[float] = []
