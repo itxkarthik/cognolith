@@ -98,6 +98,10 @@ class NoteCreate(BaseModel):
     is_pinned: bool = False
     linked_document_id: int | None = None
     linked_chat_session_id: int | None = None
+    # Idempotency key: a create repeated with the same value returns the same note
+    client_request_id: str | None = Field(
+        default=None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$"
+    )
 
     @field_validator("title", mode="before")
     @classmethod

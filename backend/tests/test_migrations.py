@@ -41,7 +41,8 @@ def _alembic_config() -> Config:
 def test_embedding_tables_is_the_migration_head() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_current_head() == "0013_note_revision"
+    assert script.get_current_head() == "0014_note_client_request_id"
+    assert script.get_revision("0014_note_client_request_id").down_revision == "0013_note_revision"
     assert script.get_revision("0013_note_revision").down_revision == (
         "0012_document_embedding_status"
     )

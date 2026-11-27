@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import ColumnElement, func, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, or_, select
 
@@ -36,7 +37,18 @@ _FOLDER_NAME_MAX_LENGTH = 255
 
 
 def create_note(*, session: Session, current_user: User, payload: NoteCreate) -> Notes:
+    """
+    Create a note with its tags and links in one transaction.
+
+    A create sent again with the same `client_request_id` (an offline replay whose
+    response was lost, or two tabs replaying) returns the note it already created.
+    """
     user_id = _require_persisted_id(current_user.id, "User")
+    request_id = payload.client_request_id
+    if request_id is not None:
+        created = _note_created_by(session=session, user_id=user_id, request_id=request_id)
+        if created is not None:
+            return created
     if payload.folder_id is not None:
         _lock_folder_tree(session=session, user_id=user_id)
     _validate_folder_access(session=session, user_id=user_id, folder_id=payload.folder_id)
@@ -67,36 +79,60 @@ def create_note(*, session: Session, current_user: User, payload: NoteCreate) ->
         word_count=len(preview_source.split()),
         char_count=len(preview_source),
         read_time_minutes=(max(1, len(preview_source.split()) // 200) if preview_source else 1),
+        client_request_id=request_id,
     )
-    session.add(note)
-    session.commit()
-    session.refresh(note)
+    try:
+        session.add(note)
+        session.flush()  # assigns the id the relationships refer to
+        if payload.tag_ids:
+            _apply_note_tags(session=session, user_id=user_id, note=note, tag_ids=payload.tag_ids)
+        if payload.linked_note_ids:
+            _apply_note_links(
+                session=session,
+                current_user=current_user,
+                source_note=note,
+                target_note_ids=payload.linked_note_ids,
+            )
+        _apply_wiki_links(
+            session=session, current_user=current_user, source_note=note, content=clean_content
+        )
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        # A concurrent send of the same create won the unique (user, request id) index
+        created = (
+            _note_created_by(session=session, user_id=user_id, request_id=request_id)
+            if request_id is not None
+            else None
+        )
+        if created is None:
+            raise
+        return created
+    except BaseException:
+        session.rollback()  # e.g. an invalid tag: no note without its relations
+        raise
+
     note_id = _require_persisted_id(note.id, "Note")
-
-    if payload.tag_ids:
-        assign_tags_to_note(
-            session=session,
-            current_user=current_user,
-            note_id=note_id,
-            tag_ids=payload.tag_ids,
-        )
-
-    if payload.linked_note_ids:
-        link_notes(
-            session=session,
-            current_user=current_user,
-            source_note_id=note_id,
-            target_note_ids=payload.linked_note_ids,
-        )
-
-    sync_wiki_links(
-        session=session,
-        current_user=current_user,
-        source_note_id=note_id,
-        content=clean_content,
-    )
-
     return get_note_by_id(session=session, current_user=current_user, note_id=note_id)
+
+
+def _note_created_by(*, session: Session, user_id: int, request_id: str) -> Notes | None:
+    """
+    The note a create with this client request id already made, with its relations.
+    Deleted since: 404, so a late replay doesn't bring it back.
+    """
+    note = (
+        session.exec(
+            select(Notes)
+            .where(Notes.user_id == user_id, Notes.client_request_id == request_id)
+            .options(joinedload(Notes.tags))  # pyright: ignore[reportArgumentType]
+        )
+        .unique()
+        .first()
+    )
+    if note is not None and note.is_deleted:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return note
 
 
 def list_notes(
@@ -532,32 +568,6 @@ def remove_tag_from_note(
     session.commit()
     session.refresh(note)
     return note
-
-
-def link_notes(
-    *,
-    session: Session,
-    current_user: User,
-    source_note_id: int,
-    target_note_ids: list[int],
-) -> None:
-    source_note = get_note_by_id(session=session, current_user=current_user, note_id=source_note_id)
-    for target_note_id in set(target_note_ids):
-        if source_note_id == target_note_id:
-            continue
-        target_note = get_note_by_id(
-            session=session, current_user=current_user, note_id=target_note_id
-        )
-        existing = session.exec(
-            select(NoteLinks).where(
-                NoteLinks.source_note_id == source_note.id,
-                NoteLinks.target_note_id == target_note.id,
-            )
-        ).first()
-        if existing:
-            continue
-        session.add(NoteLinks(source_note_id=source_note.id, target_note_id=target_note.id))
-    session.commit()
 
 
 def sync_note_links(
