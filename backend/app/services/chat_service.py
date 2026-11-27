@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -169,7 +169,7 @@ def _generate_and_store_reply(
     )
     session.add(assistant_message)
 
-    chat_session.last_message_at = datetime.now()
+    chat_session.last_message_at = datetime.now(UTC)
     if not chat_session.title:
         chat_session.title = create_content_preview(payload.content, max_length=80)
     session.add(chat_session)

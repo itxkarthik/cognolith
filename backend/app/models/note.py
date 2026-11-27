@@ -166,8 +166,8 @@ class Notes(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     word_count: int | None = Field(default=None)
     char_count: int | None = Field(default=None)
     read_time_minutes: int | None = Field(default=None)
-    last_accessed_at: datetime = Field(default_factory=datetime.now)
-    last_edited_at: datetime = Field(default_factory=datetime.now)
+    last_accessed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_edited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # Relationships
     user: "User" = Relationship(

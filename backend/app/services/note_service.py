@@ -224,7 +224,7 @@ def update_note(
             continue
         setattr(note, field_name, value)
 
-    note.last_edited_at = datetime.now()
+    note.last_edited_at = datetime.now(UTC)
 
     # Snapshot, pruning and update commit together, so a failed update leaves no orphan
     session.add(note)

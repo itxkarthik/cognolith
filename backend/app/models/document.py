@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 from uuid import UUID, uuid4
@@ -67,7 +67,7 @@ class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     word_count: int | None = Field(default=None)
     page_count: int | None = Field(default=None)
     chunk_count: int = Field(default=0)
-    last_accessed_at: datetime = Field(default_factory=datetime.now)
+    last_accessed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # Relationships
     user: "User" = Relationship(back_populates="documents")

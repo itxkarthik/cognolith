@@ -1,3 +1,4 @@
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
 from unittest import TestCase
@@ -158,3 +159,26 @@ class ChatServiceTests(TestCase):
         invoke_rag.assert_not_called()
         self.assertEqual(session.added, [])
         self.assertEqual(session.commit_count, 0)
+
+    def test_last_message_time_is_recorded_in_utc(self) -> None:
+        session, current_user, chat_session = _chat_context()
+
+        with (
+            patch(
+                "app.services.chat_service.get_chat_session_by_id",
+                return_value=chat_session,
+            ),
+            patch(
+                "app.services.chat_service._invoke_rag",
+                return_value=("Grounded answer", {"documents": [], "chunks": []}),
+            ),
+            patch("app.services.chat_service._acquire_chat_generation_lock"),
+        ):
+            send_message_and_get_response(
+                session=cast(Session, session),
+                current_user=cast(User, current_user),
+                chat_session_id=chat_session.id,
+                payload=ChatMessageCreate(content="Hello", role="user"),
+            )
+
+        self.assertEqual(chat_session.last_message_at.utcoffset(), timedelta(0))

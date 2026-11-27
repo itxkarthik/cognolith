@@ -51,7 +51,8 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP"]
+# DTZ: every datetime must be timezone-aware (UTC); naive local time skews ordering
+select = ["E", "F", "W", "I", "N", "UP", "DTZ"]
 ignore = ["E501"]  # Line too long (handled by Black)
 
 [tool.ruff.lint.isort]
