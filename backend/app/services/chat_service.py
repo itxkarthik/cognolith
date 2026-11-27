@@ -11,7 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select
 
-from app.ai.rag import run_rag_pipeline
+from app.ai.rag import RAGResult, run_rag_pipeline
 from app.core.exceptions import AIServiceUnavailableError
 from app.models.chat import ChatMessages, ChatRole, ChatSession
 from app.models.note import Notes
@@ -130,7 +130,7 @@ def _generate_and_store_reply(
     if chat_session.id is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
     try:
-        rag_answer, rag_sources = _invoke_rag(
+        rag_result = _invoke_rag(
             session=session,
             current_user=current_user,
             query=payload.content,
@@ -162,10 +162,10 @@ def _generate_and_store_reply(
     assistant_message = ChatMessages(
         session_id=chat_session.id,
         role=ChatRole.assistant,
-        content=rag_answer,
+        content=rag_result.answer,
         model_used="rag-v1",
-        sources=rag_sources,
-        tokens_used=len(rag_answer.split()),
+        sources=rag_result.sources,
+        tokens_used=rag_result.generated_tokens,
     )
     session.add(assistant_message)
 
@@ -265,17 +265,16 @@ def _invoke_rag(
     current_user: User,
     query: str,
     conversation_history: list[dict[str, Any]] | None = None,
-) -> tuple[str, dict]:
+) -> RAGResult:
     if current_user.id is None:
         raise HTTPException(status_code=400, detail="Invalid user context")
 
-    rag_result = run_rag_pipeline(
+    return run_rag_pipeline(
         session=session,
         user_id=current_user.id,
         query=query,
         conversation_history=conversation_history,
     )
-    return rag_result.answer, rag_result.sources
 
 
 async def stream_message_response(*, assistant_message: ChatMessages) -> AsyncGenerator[str, None]:

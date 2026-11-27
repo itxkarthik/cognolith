@@ -363,7 +363,8 @@ async def stream_chat_generation(
                 final_answer, sources = finalize_prepared_answer(draft, prepared=prepared)
                 assistant.content = final_answer
                 assistant.sources = sources
-                assistant.tokens_used = len(final_answer.split())
+                # The draft and any repair pass both generated tokens for this reply
+                assistant.tokens_used = llm.usage.generated_tokens
                 assistant.response_time_ms = int((time.perf_counter() - started) * 1000)
                 assistant.generation_status = ChatGenerationStatus.completed
                 metadata = {

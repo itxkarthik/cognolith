@@ -56,6 +56,8 @@ class RAGNoteSource:
 class RAGResult:
     answer: str
     sources: dict[str, Any]
+    # Tokens the model generated for the answer; None when no model call reported them
+    generated_tokens: int | None = None
 
 
 @dataclass(slots=True)
@@ -258,16 +260,14 @@ def run_rag_pipeline(
         query=query,
         conversation_history=conversation_history,
     )
-    answer = _run_async(
-        LLMService(session=session, user_id=user_id).generate_response(
-            messages=prepared.messages
-        )
-    ).strip()
+    llm = LLMService(session=session, user_id=user_id)
+    answer = _run_async(llm.generate_response(messages=prepared.messages)).strip()
+    generated_tokens = llm.usage.generated_tokens
     if not prepared.grounded:
-        return RAGResult(answer=answer, sources=_empty_sources())
+        return RAGResult(answer=answer, sources=_empty_sources(), generated_tokens=generated_tokens)
 
     answer, sources = finalize_prepared_answer(answer, prepared=prepared)
-    return RAGResult(answer=answer, sources=sources)
+    return RAGResult(answer=answer, sources=sources, generated_tokens=generated_tokens)
 
 
 def prepare_rag_pipeline(

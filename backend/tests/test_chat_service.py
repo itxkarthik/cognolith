@@ -7,6 +7,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 from sqlmodel import Session
 
+from app.ai.rag import RAGResult
 from app.core.exceptions import AIServiceUnavailableError
 from app.models.user import User
 from app.schemas.chat import ChatMessageCreate
@@ -77,7 +78,11 @@ class ChatServiceTests(TestCase):
             ),
             patch(
                 "app.services.chat_service._invoke_rag",
-                return_value=("Grounded answer", {"documents": [], "chunks": []}),
+                return_value=RAGResult(
+                    answer="Grounded answer",
+                    sources={"documents": [], "chunks": []},
+                    generated_tokens=42,
+                ),
             ),
             patch("app.services.chat_service._acquire_chat_generation_lock"),
         ):
@@ -90,6 +95,8 @@ class ChatServiceTests(TestCase):
 
         self.assertEqual(user_message.content, "Hello")
         self.assertEqual(assistant_message.content, "Grounded answer")
+        # The model's reported token count, not a word count
+        self.assertEqual(assistant_message.tokens_used, 42)
         self.assertEqual(session.commit_count, 1)
         self.assertEqual(session.rollback_count, 0)
         self.assertEqual(session.added, [user_message, assistant_message, chat_session])
@@ -116,7 +123,10 @@ class ChatServiceTests(TestCase):
             ),
             patch(
                 "app.services.chat_service._invoke_rag",
-                return_value=("Grounded answer", {"documents": [], "chunks": [], "notes": []}),
+                return_value=RAGResult(
+                    answer="Grounded answer",
+                    sources={"documents": [], "chunks": [], "notes": []},
+                ),
             ) as invoke_rag,
             patch("app.services.chat_service._acquire_chat_generation_lock"),
         ):
@@ -170,7 +180,11 @@ class ChatServiceTests(TestCase):
             ),
             patch(
                 "app.services.chat_service._invoke_rag",
-                return_value=("Grounded answer", {"documents": [], "chunks": []}),
+                return_value=RAGResult(
+                    answer="Grounded answer",
+                    sources={"documents": [], "chunks": []},
+                    generated_tokens=42,
+                ),
             ),
             patch("app.services.chat_service._acquire_chat_generation_lock"),
         ):
