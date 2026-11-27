@@ -2,6 +2,12 @@ import { create } from "zustand";
 
 import { APIRequestError, onOfflineReplay } from "@/lib/api/client";
 import {
+	loadConflictDraft,
+	removeConflictDraft,
+	saveConflictDraft,
+	type ConflictDraft,
+} from "@/lib/utils/conflictDrafts";
+import {
 	createFolder as createFolderRequest,
 	createNote as createNoteRequest,
 	createTag as createTagRequest,
@@ -22,15 +28,18 @@ import type {
 	NoteUpdate,
 	TagCreate,
 } from "@/types";
+import { useAuthStore } from "@/store/authStore";
 
 type NotesViewMode = "grid" | "list";
 
-export type NoteDraftUpdate = Omit<NoteUpdate, "expected_revision">;
+export type NoteDraftUpdate = ConflictDraft;
 
 // The note changed elsewhere after this editor loaded it; `latest` is the server copy
 export interface NoteConflict {
 	noteId: number;
 	latest: NoteResponse;
+	// Edits made offline that the server refused; the editor shows them until resolved
+	draft?: NoteDraftUpdate;
 }
 
 export class NoteConflictError extends Error {
@@ -72,6 +81,8 @@ interface NoteState {
 	saveNoteDraft: (id: number, payload: NoteDraftUpdate) => Promise<NoteResponse>;
 	// "mine" overwrites the newer server copy with `draft`; "theirs" discards the draft
 	resolveNoteConflict: (choice: "mine" | "theirs", draft?: NoteDraftUpdate) => Promise<NoteResponse | null>;
+	// Raise the conflict again for offline edits refused in an earlier session
+	restoreNoteConflict: (id: number) => Promise<void>;
 	deleteNoteById: (id: number) => Promise<void>;
 	fetchFolders: () => Promise<void>;
 	fetchTags: () => Promise<void>;
@@ -251,6 +262,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 		if (!conflict) return null;
 		const { noteId, latest } = conflict;
 		if (choice === "theirs") {
+			removeConflictDraft(noteId);
 			set((state) => ({
 				noteConflict: null,
 				notes: state.notes.map((note) => (note.id === noteId ? latest : note)),
@@ -260,15 +272,28 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 		}
 		set({ noteConflict: null });
 		try {
-			return await get().updateNoteById(noteId, { ...draft, expected_revision: latest.revision });
+			const saved = await get().updateNoteById(noteId, { ...draft, expected_revision: latest.revision });
+			removeConflictDraft(noteId);
+			return saved;
 		} catch (error) {
 			if (isConflict(error)) {
 				// Changed again while deciding: ask again against the newest copy
-				set({ noteConflict: { noteId, latest: await getNoteById(noteId) }, error: null });
+				set({ noteConflict: { ...conflict, latest: await getNoteById(noteId) }, error: null });
 				throw new NoteConflictError();
 			}
+			// Not saved: keep asking, so the offline edits aren't dropped from view
+			set({ noteConflict: conflict });
 			throw error;
 		}
+	},
+
+	restoreNoteConflict: async (id) => {
+		if (get().noteConflict?.noteId === id) return;
+		const ownerId = useAuthStore.getState().user?.id;
+		const draft = ownerId === undefined ? null : loadConflictDraft(id, ownerId);
+		if (!draft) return;
+		const latest = await getNoteById(id);
+		if (!get().noteConflict) set({ noteConflict: { noteId: id, latest, draft } });
 	},
 
 	deleteNoteById: async (id) => {
@@ -385,8 +410,12 @@ onOfflineReplay((request, result) => {
 			selectedNote: state.selectedNote?.id === noteId ? saved : state.selectedNote,
 		}));
 	} else if (result.status === "conflict") {
+		// The queued write is gone now; keep its edits until the user picks a version
+		const draft: NoteDraftUpdate = { ...(request.data as NoteUpdate | undefined) };
+		delete (draft as NoteUpdate).expected_revision;
+		saveConflictDraft(noteId, request.ownerId, draft);
 		void getNoteById(noteId)
-			.then((latest) => useNoteStore.setState({ noteConflict: { noteId, latest } }))
+			.then((latest) => useNoteStore.setState({ noteConflict: { noteId, latest, draft } }))
 			.catch(() => undefined);
 	}
 });

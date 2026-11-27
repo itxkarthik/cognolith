@@ -57,6 +57,15 @@ function draftFromNote(note: NoteResponse): DraftState {
   };
 }
 
+function draftFromConflict(draft: NoteDraftUpdate, latest: NoteResponse): DraftState {
+  const server = draftFromNote(latest);
+  return {
+    title: draft.title ?? server.title,
+    content: draft.content ?? server.content,
+    tagIds: draft.tag_ids ?? server.tagIds,
+  };
+}
+
 export default function NotesPage() {
   const {
     notes,
@@ -73,6 +82,7 @@ export default function NotesPage() {
     noteConflict,
     saveNoteDraft,
     resolveNoteConflict,
+    restoreNoteConflict,
     deleteNoteById,
     createFolder,
     createTag,
@@ -108,8 +118,15 @@ export default function NotesPage() {
       return EMPTY_DRAFT;
     }
 
-    return draftsByNoteId[selectedNote.id] ?? draftFromNote(selectedNote);
-  }, [draftsByNoteId, selectedNote]);
+    const edited = draftsByNoteId[selectedNote.id];
+    if (edited) return edited;
+    // Offline edits the server refused (e.g. after a reload): show them, so "Keep
+    // mine" saves what was typed rather than the server copy
+    if (noteConflict?.noteId === selectedNote.id && noteConflict.draft) {
+      return draftFromConflict(noteConflict.draft, noteConflict.latest);
+    }
+    return draftFromNote(selectedNote);
+  }, [draftsByNoteId, noteConflict, selectedNote]);
 
   useEffect(() => {
     if (!selectedNote && notes.length > 0) {
@@ -243,6 +260,12 @@ export default function NotesPage() {
 
   const isSavingState = isSaving || isAutoSaving;
   const hasConflict = Boolean(selectedNote && noteConflict?.noteId === selectedNote.id);
+  const selectedNoteId = selectedNote?.id;
+
+  // Offline edits refused in an earlier session are offered again when the note opens
+  useEffect(() => {
+    if (selectedNoteId !== undefined) void restoreNoteConflict(selectedNoteId).catch(() => undefined);
+  }, [restoreNoteConflict, selectedNoteId]);
 
   const handleLoadLatest = useCallback(async () => {
     const latest = await resolveNoteConflict("theirs");

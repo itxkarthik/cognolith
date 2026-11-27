@@ -5,16 +5,29 @@
  * lose them. Repeated updates of one resource collapse into a single request, so a burst
  * of autosaves replays as one save; notes also carry `expected_revision`, so a replay
  * over newer changes is refused by the server instead of overwriting them.
+ *
+ * Every tab of the origin shares the storage. Each write records the account that made
+ * it, and a replay runs under a cross-tab lock and starts from what is stored, so one
+ * write is sent once and only as its owner.
  */
 
 export interface QueuedRequest {
   id: string;
+  // The signed-in user who made the write; it is replayed only as that user
+  ownerId: number;
   method: string;
   url: string;
   data?: unknown;
   params?: unknown;
   timestamp: number;
 }
+
+// The part of the Web Locks API the queue uses
+export interface ReplayLocks {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+}
+
+const REPLAY_LOCK = "cognolith-offline-replay";
 
 export interface QueueStorage {
   load(): Promise<QueuedRequest[]>;
@@ -65,7 +78,11 @@ export class RequestQueue {
   // Persistence runs in order, so a delete never lands before the put it follows
   private writes: Promise<void> = Promise.resolve();
 
-  constructor(private readonly storage: QueueStorage) {
+  constructor(
+    private readonly storage: QueueStorage,
+    // Without Web Locks (older browsers), tabs replay without coordinating
+    private readonly locks?: ReplayLocks,
+  ) {
     this.loaded = storage
       .load()
       .then((stored) => {
@@ -85,10 +102,12 @@ export class RequestQueue {
    * Queue a write. A PATCH to a resource that already has one queued is merged into it,
    * keeping its place in the order: the newer fields win.
    */
-  add(method: string, url: string, config: { data?: unknown; params?: unknown } = {}): string {
+  add(ownerId: number, method: string, url: string, config: { data?: unknown; params?: unknown } = {}): string {
     const upperMethod = method.toUpperCase();
     if (upperMethod === "PATCH") {
-      const pending = this.getAll().find((request) => request.method === "PATCH" && request.url === url);
+      const pending = this.getAll().find(
+        (request) => request.method === "PATCH" && request.url === url && request.ownerId === ownerId,
+      );
       if (pending) {
         const data =
           isPlainObject(pending.data) && isPlainObject(config.data)
@@ -102,6 +121,7 @@ export class RequestQueue {
     }
     const request: QueuedRequest = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      ownerId,
       method: upperMethod,
       url,
       data: plainCopy(config.data),
@@ -136,27 +156,58 @@ export class RequestQueue {
     await this.writes;
   }
 
-  /** Replay in order; stop at the first request that should be tried again later. */
+  /**
+   * Replay in order; stop at the first request that should be tried again later.
+   * Other tabs wait for the lock and then see only what this replay left.
+   */
   async execute(onRequest: (request: QueuedRequest) => Promise<ReplayOutcome>): Promise<void> {
     await this.loaded;
     if (this.executing) return;
     this.executing = true;
     try {
-      for (const request of this.getAll()) {
-        let outcome: ReplayOutcome;
-        try {
-          outcome = await onRequest(request);
-        } catch {
-          outcome = "retry";
-        }
-        if (outcome === "retry") break;
-        // A newer edit merged in while this one was in flight was not sent: keep it
-        if (this.queue.get(request.id) !== request) continue;
-        this.remove(request.id);
-      }
+      if (this.locks) await this.locks.request(REPLAY_LOCK, () => this.replay(onRequest));
+      else await this.replay(onRequest);
     } finally {
       this.executing = false;
     }
+  }
+
+  private async replay(onRequest: (request: QueuedRequest) => Promise<ReplayOutcome>): Promise<void> {
+    await this.syncFromStorage();
+    for (const request of this.getAll()) {
+      let outcome: ReplayOutcome;
+      try {
+        outcome = await onRequest(request);
+      } catch {
+        outcome = "retry";
+      }
+      if (outcome === "retry") break;
+      // A newer edit merged in while this one was in flight was not sent: keep it
+      if (this.queue.get(request.id) !== request) continue;
+      this.remove(request.id);
+    }
+    await this.writes;
+  }
+
+  /**
+   * Make the stored queue, which every tab shares, this tab's queue: writes another
+   * tab already replayed are dropped here instead of being sent again.
+   */
+  private async syncFromStorage(): Promise<void> {
+    await this.writes;
+    const known = new Set(this.queue.keys());
+    let stored: QueuedRequest[];
+    try {
+      stored = await this.storage.load();
+    } catch {
+      return; // storage unavailable: this tab's own copy is all there is
+    }
+    const synced = new Map(stored.map((request) => [request.id, request]));
+    // Keep writes this tab queued while the storage was being read
+    for (const [id, request] of this.queue) {
+      if (!known.has(id) && !synced.has(id)) synced.set(id, request);
+    }
+    this.queue = synced;
   }
 
   private persist(write: () => Promise<void>): void {
@@ -210,4 +261,5 @@ export function indexedDbStorage(factory: IDBFactory): QueueStorage {
 // the queue then still works for the life of the tab.
 export const requestQueue = new RequestQueue(
   typeof indexedDB === "undefined" ? memoryStorage() : indexedDbStorage(indexedDB),
+  typeof navigator === "undefined" ? undefined : navigator.locks,
 );

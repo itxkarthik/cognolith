@@ -1,7 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { APIRequestError } from "@/lib/api/client";
-import type { NoteResponse, NoteUpdate } from "@/types";
+import { APIRequestError, apiClient, processOfflineQueue } from "@/lib/api/client";
+import { loadConflictDraft, saveConflictDraft } from "@/lib/utils/conflictDrafts";
+import { requestQueue } from "@/lib/utils/requestQueue";
+import { useAuthStore } from "@/store/authStore";
+import type { NoteResponse, NoteUpdate, User } from "@/types";
+
+const originalAdapter = apiClient.defaults.adapter;
 
 const updateNote = vi.fn<(id: number, payload: NoteUpdate) => Promise<NoteResponse>>();
 const getNoteById = vi.fn<(id: number) => Promise<NoteResponse>>();
@@ -78,5 +83,63 @@ describe("note draft saves", () => {
     expect(latest?.content).toBe("theirs");
     expect(updateNote).not.toHaveBeenCalled();
     expect(useNoteStore.getState().selectedNote?.revision).toBe(5);
+  });
+});
+
+describe("offline edits refused on replay", () => {
+  const OWNER = 7;
+
+  beforeEach(() => {
+    updateNote.mockReset();
+    getNoteById.mockReset();
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+      removeItem: (key: string) => void stored.delete(key),
+    });
+    useAuthStore.setState({ user: { id: OWNER } as User, isAuthenticated: true });
+    useNoteStore.setState({ notes: [note(1)], selectedNote: note(1), noteConflict: null, error: null });
+  });
+
+  afterEach(async () => {
+    apiClient.defaults.adapter = originalAdapter;
+    await requestQueue.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it("keep the typed text across a reload until a version is chosen", async () => {
+    requestQueue.add(OWNER, "PATCH", "/notes/1", { data: { content: "typed offline", expected_revision: 1 } });
+    apiClient.defaults.adapter = async (config) => {
+      const isMe = config.url === "/users/me";
+      const response = { data: isMe ? { id: OWNER } : {}, status: isMe ? 200 : 409, statusText: "", headers: {}, config };
+      if (isMe) return response;
+      throw Object.assign(new Error("HTTP 409"), { isAxiosError: true, response, config });
+    };
+    getNoteById.mockResolvedValue(note(2, "changed elsewhere"));
+
+    await processOfflineQueue();
+    await vi.waitFor(() => expect(useNoteStore.getState().noteConflict?.draft?.content).toBe("typed offline"));
+    expect(requestQueue.isEmpty()).toBe(true);
+
+    // A reload loses the store, not the refused edits
+    useNoteStore.setState({ noteConflict: null });
+    await useNoteStore.getState().restoreNoteConflict(1);
+    expect(useNoteStore.getState().noteConflict?.draft?.content).toBe("typed offline");
+
+    updateNote.mockImplementation(async (_id, payload) => note(3, payload.content));
+    await useNoteStore.getState().resolveNoteConflict("mine", { content: "typed offline" });
+    expect(updateNote).toHaveBeenLastCalledWith(1, { content: "typed offline", expected_revision: 2 });
+    expect(loadConflictDraft(1, OWNER)).toBeNull();
+  });
+
+  it("are not offered to another account", async () => {
+    saveConflictDraft(1, OWNER, { content: "private" });
+    useAuthStore.setState({ user: { id: 8 } as User });
+
+    await useNoteStore.getState().restoreNoteConflict(1);
+
+    expect(useNoteStore.getState().noteConflict).toBeNull();
+    expect(getNoteById).not.toHaveBeenCalled();
   });
 });

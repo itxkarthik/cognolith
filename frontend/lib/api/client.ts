@@ -126,7 +126,9 @@ apiClient.interceptors.request.use((config) => {
 
 	if (!isOnline && !config.offlineReplay && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
 		const url = config.url || "";
-		if (!isQueueable(method, url, config.data)) {
+		const ownerId = useAuthStore.getState().user?.id;
+		// A write is queued only for a known account, so it can't replay as another one
+		if (ownerId === undefined || !isQueueable(method, url, config.data)) {
 			return Promise.reject(
 				new APIRequestError("You are offline. Try again once the connection is back.", {
 					statusCode: 0,
@@ -134,7 +136,7 @@ apiClient.interceptors.request.use((config) => {
 				})
 			);
 		}
-		requestQueue.add(method, url, { data: config.data, params: config.params });
+		requestQueue.add(ownerId, method, url, { data: config.data, params: config.params });
 		return Promise.reject(
 			new APIRequestError("Saved offline; it will sync when the connection is back.", {
 				statusCode: 0,
@@ -302,8 +304,23 @@ export async function processOfflineQueue(): Promise<{ succeeded: number; failed
 	let succeeded = 0;
 	let failed = 0;
 	let conflicts = 0;
+	if (requestQueue.isEmpty()) return { succeeded, failed, conflicts };
+
+	// The cookies decide whose account a replay writes to, and another tab may have
+	// signed in as someone else since these writes were queued
+	let signedInId: number;
+	try {
+		signedInId = (await apiClient.get<{ id: number }>(apiConfig.endpoints.me)).data.id;
+	} catch {
+		return { succeeded, failed, conflicts }; // offline or signed out: keep the queue
+	}
 
 	await requestQueue.execute(async (req: QueuedRequest) => {
+		if (req.ownerId !== signedInId) {
+			// Another account's write: never sent, and never replayed later either
+			failed++;
+			return "done";
+		}
 		let result: OfflineReplayResult;
 		try {
 			const response = await apiClient({

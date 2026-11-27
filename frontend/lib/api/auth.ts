@@ -10,6 +10,7 @@ import type {
 	ResendVerificationResponse,
 } from "@/types";
 import { APIRequestError } from "@/lib/api/client";
+import { clearConflictDrafts } from "@/lib/utils/conflictDrafts";
 import { requestQueue } from "@/lib/utils/requestQueue";
 
 export async function login(payload: LoginRequest): Promise<TokenResponse> {
@@ -115,6 +116,7 @@ export async function logout(): Promise<MessageResponse> {
 	// Queued offline edits hold this account's content; they must not outlive the session
 	// or replay under the next account to sign in on this device
 	await requestQueue.clear();
+	clearConflictDrafts();
 	try {
 		const response = await apiClient.post<MessageResponse>(apiConfig.endpoints.logout);
 		return response.data;
