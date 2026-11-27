@@ -55,6 +55,7 @@ def _to_note_response(note: Notes) -> NoteResponse:
             _require_id(link.target_note_id, "Linked note") for link in note.source_links
         ],
         version=note.version,
+        revision=note.revision,
         is_favorite=note.is_favorite,
         is_archived=note.is_archived,
         is_pinned=note.is_pinned,

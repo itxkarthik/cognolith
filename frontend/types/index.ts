@@ -142,6 +142,8 @@ export interface NoteUpdate {
 	is_pinned?: boolean;
 	linked_document_id?: number | null;
 	linked_chat_session_id?: number | null;
+	// Revision the edit was based on; the server answers 409 if the note has moved on
+	expected_revision?: number;
 }
 
 export interface NoteResponse {
@@ -156,6 +158,7 @@ export interface NoteResponse {
 	tag_ids: number[];
 	linked_note_ids: number[];
 	version: number;
+	revision: number;
 	is_favorite: boolean;
 	is_archived: boolean;
 	is_pinned: boolean;

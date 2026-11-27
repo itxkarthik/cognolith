@@ -15,6 +15,7 @@ import {
   extractWikiLinkTitles,
   markdownToPlainText,
 } from "@/lib/markdown";
+import type { NoteDraftUpdate } from "@/store/noteStore";
 import type { NoteResponse } from "@/types";
 
 function formatDateTime(value: string): string {
@@ -38,6 +39,16 @@ const EMPTY_DRAFT: DraftState = {
   tagIds: [],
 };
 
+function draftUpdate(value: DraftState, note: NoteResponse): NoteDraftUpdate {
+  return {
+    title: value.title.trim() || "Untitled note",
+    content: value.content.trim() || "Start writing...",
+    content_type: "markdown",
+    tag_ids: value.tagIds,
+    folder_id: note.folder_id ?? null,
+  };
+}
+
 function draftFromNote(note: NoteResponse): DraftState {
   return {
     title: note.title,
@@ -59,7 +70,9 @@ export default function NotesPage() {
     isDeleting,
     error,
     createNote,
-    updateNoteById,
+    noteConflict,
+    saveNoteDraft,
+    resolveNoteConflict,
     deleteNoteById,
     createFolder,
     createTag,
@@ -149,15 +162,9 @@ export default function NotesPage() {
       if (!selectedNote) return;
       if (deletingNoteIdsRef.current.has(selectedNote.id)) return;
 
-      await updateNoteById(selectedNote.id, {
-        title: value.title.trim() || "Untitled note",
-        content: value.content.trim() || "Start writing...",
-        content_type: "markdown",
-        tag_ids: value.tagIds,
-        folder_id: selectedNote.folder_id ?? null,
-      });
+      await saveNoteDraft(selectedNote.id, draftUpdate(value, selectedNote));
     },
-    [selectedNote, updateNoteById]
+    [selectedNote, saveNoteDraft]
   );
 
   const { isSaving: isAutoSaving, lastSavedAt, error: autoSaveError } = useAutoSave({
@@ -235,6 +242,22 @@ export default function NotesPage() {
   }, [clearError, deleteNoteById, selectedNote, setSelectedNote]);
 
   const isSavingState = isSaving || isAutoSaving;
+  const hasConflict = Boolean(selectedNote && noteConflict?.noteId === selectedNote.id);
+
+  const handleLoadLatest = useCallback(async () => {
+    const latest = await resolveNoteConflict("theirs");
+    if (latest) setDraftsByNoteId((prev) => ({ ...prev, [latest.id]: draftFromNote(latest) }));
+  }, [resolveNoteConflict]);
+
+  const handleKeepMine = useCallback(async () => {
+    if (!noteConflict) return;
+    try {
+      // Fields the editor doesn't show (the folder) come from the newer server copy
+      await resolveNoteConflict("mine", draftUpdate(draft, noteConflict.latest));
+    } catch {
+      // A newer conflict or a failed save is shown by the banner or the save status
+    }
+  }, [draft, noteConflict, resolveNoteConflict]);
   const selectedFolderName = useMemo(() => {
     if (filters.folderId === null) {
       return "All notes";
@@ -321,6 +344,18 @@ export default function NotesPage() {
             </div>
           ) : null}
 
+          {hasConflict ? (
+            <div role="alert" className="flex flex-wrap items-center gap-2 border-b border-[#ff9f0a] bg-[#ff9f0a]/10 px-4 py-2 text-xs text-foreground">
+              <span className="flex-1">This note was changed in another tab or device. Your latest edits are not saved.</span>
+              <button type="button" onClick={() => void handleLoadLatest()} className="rounded-sm border border-border bg-background px-2 py-1 hover:bg-muted">
+                Load latest
+              </button>
+              <button type="button" onClick={() => void handleKeepMine()} className="rounded-sm border border-border bg-background px-2 py-1 hover:bg-muted">
+                Keep mine
+              </button>
+            </div>
+          ) : null}
+
           <NoteEditor
             note={selectedNote}
             title={draft.title}
@@ -329,7 +364,7 @@ export default function NotesPage() {
             tags={tags}
             isSaving={isSavingState}
             lastSavedAt={lastSavedAt}
-            autoSaveError={autoSaveError}
+            autoSaveError={hasConflict ? null : autoSaveError}
             onTitleChange={(title) => {
               setDraftForSelectedNote((prev) => ({ ...prev, title }));
             }}

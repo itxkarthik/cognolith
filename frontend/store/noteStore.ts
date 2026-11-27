@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { APIRequestError } from "@/lib/api/client";
 import {
 	createFolder as createFolderRequest,
 	createNote as createNoteRequest,
@@ -23,6 +24,24 @@ import type {
 } from "@/types";
 
 type NotesViewMode = "grid" | "list";
+
+export type NoteDraftUpdate = Omit<NoteUpdate, "expected_revision">;
+
+// The note changed elsewhere after this editor loaded it; `latest` is the server copy
+export interface NoteConflict {
+	noteId: number;
+	latest: NoteResponse;
+}
+
+export class NoteConflictError extends Error {
+	constructor() {
+		super("This note was changed in another tab or device.");
+		this.name = "NoteConflictError";
+	}
+}
+
+// Draft saves per note, chained so each one sends the revision the previous returned
+const draftSaves = new Map<number, Promise<unknown>>();
 
 interface NoteFilters {
 	search: string;
@@ -48,6 +67,11 @@ interface NoteState {
 	fetchNoteById: (id: number) => Promise<void>;
 	createNote: (payload: NoteCreate) => Promise<NoteResponse>;
 	updateNoteById: (id: number, payload: NoteUpdate) => Promise<NoteResponse>;
+	noteConflict: NoteConflict | null;
+	// Save editor content based on the last revision this tab saw
+	saveNoteDraft: (id: number, payload: NoteDraftUpdate) => Promise<NoteResponse>;
+	// "mine" overwrites the newer server copy with `draft`; "theirs" discards the draft
+	resolveNoteConflict: (choice: "mine" | "theirs", draft?: NoteDraftUpdate) => Promise<NoteResponse | null>;
 	deleteNoteById: (id: number) => Promise<void>;
 	fetchFolders: () => Promise<void>;
 	fetchTags: () => Promise<void>;
@@ -59,6 +83,10 @@ interface NoteState {
 	setTagFilter: (tagId: number | null) => void;
 	setViewMode: (mode: NotesViewMode) => void;
 	clearError: () => void;
+}
+
+function isConflict(error: unknown): boolean {
+	return error instanceof APIRequestError && error.statusCode === 409;
 }
 
 function buildListQuery(filters: NoteFilters, params: Partial<ListNotesParams> = {}): ListNotesParams {
@@ -92,6 +120,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 	notes: [],
 	total: 0,
 	selectedNote: null,
+	noteConflict: null,
 	folders: [],
 	tags: [],
 	filters: {
@@ -189,7 +218,56 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Failed to update note.";
 			set({ isSaving: false, error: message });
-			throw new Error(message);
+			// Keep the request error: callers tell a conflict (409) from other failures
+			throw error instanceof APIRequestError ? error : new Error(message);
+		}
+	},
+
+	saveNoteDraft: (id, payload) => {
+		const previous = draftSaves.get(id) ?? Promise.resolve();
+		const run = previous
+			.catch(() => undefined)
+			.then(async () => {
+				if (get().noteConflict?.noteId === id) throw new NoteConflictError();
+				const known = get().selectedNote?.id === id ? get().selectedNote : get().notes.find((note) => note.id === id);
+				try {
+					return await get().updateNoteById(id, { ...payload, expected_revision: known?.revision });
+				} catch (error) {
+					if (!isConflict(error)) throw error;
+					const latest = await getNoteById(id);
+					set({ noteConflict: { noteId: id, latest }, error: null });
+					throw new NoteConflictError();
+				}
+			});
+		draftSaves.set(id, run);
+		void run.finally(() => {
+			if (draftSaves.get(id) === run) draftSaves.delete(id);
+		}).catch(() => undefined);
+		return run;
+	},
+
+	resolveNoteConflict: async (choice, draft) => {
+		const conflict = get().noteConflict;
+		if (!conflict) return null;
+		const { noteId, latest } = conflict;
+		if (choice === "theirs") {
+			set((state) => ({
+				noteConflict: null,
+				notes: state.notes.map((note) => (note.id === noteId ? latest : note)),
+				selectedNote: state.selectedNote?.id === noteId ? latest : state.selectedNote,
+			}));
+			return latest;
+		}
+		set({ noteConflict: null });
+		try {
+			return await get().updateNoteById(noteId, { ...draft, expected_revision: latest.revision });
+		} catch (error) {
+			if (isConflict(error)) {
+				// Changed again while deciding: ask again against the newest copy
+				set({ noteConflict: { noteId, latest: await getNoteById(noteId) }, error: null });
+				throw new NoteConflictError();
+			}
+			throw error;
 		}
 	},
 

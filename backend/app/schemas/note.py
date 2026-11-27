@@ -139,6 +139,9 @@ class NoteUpdate(BaseModel):
     is_pinned: bool | None = None
     linked_document_id: int | None = None
     linked_chat_session_id: int | None = None
+    # The revision the client last saw; a different current revision is a 409 conflict.
+    # Omitted, the update applies unconditionally.
+    expected_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -184,6 +187,7 @@ class NoteResponse(BaseModel):
     tag_ids: list[int] = Field(default_factory=list)
     linked_note_ids: list[int] = Field(default_factory=list)
     version: int
+    revision: int
     is_favorite: bool
     is_archived: bool
     is_pinned: bool

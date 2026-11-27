@@ -20,6 +20,9 @@ export function useNotes() {
 	const fetchNoteById = useNoteStore((state) => state.fetchNoteById);
 	const createNote = useNoteStore((state) => state.createNote);
 	const updateNoteById = useNoteStore((state) => state.updateNoteById);
+	const noteConflict = useNoteStore((state) => state.noteConflict);
+	const saveNoteDraft = useNoteStore((state) => state.saveNoteDraft);
+	const resolveNoteConflict = useNoteStore((state) => state.resolveNoteConflict);
 	const deleteNoteById = useNoteStore((state) => state.deleteNoteById);
 	const fetchFolders = useNoteStore((state) => state.fetchFolders);
 	const fetchTags = useNoteStore((state) => state.fetchTags);
@@ -62,6 +65,9 @@ export function useNotes() {
 		fetchNoteById,
 		createNote,
 		updateNoteById,
+		noteConflict,
+		saveNoteDraft,
+		resolveNoteConflict,
 		deleteNoteById,
 		fetchFolders,
 		fetchTags,

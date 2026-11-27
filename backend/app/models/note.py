@@ -155,6 +155,8 @@ class Notes(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     )
     parent_note_id: int | None = Field(default=None, foreign_key="notes.id", ondelete="CASCADE")
     version: int = Field(default=1)
+    # Bumped on every write; editors send the one they saw so a stale save is refused
+    revision: int = Field(default=1, sa_column_kwargs={"server_default": "1"})
     previous_version_id: int | None = Field(
         default=None, foreign_key="notes.id", ondelete="SET NULL"
     )

@@ -7,6 +7,7 @@ from sqlalchemy import ColumnElement, func, update
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, or_, select
 
+from app.core.exceptions import ConflictError
 from app.models.document import Document
 from app.models.note import NoteFolders, NoteLinks, NoteLinkType, Notes, NoteTagRelations, NoteTags
 from app.models.user import User
@@ -24,6 +25,10 @@ from app.utils.text_processing import (
 # useful without a row per keystroke burst.
 NOTE_VERSION_INTERVAL = timedelta(minutes=10)
 NOTE_VERSION_RETENTION = 50
+NOTE_CONFLICT_MESSAGE = (
+    "This note was changed in another tab or device since you opened it. "
+    "Load the latest version or overwrite it with yours."
+)
 _VERSIONED_FIELDS = {"title", "content"}
 
 
@@ -185,9 +190,16 @@ def update_note(
 ) -> Notes:
     user_id = _require_persisted_id(current_user.id, "User")
     note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
-    update_data = payload.model_dump(exclude_unset=True)
+    update_data = payload.model_dump(exclude_unset=True, exclude={"expected_revision"})
     if not update_data:
         return note
+    # Lock the row until commit: two saves made from one revision can't both pass the
+    # check, and concurrent writes can't lose a revision increment
+    note.revision = session.exec(
+        select(Notes.revision).where(col(Notes.id) == note.id).with_for_update()
+    ).one()
+    if payload.expected_revision is not None and note.revision != payload.expected_revision:
+        raise ConflictError(NOTE_CONFLICT_MESSAGE)
 
     _validate_folder_access(
         session=session, user_id=user_id, folder_id=update_data.get("folder_id")
@@ -225,6 +237,7 @@ def update_note(
         setattr(note, field_name, value)
 
     note.last_edited_at = datetime.now(UTC)
+    note.revision += 1
 
     # Snapshot, pruning and update commit together, so a failed update leaves no orphan
     session.add(note)
@@ -332,7 +345,7 @@ def delete_folder(*, session: Session, current_user: User, folder_id: int) -> No
     session.exec(
         update(Notes)
         .where(col(Notes.user_id) == user_id, col(Notes.folder_id) == folder_id)
-        .values(folder_id=parent_id)
+        .values(folder_id=parent_id, revision=col(Notes.revision) + 1)
     )
     children = session.exec(
         select(NoteFolders)
@@ -432,6 +445,7 @@ def move_note_to_folder(
     _validate_folder_access(session=session, user_id=user_id, folder_id=folder_id)
     note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
     note.folder_id = folder_id
+    note.revision += 1
     session.add(note)
     session.commit()
     session.refresh(note)

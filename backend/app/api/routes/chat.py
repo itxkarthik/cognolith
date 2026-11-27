@@ -211,6 +211,7 @@ def _to_note_response(note: Any) -> NoteResponse:
         tag_ids=[tag.id for tag in note.tags],
         linked_note_ids=[link.target_note_id for link in note.source_links],
         version=note.version,
+        revision=note.revision,
         is_favorite=note.is_favorite,
         is_archived=note.is_archived,
         is_pinned=note.is_pinned,
