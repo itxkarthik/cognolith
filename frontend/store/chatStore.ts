@@ -196,10 +196,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 		});
 
 		let started = false;
+		let notStartedError: string | null = null;
 		let finalMessage: ChatMessageResponse | null = null;
 		const controller = new AbortController();
 		activeControllers.set(sessionId, controller);
 		const applyEvent = (event: ChatStreamEvent) => {
+			// Nothing was saved, so there is no reply to load afterwards
+			if (event.type === "error" && event.assistant_message_id === null) notStartedError = event.message;
 			set((state) => {
 				if (!state.selectedSession || state.selectedSession.id !== sessionId) return {};
 				let messages = state.selectedSession.messages;
@@ -232,6 +235,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
 		try {
 			await streamChatMessage(sessionId, normalizedContent, { signal: controller.signal, onEvent: applyEvent });
+			if (notStartedError) throw new Error(notStartedError);
 			if (!finalMessage) {
 				const refreshed = await getChatSessionById(sessionId);
 				finalMessage = [...refreshed.messages].reverse().find((item) => item.role === "assistant") ?? null;
@@ -302,11 +306,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 		const controller = new AbortController();
 		activeControllers.set(sessionId, controller);
 		let finalMessage: ChatMessageResponse | null = null;
+		let retryError: string | null = null;
 		set((state) => ({ pendingMessageRequests: beginChatRequest(state.pendingMessageRequests, sessionId), error: null }));
 		try {
 			await retryChatMessage(sessionId, messageId, {
 				signal: controller.signal,
 				onEvent: (event) => {
+					if (event.type === "error" && event.assistant_message_id === null) retryError = event.message;
 					set((state) => {
 						if (!state.selectedSession || state.selectedSession.id !== sessionId) return {};
 						let messages = state.selectedSession.messages;
@@ -318,6 +324,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 					});
 				},
 			});
+			if (retryError) throw new Error(retryError);
 			if (!finalMessage) throw new Error("The retried response was not persisted.");
 			return finalMessage;
 		} finally {
