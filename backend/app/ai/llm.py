@@ -197,9 +197,23 @@ def resolve_llm_config(
 
 
 class LLMService:
-    def __init__(self, *, session: Session, user_id: int, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        session: Session | None,
+        user_id: int,
+        base_url: str | None = None,
+        config: LLMConfig | None = None,
+    ) -> None:
+        """
+        Pass `config` (from resolve_llm_config) to call the model without a session,
+        e.g. from a stream on the event loop, where a settings query would block.
+        """
+        if session is None and config is None:
+            raise ValueError("LLMService needs a session or a resolved config")
         self.session = session
         self.user_id = user_id
+        self.config = config
         self.provider: BaseLLMProvider = OllamaLLMProvider(base_url=base_url)
         # Generated tokens across this service's calls (e.g. a draft plus its repair)
         self.usage = TokenUsage()
@@ -213,13 +227,8 @@ class LLMService:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> str:
-        config = resolve_llm_config(
-            session=self.session,
-            user_id=self.user_id,
-            provider=provider,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
+        config = self._config(
+            provider=provider, model=model, temperature=temperature, max_tokens=max_tokens
         )
         return await self.provider.complete(
             messages=messages,
@@ -236,12 +245,7 @@ class LLMService:
         provider: str | None = None,
         model: str | None = None,
     ) -> AsyncIterator[str]:
-        config = resolve_llm_config(
-            session=self.session,
-            user_id=self.user_id,
-            provider=provider,
-            model=model,
-        )
+        config = self._config(provider=provider, model=model)
         async for chunk in self.provider.stream(
             messages=messages,
             model=config.model,
@@ -250,6 +254,28 @@ class LLMService:
             usage=self.usage,
         ):
             yield chunk
+
+    def _config(
+        self,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMConfig:
+        overrides = (provider, model, temperature, max_tokens)
+        if self.config is not None and all(value is None for value in overrides):
+            return self.config
+        if self.session is None:
+            raise ValueError("Overriding the resolved config needs a session")
+        return resolve_llm_config(
+            session=self.session,
+            user_id=self.user_id,
+            provider=provider,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
 
 def build_chat_messages(

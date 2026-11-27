@@ -1468,7 +1468,7 @@ def coordinator_restore(
     exporter = CoordinatorExporter(now)
     processed_document_ids: list[int] = []
 
-    async def process_document(
+    def process_document(
         session: Session, user_id: int, document_id: int
     ) -> None:
         assert user_id == user.id

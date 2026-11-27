@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import re
 from collections.abc import Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from typing import Any
@@ -32,6 +30,7 @@ from app.ai.vectorstore import (
 from app.models.document import Document, DocumentChunks, DocumentEmbeddingStatus
 from app.models.note import Notes
 from app.models.user import UserSettings
+from app.utils.sync_async import run_coroutine_sync
 from app.utils.text_processing import create_content_preview
 
 
@@ -265,7 +264,7 @@ def run_rag_pipeline(
         conversation_history=conversation_history,
     )
     llm = LLMService(session=session, user_id=user_id)
-    answer = _run_async(llm.generate_response(messages=prepared.messages)).strip()
+    answer = run_coroutine_sync(llm.generate_response(messages=prepared.messages)).strip()
     generated_tokens = llm.usage.generated_tokens
     if not prepared.grounded:
         return RAGResult(answer=answer, sources=_empty_sources(), generated_tokens=generated_tokens)
@@ -306,7 +305,7 @@ def prepare_rag_pipeline(
         query=query, conversation_history=conversation_history
     )
     retrieval_query = retrieval_context.retrieval_query
-    query_embedding, embedding_model = _run_async(
+    query_embedding, embedding_model = run_coroutine_sync(
         generate_embedding(session=session, user_id=user_id, text=retrieval_query)
     )
     user_settings = session.get(UserSettings, user_id)
@@ -1130,7 +1129,7 @@ def ensure_workspace_embeddings(
 
         for start in range(0, len(missing_chunks), EMBEDDING_BATCH_SIZE):
             batch = missing_chunks[start : start + EMBEDDING_BATCH_SIZE]
-            embeddings, _ = _run_async(
+            embeddings, _ = run_coroutine_sync(
                 generate_embeddings(
                     session=session,
                     user_id=user_id,
@@ -1179,7 +1178,7 @@ def ensure_workspace_embeddings(
         for batch in _whole_note_batches(stale_notes, max_chunks=EMBEDDING_BATCH_SIZE):
             embeddings: list[list[float]] = []
             for start in range(0, len(batch), EMBEDDING_BATCH_SIZE):
-                vectors, _ = _run_async(
+                vectors, _ = run_coroutine_sync(
                     generate_embeddings(
                         session=session,
                         user_id=user_id,
@@ -1212,7 +1211,7 @@ def ensure_workspace_embeddings(
 
         for start in range(0, len(stale_messages), EMBEDDING_BATCH_SIZE):
             batch = stale_messages[start : start + EMBEDDING_BATCH_SIZE]
-            embeddings, _ = _run_async(
+            embeddings, _ = run_coroutine_sync(
                 generate_embeddings(
                     session=session,
                     user_id=user_id,
@@ -1313,14 +1312,3 @@ def _build_sources_payload(
             for hit in note_hits
         ],
     }
-
-
-def _run_async(coro: Any) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(lambda: asyncio.run(coro))
-        return future.result()

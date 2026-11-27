@@ -1,6 +1,7 @@
 """Background document processing inside the API process."""
 
 import asyncio
+import threading
 import time
 from io import BytesIO
 from typing import Any
@@ -20,6 +21,7 @@ from app.services.document_processing import (
     ATTEMPTS_EXHAUSTED_ERROR,
     MAX_PROCESSING_ATTEMPTS,
     DocumentProcessor,
+    ProcessingStoppedError,
     document_processor,
 )
 
@@ -29,13 +31,16 @@ from app.services.document_processing import (
 def test_processing_is_limited_to_the_configured_concurrency() -> None:
     running = 0
     peak = 0
+    lock = threading.Lock()
 
-    async def process(**_: Any) -> None:
+    def process(**_: Any) -> None:
         nonlocal running, peak
-        running += 1
-        peak = max(peak, running)
-        await asyncio.sleep(0.02)
-        running -= 1
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
 
     async def scenario() -> None:
         processor = DocumentProcessor(concurrency=2, process=process)
@@ -51,9 +56,9 @@ def test_processing_is_limited_to_the_configured_concurrency() -> None:
 def test_a_document_already_processing_is_not_scheduled_twice() -> None:
     calls: list[int] = []
 
-    async def process(*, document_id: int, **_: Any) -> None:
+    def process(*, document_id: int, **_: Any) -> None:
         calls.append(document_id)
-        await asyncio.sleep(0.01)
+        time.sleep(0.01)
 
     async def scenario() -> bool:
         processor = DocumentProcessor(process=process)
@@ -69,7 +74,7 @@ def test_a_document_already_processing_is_not_scheduled_twice() -> None:
 def test_a_failing_document_does_not_stop_the_others() -> None:
     done: list[int] = []
 
-    async def process(*, document_id: int, **_: Any) -> None:
+    def process(*, document_id: int, **_: Any) -> None:
         if document_id == 1:
             raise RuntimeError("corrupt file")
         done.append(document_id)
@@ -85,25 +90,47 @@ def test_a_failing_document_does_not_stop_the_others() -> None:
     assert done == [2]
 
 
-def test_shutdown_cancels_in_flight_processing() -> None:
+def test_shutdown_stops_in_flight_processing_and_waits_for_it() -> None:
     events: list[str] = []
 
-    async def process(**_: Any) -> None:
-        try:
-            await asyncio.sleep(10)
-        except asyncio.CancelledError:
-            events.append("cancelled")
-            raise
+    def process(*, stop: threading.Event, **_: Any) -> None:
+        deadline = time.monotonic() + 10
+        while not stop.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        events.append("stopped" if stop.is_set() else "ran to the end")
+        raise ProcessingStoppedError
 
     async def scenario() -> None:
         processor = DocumentProcessor(process=process)
         processor.schedule(user_id=1, document_id=1)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
         await processor.shutdown()
+        # Returned only once the run had stopped
+        assert events == ["stopped"]
 
     asyncio.run(scenario())
 
-    assert events == ["cancelled"]
+
+def test_processing_runs_off_the_event_loop() -> None:
+    gaps: list[float] = []
+
+    def process(**_: Any) -> None:
+        time.sleep(0.3)  # file parsing, database writes, model calls
+
+    async def scenario() -> None:
+        processor = DocumentProcessor(process=process)
+        processor.schedule(user_id=1, document_id=1)
+        last = time.perf_counter()
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+        await processor.wait_idle()
+
+    asyncio.run(scenario())
+
+    assert max(gaps) < 0.1
 
 
 # With the database
@@ -142,9 +169,10 @@ async def test_upload_returns_before_processing_then_completes_in_the_background
     user = _user(session)
 
     document = await document_service.upload_and_process_document(
-        session=session,
         current_user=user,
-        file=UploadFile(filename="atlas.txt", file=BytesIO(b"The Atlas launch window is Friday morning.")),
+        file=UploadFile(
+            filename="atlas.txt", file=BytesIO(b"The Atlas launch window is Friday morning.")
+        ),
     )
     assert document.status == "processing"
     assert document.content is None
@@ -186,7 +214,7 @@ async def test_startup_resumes_only_interrupted_documents(session: Session, tmp_
     _document(session, user, (tmp_path / "c.txt").as_posix(), "processing", is_deleted=True)
     resumed: list[int] = []
 
-    async def process(*, document_id: int, **_: Any) -> None:
+    def process(*, document_id: int, **_: Any) -> None:
         resumed.append(document_id)
 
     processor = DocumentProcessor(process=process)
@@ -209,10 +237,10 @@ def _fake_embeddings(*, fail: bool = False):
     return generate
 
 
-async def _process(session: Session, user: User, document: Document) -> Document:
+def _process(session: Session, user: User, document: Document) -> Document:
     assert user.id is not None and document.id is not None
     try:
-        await document_service.process_existing_document(
+        document_service.process_existing_document(
             session=session, user_id=user.id, document_id=document.id
         )
     except Exception:
@@ -223,49 +251,46 @@ async def _process(session: Session, user: User, document: Document) -> Document
     return processed
 
 
-def _text_document(session: Session, user: User, tmp_path, content: str = "Atlas notes") -> Document:
+def _text_document(
+    session: Session, user: User, tmp_path, content: str = "Atlas notes"
+) -> Document:
     path = tmp_path / "atlas.txt"
     path.write_text(content)
     return _document(session, user, path.as_posix(), "processing")
 
 
-@pytest.mark.asyncio
-async def test_a_document_whose_embedding_fails_is_flagged(
+def test_a_document_whose_embedding_fails_is_flagged(
     session: Session, tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setattr(document_service, "generate_embeddings", _fake_embeddings(fail=True))
     monkeypatch.setattr(document_service, "generate_document_summary", _no_summary)
     user = _user(session)
 
-    processed = await _process(session, user, _text_document(session, user, tmp_path))
+    processed = _process(session, user, _text_document(session, user, tmp_path))
 
     assert processed.status == "completed"
     assert processed.embedding_status == DocumentEmbeddingStatus.failed
 
 
-@pytest.mark.asyncio
-async def test_an_embedded_document_is_marked_indexed(
-    session: Session, tmp_path, monkeypatch
-) -> None:
+def test_an_embedded_document_is_marked_indexed(session: Session, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(document_service, "generate_embeddings", _fake_embeddings())
     monkeypatch.setattr(document_service, "generate_document_summary", _no_summary)
     user = _user(session)
 
-    processed = await _process(session, user, _text_document(session, user, tmp_path))
+    processed = _process(session, user, _text_document(session, user, tmp_path))
 
     assert processed.embedding_status == DocumentEmbeddingStatus.indexed
     assert processed.processing_attempts == 1
 
 
-@pytest.mark.asyncio
-async def test_the_next_search_reindexes_a_failed_document(
+def test_the_next_search_reindexes_a_failed_document(
     session: Session, tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setattr(document_service, "generate_embeddings", _fake_embeddings(fail=True))
     monkeypatch.setattr(document_service, "generate_document_summary", _no_summary)
     monkeypatch.setattr(rag, "generate_embeddings", _fake_embeddings())
     user = _user(session)
-    document = await _process(session, user, _text_document(session, user, tmp_path))
+    document = _process(session, user, _text_document(session, user, tmp_path))
     assert document.embedding_status == DocumentEmbeddingStatus.failed
     assert user.id is not None
 
@@ -282,13 +307,12 @@ async def test_the_next_search_reindexes_a_failed_document(
     assert reindexed.embedding_status == DocumentEmbeddingStatus.indexed
 
 
-@pytest.mark.asyncio
-async def test_extraction_that_hangs_times_out(session: Session, tmp_path, monkeypatch) -> None:
+def test_extraction_that_hangs_times_out(session: Session, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(settings, "DOCUMENT_EXTRACTION_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(document_service, "extract_text_from_file", _slow_extract)
     user = _user(session)
 
-    processed = await _process(session, user, _text_document(session, user, tmp_path))
+    processed = _process(session, user, _text_document(session, user, tmp_path))
 
     assert processed.status == "failed"
     assert processed.processing_error is not None
@@ -337,7 +361,7 @@ async def test_startup_gives_up_on_a_document_after_repeated_crashes(
     )
     resumed: list[int] = []
 
-    async def process(*, document_id: int, **_: Any) -> None:
+    def process(*, document_id: int, **_: Any) -> None:
         resumed.append(document_id)
 
     processor = DocumentProcessor(process=process)

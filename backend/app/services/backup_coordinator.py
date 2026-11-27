@@ -106,7 +106,9 @@ class BackupImporterFactory(Protocol):
 
 
 class RestoredDocumentProcessor(Protocol):
-    async def __call__(
+    """Blocking; called in a worker thread."""
+
+    def __call__(
         self, session: Session, user_id: int, document_id: int
     ) -> Any: ...
 
@@ -407,7 +409,9 @@ class BackupCoordinator:
     ) -> None:
         for document_id in document_ids:
             try:
-                await self.document_processor(session, user_id, document_id)
+                await asyncio.to_thread(
+                    self.document_processor, session, user_id, document_id
+                )
             except Exception:
                 logger.exception(
                     "Restored document reprocessing failed",

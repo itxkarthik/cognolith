@@ -3,9 +3,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import delete, func, update
@@ -16,14 +20,16 @@ from app.ai.document_summary import generate_document_summary
 from app.ai.embeddings import generate_embeddings
 from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
+from app.core.database import engine
 from app.core.exceptions import AIServiceUnavailableError
 from app.models.document import Document, DocumentChunks, DocumentEmbeddingStatus
 from app.models.user import User
 from app.schemas.document import DocumentUpdate
-from app.services.document_processing import document_processor
+from app.services.document_processing import ProcessingStoppedError, document_processor
 from app.utils.file_processing import extract_text_from_file
 from app.utils.file_validation import validate_upload_file
 from app.utils.search import contains_ignoring_case
+from app.utils.sync_async import run_coroutine_sync
 from app.utils.text_processing import clean_text, create_content_preview, split_text_into_chunks
 
 logger = logging.getLogger(__name__)
@@ -71,7 +77,6 @@ def _mark_document_failed(*, session: Session, document_id: int | None, reason: 
 
 async def upload_and_process_document(
     *,
-    session: Session,
     current_user: User,
     file: UploadFile,
     title: str | None = None,
@@ -82,30 +87,16 @@ async def upload_and_process_document(
     if current_user.id is None:
         raise HTTPException(status_code=400, detail="Invalid user context")
 
-    saved_path = await _save_upload(file)
-    file_size = Path(saved_path).stat().st_size
-
-    document = Document(
+    # Writing the file and the row are blocking I/O; keep them off the event loop
+    document = await asyncio.to_thread(
+        _store_upload,
         user_id=current_user.id,
-        title=title or file.filename or "Untitled",
-        file_name=file.filename or Path(saved_path).name,
-        file_path=saved_path,
-        file_size=file_size,
-        file_type=Path(saved_path).suffix.lower(),
-        mime_type=file.content_type or "application/octet-stream",
+        file=file,
+        title=title,
         tags=tags or [],
         language=language,
-        status="processing",
     )
-    try:
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-    except Exception:
-        _remove_uploaded_file(saved_path)
-        raise
     if document.id is None:
-        _remove_uploaded_file(saved_path)
         raise HTTPException(status_code=500, detail="Failed to save document")
 
     # Extraction, embedding and the summary run in the background; the client polls
@@ -114,11 +105,50 @@ async def upload_and_process_document(
     return document
 
 
-async def process_existing_document(
+def _store_upload(
+    *, user_id: int, file: UploadFile, title: str | None, tags: list[str], language: str
+) -> Document:
+    """In a worker thread, with its own session: save the file, then its document row."""
+    saved_path = _save_upload(file)
+    try:
+        document = Document(
+            user_id=user_id,
+            title=title or file.filename or "Untitled",
+            file_name=file.filename or Path(saved_path).name,
+            file_path=saved_path,
+            file_size=Path(saved_path).stat().st_size,
+            file_type=Path(saved_path).suffix.lower(),
+            mime_type=file.content_type or "application/octet-stream",
+            tags=tags,
+            language=language,
+            status="processing",
+        )
+        with Session(engine) as session:
+            session.add(document)
+            session.commit()
+            session.refresh(document)
+            session.expunge(document)
+        return document
+    except BaseException:
+        _remove_uploaded_file(saved_path)
+        raise
+
+
+def _check_stop(stop: Event | None) -> None:
+    if stop is not None and stop.is_set():
+        raise ProcessingStoppedError
+
+
+def process_existing_document(
     session: Session,
     user_id: int,
     document_id: int,
+    stop: Event | None = None,
 ) -> Document:
+    """
+    Extract, chunk, embed and summarise a document. Blocking: it runs in a worker
+    thread, and checks `stop` between steps so shutdown doesn't wait for a whole run.
+    """
     document = session.get(Document, document_id)
     if document is None or document.user_id != user_id:
         raise ValueError("Document is unavailable for processing")
@@ -143,7 +173,8 @@ async def process_existing_document(
     session.commit()
 
     try:
-        content = clean_text(await _extract_text(document.file_path))
+        content = clean_text(_extract_text(document.file_path, stop))
+        _check_stop(stop)
         chunk_size, chunk_overlap = chunking_preferences(session, user_id)
         chunks = split_text_into_chunks(content, chunk_size=chunk_size, overlap=chunk_overlap)
         document.content = content
@@ -169,10 +200,12 @@ async def process_existing_document(
         document.embedding_status = DocumentEmbeddingStatus.indexed
         if chunk_rows:
             try:
-                embeddings, embedding_model = await generate_embeddings(
-                    session=session,
-                    user_id=user_id,
-                    texts=[chunk.content for chunk in chunk_rows],
+                embeddings, embedding_model = run_coroutine_sync(
+                    generate_embeddings(
+                        session=session,
+                        user_id=user_id,
+                        texts=[chunk.content for chunk in chunk_rows],
+                    )
                 )
                 PgVectorStore(session=session).store_document_chunk_embeddings(
                     chunks=chunk_rows,
@@ -187,13 +220,16 @@ async def process_existing_document(
                     extra={"document_id": document.id, "user_id": user_id},
                 )
 
+        _check_stop(stop)
         if content:
             try:
-                document.summary = await generate_document_summary(
-                    session=session,
-                    user_id=user_id,
-                    title=document.title,
-                    content=content,
+                document.summary = run_coroutine_sync(
+                    generate_document_summary(
+                        session=session,
+                        user_id=user_id,
+                        title=document.title,
+                        content=content,
+                    )
                 )
             except Exception:
                 document.summary = None
@@ -208,8 +244,7 @@ async def process_existing_document(
         session.commit()
         session.refresh(document)
         return document
-    except asyncio.CancelledError:
-        # Stopped by shutdown, which says nothing about the file: don't count the run
+    except ProcessingStoppedError:
         _uncount_attempt(session=session, document_id=document_id)
         raise
     except Exception as exc:
@@ -228,23 +263,34 @@ async def process_existing_document(
         raise
 
 
-async def _extract_text(file_path: str) -> str:
-    """
-    Extract a file's text off the event loop (PDF/DOCX parsing is CPU-bound).
+# How often a waiting job checks for shutdown
+STOP_POLL_SECONDS = 0.2
 
-    The timeout frees the processing slot and fails the document; the thread can't be
-    interrupted and finishes in the background, its result discarded.
+
+def _extract_text(file_path: str, stop: Event | None = None) -> str:
+    """
+    Extract a file's text in a thread of its own, so a parser that hangs can be timed
+    out (PDF/DOCX parsing can't be interrupted).
+
+    The timeout frees the processing slot and fails the document; the thread finishes
+    in the background, its result discarded.
     """
     timeout = settings.DOCUMENT_EXTRACTION_TIMEOUT_SECONDS
-    try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(extract_text_from_file, file_path), timeout=timeout
-        )
-    except TimeoutError:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Text extraction took longer than {timeout:g} seconds",
-        ) from None
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="extract-text")
+    future = executor.submit(extract_text_from_file, file_path)
+    executor.shutdown(wait=False)
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Text extraction took longer than {timeout:g} seconds",
+            )
+        try:
+            return future.result(timeout=min(STOP_POLL_SECONDS, remaining))
+        except FuturesTimeoutError:
+            _check_stop(stop)
 
 
 def _uncount_attempt(*, session: Session, document_id: int) -> None:
@@ -265,7 +311,8 @@ async def _validate_and_prepare(file: UploadFile) -> None:
     await validate_upload_file(file)
 
 
-async def _save_upload(file: UploadFile) -> str:
+def _save_upload(file: UploadFile) -> str:
+    """Copy the spooled upload to the upload directory. Blocking; called in a worker thread."""
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -276,7 +323,7 @@ async def _save_upload(file: UploadFile) -> str:
     total_size = 0
     try:
         with open(destination, "wb") as output:
-            while chunk := await file.read(settings.UPLOAD_CHUNK_SIZE):
+            while chunk := file.file.read(settings.UPLOAD_CHUNK_SIZE):
                 total_size += len(chunk)
                 if total_size > settings.MAX_FILE_SIZE:
                     raise HTTPException(
@@ -291,7 +338,7 @@ async def _save_upload(file: UploadFile) -> str:
         destination.unlink(missing_ok=True)
         raise
     finally:
-        await file.seek(0)
+        file.file.seek(0)
 
     return str(destination)
 
@@ -369,7 +416,7 @@ def update_document_metadata(
     return document
 
 
-async def regenerate_document_summary(
+def regenerate_document_summary(
     *, session: Session, current_user: User, document_id: int
 ) -> Document:
     document = get_document_by_id(
@@ -381,11 +428,13 @@ async def regenerate_document_summary(
         raise HTTPException(status_code=409, detail="Document content is not available")
 
     try:
-        document.summary = await generate_document_summary(
-            session=session,
-            user_id=current_user.id,
-            title=document.title,
-            content=document.content,
+        document.summary = run_coroutine_sync(
+            generate_document_summary(
+                session=session,
+                user_id=current_user.id,
+                title=document.title,
+                content=document.content,
+            )
         )
     except Exception as exc:
         logger.exception(

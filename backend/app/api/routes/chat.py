@@ -343,7 +343,7 @@ def send_message_endpoint(
         503: {"model": StandardErrorResponse, "description": "LLM service unavailable"},
     },
 )
-async def stream_message_endpoint(
+def stream_message_endpoint(
     *,
     session: SessionDep,
     current_user: CurrentUser,
@@ -389,7 +389,7 @@ def cancel_message_endpoint(
 
 
 @router.post(path="/sessions/{session_id}/messages/{message_id}/retry/stream")
-async def retry_message_endpoint(
+def retry_message_endpoint(
     *, session: SessionDep, current_user: CurrentUser, session_id: int, message_id: int
 ) -> StreamingResponse:
     if current_user.id is None:

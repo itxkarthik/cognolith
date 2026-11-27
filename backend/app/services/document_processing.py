@@ -2,13 +2,16 @@
 Background processing of uploaded documents inside the API process.
 
 An upload stores the file, saves the document with status "processing" and returns;
-extraction, embedding and the summary then run here as asyncio tasks, at most
-DOCUMENT_PROCESSING_CONCURRENCY at a time, while the client polls the status.
+extraction, embedding and the summary then run here, at most
+DOCUMENT_PROCESSING_CONCURRENCY at a time, while the client polls the status. Each
+run is blocking work (file parsing, database writes, model calls), so it runs in a
+worker thread and the event loop stays free for requests.
 
 The documents table is the durable record: a document still "processing" at startup
 was interrupted by a restart or crash and is processed again. That is safe because
-processing resets the document first. Shutdown cancels in-flight work, leaving those
-documents to be resumed on the next start without counting the interrupted run.
+processing resets the document first. Shutdown asks in-flight runs to stop at their
+next step and waits for them, leaving those documents to be resumed on the next
+start without counting the interrupted run.
 
 Each run counts an attempt before it starts. A file that crashes or hangs the process
 is therefore resumed MAX_PROCESSING_ATTEMPTS times at most, then marked failed.
@@ -18,8 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import UTC, datetime
+from threading import Event
 from typing import Any
 
 from sqlmodel import Session, col, select
@@ -30,7 +34,8 @@ from app.models.document import Document, DocumentStatus
 
 logger = logging.getLogger(__name__)
 
-ProcessFunction = Callable[..., Awaitable[Any]]
+# Called in a worker thread as process(session=, user_id=, document_id=, stop=)
+ProcessFunction = Callable[..., Any]
 
 MAX_PROCESSING_ATTEMPTS = 3
 ATTEMPTS_EXHAUSTED_ERROR = (
@@ -39,11 +44,15 @@ ATTEMPTS_EXHAUSTED_ERROR = (
 )
 
 
-async def _process_existing_document(**kwargs: Any) -> Any:
+class ProcessingStoppedError(Exception):
+    """Shutdown asked the run to stop: that says nothing about the file, so it isn't counted."""
+
+
+def _process_existing_document(**kwargs: Any) -> Any:
     # Imported here: document_service schedules work on this module's processor
     from app.services.document_service import process_existing_document
 
-    return await process_existing_document(**kwargs)
+    return process_existing_document(**kwargs)
 
 
 class DocumentProcessor:
@@ -56,6 +65,7 @@ class DocumentProcessor:
         self._concurrency = concurrency or settings.DOCUMENT_PROCESSING_CONCURRENCY
         self._process = process or _process_existing_document
         self._tasks: dict[int, asyncio.Task[None]] = {}
+        self._stops: dict[int, Event] = {}
         self._semaphore: asyncio.Semaphore | None = None
         self._semaphore_loop: asyncio.AbstractEventLoop | None = None
 
@@ -112,23 +122,42 @@ class DocumentProcessor:
             await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
 
     async def shutdown(self) -> None:
-        """Cancel in-flight work; those documents stay "processing" and resume on start."""
-        tasks = list(self._tasks.values())
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        """
+        Stop in-flight runs at their next step and wait for them; those documents stay
+        "processing" and resume on start. Runs still waiting for a slot don't start.
+        """
+        for stop in list(self._stops.values()):
+            stop.set()
+        await asyncio.gather(*list(self._tasks.values()), return_exceptions=True)
 
     async def _run(self, *, user_id: int, document_id: int) -> None:
-        async with self._limit():
-            try:
-                with Session(engine) as session:
-                    await self._process(session=session, user_id=user_id, document_id=document_id)
-            except Exception:
-                # The document is marked failed with the reason; nothing to propagate
-                logger.exception(
-                    "Background document processing failed",
-                    extra={"document_id": document_id, "user_id": user_id},
+        stop = self._stops.setdefault(document_id, Event())
+        try:
+            async with self._limit():
+                if stop.is_set():
+                    return
+                # Shielded: a cancelled task can't stop the thread, which must still
+                # see the stop request and leave the document as it should be
+                await asyncio.shield(
+                    asyncio.to_thread(
+                        self._run_in_thread, user_id=user_id, document_id=document_id, stop=stop
+                    )
                 )
+        finally:
+            self._stops.pop(document_id, None)
+
+    def _run_in_thread(self, *, user_id: int, document_id: int, stop: Event) -> None:
+        try:
+            with Session(engine) as session:
+                self._process(session=session, user_id=user_id, document_id=document_id, stop=stop)
+        except Exception as exc:
+            if isinstance(exc, ProcessingStoppedError):
+                return  # shutdown; resumed on the next start
+            # The document is marked failed with the reason; nothing to propagate
+            logger.exception(
+                "Background document processing failed",
+                extra={"document_id": document_id, "user_id": user_id},
+            )
 
     def _limit(self) -> asyncio.Semaphore:
         # A semaphore belongs to one event loop; tests run several loops in turn

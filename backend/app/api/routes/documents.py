@@ -43,7 +43,6 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def upload_document(
     *,
     response: Response,
-    session: SessionDep,
     current_user: CurrentUser,
     file: UploadFile = File(...),
     title: str | None = Form(default=None),
@@ -52,7 +51,6 @@ async def upload_document(
 ) -> Any:
     parsed_tags = [tag.strip() for tag in tags.split(",") if tag.strip()] if tags else []
     document = await upload_and_process_document(
-        session=session,
         current_user=current_user,
         file=file,
         title=title,
@@ -171,10 +169,10 @@ def _require_document_id(document_id: int | None) -> int:
         503: {"model": StandardErrorResponse, "description": "Local AI unavailable"},
     },
 )
-async def regenerate_document_summary_endpoint(
+def regenerate_document_summary_endpoint(
     *, session: SessionDep, current_user: CurrentUser, document_id: int
 ) -> Any:
-    return await regenerate_document_summary(
+    return regenerate_document_summary(
         session=session,
         current_user=current_user,
         document_id=document_id,
