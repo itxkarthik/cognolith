@@ -152,3 +152,25 @@ def test_startup_fails_replies_left_streaming_by_a_crash(
         )
     ).all()
     assert remaining == []
+
+
+def test_a_failed_read_after_the_claim_releases_it(
+    session: Session, chat: tuple[User, ChatSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user, chat_session = chat
+    _, chat_session_id = _ids(chat)
+
+    def failing_refresh(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("connection lost")
+
+    # The rows are committed, then reading them back fails
+    monkeypatch.setattr(session, "refresh", failing_refresh)
+    with pytest.raises(RuntimeError):
+        create_generation_messages(
+            session=session, user=user, chat_session=chat_session, content="Hello"
+        )
+    monkeypatch.undo()
+
+    assert not generation_coordinator.is_session_active(chat_session_id)
+    replies = [m for m in _messages(session, chat_session_id) if m.role == ChatRole.assistant]
+    assert [reply.generation_status for reply in replies] == [ChatGenerationStatus.failed]

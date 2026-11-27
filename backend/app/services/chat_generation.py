@@ -135,8 +135,9 @@ def create_generation_messages(
     if not chat_session.title:
         chat_session.title = content[:80]
     session.add(chat_session)
-    cancellation = _claim_and_commit(session=session, session_id=chat_session.id, reply=assistant)
-    session.refresh(user_message)
+    cancellation = _claim_and_commit(
+        session=session, session_id=chat_session.id, reply=assistant, question=user_message
+    )
     return user_message, assistant, cancellation
 
 
@@ -186,27 +187,65 @@ def create_retry_message(
     return user_message, assistant, cancellation
 
 
-def _claim_and_commit(*, session: Session, session_id: int, reply: ChatMessages) -> Event:
+def _claim_and_commit(
+    *,
+    session: Session,
+    session_id: int,
+    reply: ChatMessages,
+    question: ChatMessages | None = None,
+) -> Event:
     """
     Claim the chat session for `reply` before its rows are committed: losing the race
     rolls them back instead of leaving an orphan question or a reply stuck streaming.
+
+    Until this returns, the caller's stream hasn't taken ownership of the claim, so
+    every failure after it is taken releases it here.
     """
     session.flush()  # assigns the reply's id, which the claim is keyed on
-    if reply.id is None:
+    reply_id = reply.id
+    if reply_id is None:
         raise RuntimeError("Assistant message was not persisted")
     try:
-        cancellation = generation_coordinator.start(session_id=session_id, message_id=reply.id)
+        cancellation = generation_coordinator.start(session_id=session_id, message_id=reply_id)
     except HTTPException:
         session.rollback()
         raise
+    committed = False
     try:
         session.commit()
-    except Exception:
+        committed = True
+        session.refresh(reply)
+        if question is not None:
+            session.refresh(question)
+    except BaseException:
         session.rollback()
-        generation_coordinator.finish(session_id=session_id, message_id=reply.id)
+        if committed:
+            _mark_reply_failed(reply_id)
+        generation_coordinator.finish(session_id=session_id, message_id=reply_id)
         raise
-    session.refresh(reply)
     return cancellation
+
+
+def _mark_reply_failed(reply_id: int) -> None:
+    """Best effort, in its own session: a committed reply must not stay streaming."""
+    try:
+        with Session(engine) as session:
+            session.exec(
+                update(ChatMessages)
+                .where(
+                    col(ChatMessages.id) == reply_id,
+                    col(ChatMessages.generation_status) == ChatGenerationStatus.streaming,
+                )
+                .values(
+                    generation_status=ChatGenerationStatus.failed,
+                    generation_error=GENERATION_FAILED_MESSAGE,
+                    generation_completed_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+    except Exception:
+        # The startup sweep fails it on the next restart
+        logger.exception("Could not mark a reply failed", extra={"message_id": reply_id})
 
 
 def fail_interrupted_generations(session: Session) -> int:
@@ -354,11 +393,14 @@ async def stream_chat_generation(
             # A race the route's early check could not see; nothing was written
             yield _start_failed_event(str(exc.detail))
             return
-        if user_message.id is None or assistant.id is None:
-            raise RuntimeError("Reply rows were not persisted")
-        user_message_id = user_message.id
+        if assistant.id is None:
+            # The claim is keyed on this id, so none can be held
+            raise RuntimeError("Reply row was not persisted")
         assistant_message_id = assistant.id
         try:
+            if user_message.id is None:
+                raise RuntimeError("Question row was not persisted")
+            user_message_id = user_message.id
             yield encode_sse(
                 "generation_started",
                 {

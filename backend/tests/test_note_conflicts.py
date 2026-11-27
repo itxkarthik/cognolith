@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.database import engine
 from app.core.exceptions import ConflictError
 from app.main import app
-from app.models.note import Notes
+from app.models.note import Notes, NoteTags
 from app.models.user import User, UserCreate
 from app.schemas.note import NoteUpdate
 from app.services.note_service import update_note
@@ -118,3 +118,72 @@ def test_the_route_returns_409_with_a_conflict_error(user: User, note: Notes) ->
     assert first.status_code == 200 and first.json()["revision"] == 2
     assert stale.status_code == 409
     assert stale.json()["error"] == "conflict"
+
+
+def test_an_older_save_cannot_overwrite_newer_tags(
+    session: Session, user: User, note: Notes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert user.id is not None
+    old_tag = NoteTags(user_id=user.id, name="old")
+    new_tag = NoteTags(user_id=user.id, name="new")
+    session.add_all([old_tag, new_tag])
+    session.commit()
+    assert note.id is not None and old_tag.id is not None and new_tag.id is not None
+    note_id, old_id, new_id = note.id, old_tag.id, new_tag.id
+    first_committed = threading.Event()
+    second_done = threading.Event()
+    errors: list[BaseException] = []
+
+    def first_save() -> None:
+        with Session(engine) as own_session:
+            commit = own_session.commit
+
+            def commit_then_pause() -> None:
+                commit()
+                if not first_committed.is_set():
+                    # A newer save lands right after this one's first commit
+                    first_committed.set()
+                    second_done.wait(timeout=5)
+
+            own_session.commit = commit_then_pause  # type: ignore[method-assign]
+            own_user = own_session.get(User, user.id)
+            assert own_user is not None
+            try:
+                update_note(
+                    session=own_session,
+                    current_user=own_user,
+                    note_id=note_id,
+                    payload=NoteUpdate(content="first", tag_ids=[old_id], expected_revision=1),
+                )
+            except BaseException as exc:  # surfaced below
+                errors.append(exc)
+
+    def second_save() -> None:
+        first_committed.wait(timeout=5)
+        try:
+            with Session(engine) as own_session:
+                own_user = own_session.get(User, user.id)
+                assert own_user is not None
+                update_note(
+                    session=own_session,
+                    current_user=own_user,
+                    note_id=note_id,
+                    payload=NoteUpdate(content="second", tag_ids=[new_id], expected_revision=2),
+                )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            second_done.set()
+
+    threads = [threading.Thread(target=first_save), threading.Thread(target=second_save)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    session.expire_all()
+    saved = session.get(Notes, note_id)
+    assert saved is not None
+    assert saved.revision == 3
+    assert [tag.id for tag in saved.tags] == [new_id]

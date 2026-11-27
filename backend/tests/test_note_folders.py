@@ -1,5 +1,9 @@
 """Deleting, renaming and moving folders keeps notes and subfolders visible (issue #15)."""
 
+import threading
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -7,10 +11,12 @@ from sqlmodel import Session, SQLModel, select
 
 from app import crud
 from app.core.config import settings
+from app.core.database import engine
 from app.main import app
 from app.models.note import NoteFolders, Notes
 from app.models.user import User, UserCreate
 from app.schemas.note import FolderCreate, FolderUpdate
+from app.services import note_service
 from app.services.note_service import create_folder, delete_folder, list_folders, update_folder
 
 API = settings.API_V1_STR
@@ -210,3 +216,135 @@ def test_folder_routes_rename_and_delete(session: Session, user: User) -> None:
     assert deleted.status_code == 200
     assert missing.status_code == 404
     assert _fresh(session, Notes, note.id).folder_id is None
+
+
+def _pause_for_the_other_request(monkeypatch: pytest.MonkeyPatch, name: str) -> threading.Barrier:
+    """
+    Make `note_service.<name>` wait (up to a second) for a second request to reach it
+    too, so two requests interleave where an unserialized pair would.
+    """
+    barrier = threading.Barrier(2, timeout=1)
+    original = getattr(note_service, name)
+
+    def paused(*args: object, **kwargs: object) -> object:
+        result = original(*args, **kwargs)
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass  # the other request is held back by the lock
+        return result
+
+    monkeypatch.setattr(note_service, name, paused)
+    return barrier
+
+
+def _as_user(user: User, work: Callable[[Session, User], object]) -> Callable[[], None]:
+    def run() -> None:
+        with Session(engine) as own_session:
+            own_user = own_session.get(User, user.id)
+            assert own_user is not None
+            work(own_session, own_user)
+
+    return run
+
+
+def _run_together(*targets: Callable[[], None]) -> list[str]:
+    outcomes: list[str] = []
+
+    def record(target: Callable[[], None]) -> None:
+        try:
+            target()
+            outcomes.append("ok")
+        except HTTPException as exc:
+            outcomes.append(str(exc.status_code))
+
+    threads = [threading.Thread(target=record, args=(target,)) for target in targets]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return sorted(outcomes)
+
+
+def test_crossed_moves_cannot_make_a_loop(
+    session: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = _folder(session, user, "A")
+    b = _folder(session, user, "B")
+    assert a.id is not None and b.id is not None
+    a_id, b_id = a.id, b.id
+    _pause_for_the_other_request(monkeypatch, "_folder_subtree_ids")
+
+    def move(folder_id: int, parent_id: int) -> Callable[[], None]:
+        return _as_user(
+            user,
+            lambda own_session, own_user: update_folder(
+                session=own_session,
+                current_user=own_user,
+                folder_id=folder_id,
+                payload=FolderUpdate(parent_folder_id=parent_id),
+            ),
+        )
+
+    assert _run_together(move(a_id, b_id), move(b_id, a_id)) == ["409", "ok"]
+    parents = {
+        _fresh(session, NoteFolders, a_id).parent_folder_id,
+        _fresh(session, NoteFolders, b_id).parent_folder_id,
+    }
+    assert None in parents  # one of them is still reachable from the root
+
+
+def test_a_folder_created_during_a_delete_is_not_lost(
+    session: Session, user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = _folder(session, user, "Projects")
+    doomed = _folder(session, user, "Atlas", parent)
+    assert doomed.id is not None and parent.id is not None
+    doomed_id = doomed.id
+    created = threading.Event()
+    original = note_service._folder_names
+
+    def names_then_wait(*args: Any, **kwargs: Any) -> set[str]:
+        # The delete has read the folder's children; a new child lands now
+        result = original(*args, **kwargs)
+        created.wait(timeout=1)
+        return result
+
+    monkeypatch.setattr(note_service, "_folder_names", names_then_wait)
+
+    def create_child(own_session: Session, own_user: User) -> object:
+        try:
+            return _folder(own_session, own_user, "Late", own_session.get(NoteFolders, doomed_id))
+        finally:
+            created.set()
+
+    outcomes = _run_together(
+        _as_user(
+            user,
+            lambda own_session, own_user: delete_folder(
+                session=own_session, current_user=own_user, folder_id=doomed_id
+            ),
+        ),
+        _as_user(user, create_child),
+    )
+
+    late = session.exec(select(NoteFolders).where(NoteFolders.name == "Late")).all()
+    if outcomes == ["ok", "ok"]:
+        assert [folder.parent_folder_id for folder in late] == [parent.id]
+    else:
+        assert outcomes == ["404", "ok"] and late == []
+
+
+def test_a_renamed_subfolder_still_fits_the_name_limit(session: Session, user: User) -> None:
+    long_name = "x" * 255
+    parent = _folder(session, user, "Projects")
+    _folder(session, user, long_name, parent)
+    doomed = _folder(session, user, "Atlas", parent)
+    moved = _folder(session, user, long_name, doomed)
+    assert doomed.id is not None
+
+    delete_folder(session=session, current_user=user, folder_id=doomed.id)
+
+    renamed = _fresh(session, NoteFolders, moved.id)
+    assert renamed.parent_folder_id == parent.id
+    assert renamed.name == "x" * 251 + " (2)"
