@@ -22,6 +22,7 @@ from app.schemas.document import DocumentUpdate
 from app.services.document_processing import document_processor
 from app.utils.file_processing import extract_text_from_file
 from app.utils.file_validation import validate_upload_file
+from app.utils.search import contains_ignoring_case
 from app.utils.text_processing import clean_text, create_content_preview, split_text_into_chunks
 
 logger = logging.getLogger(__name__)
@@ -282,12 +283,14 @@ def list_documents(
     ]
 
     if search:
-        like_query = f"%{search}%"
+        # Content is matched through the chunks, whose lower(content) has a trigram
+        # index; the raw documents.content column has none
+        matching_chunk = select(DocumentChunks.id).where(
+            DocumentChunks.document_id == Document.id,
+            contains_ignoring_case(DocumentChunks.content, search),
+        )
         base_where.append(
-            or_(
-                col(Document.title).ilike(like_query),
-                col(Document.content).ilike(like_query),
-            )
+            or_(contains_ignoring_case(Document.title, search), matching_chunk.exists())
         )
 
     # Get total count using efficient SQL COUNT

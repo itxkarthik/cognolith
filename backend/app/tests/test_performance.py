@@ -225,6 +225,13 @@ class TestPaginationPerformance:
                 mime_type="text/plain",
             )
             session.add(doc)
+            session.flush()
+            # Processing stores the content as chunks; search matches content through them
+            session.add(
+                DocumentChunks(
+                    document_id=doc.id, chunk_index=0, content=content, vector_id=f"doc-{i}"
+                )
+            )
         session.commit()
 
         # Search with pagination
@@ -236,9 +243,9 @@ class TestPaginationPerformance:
             limit=10,
         )
 
-        assert len(results) <= 10
-        # Total should reflect only matching documents
-        assert total >= 10  # At least the first page
+        assert len(results) == 10
+        # Total reflects only the matching documents
+        assert total == 30
 
     def test_chat_session_listing_database_pagination(
         self, session: Session, test_user: User

@@ -12,6 +12,7 @@ from app.models.note import NoteFolders, NoteLinks, NoteLinkType, Notes, NoteTag
 from app.models.user import User
 from app.schemas.note import FolderCreate, NoteCreate, NoteUpdate, TagCreate
 from app.utils.sanitization import strip_all_html
+from app.utils.search import contains_ignoring_case
 from app.utils.text_processing import (
     create_content_preview,
     extract_wiki_link_titles,
@@ -117,11 +118,10 @@ def list_notes(
         base_where.append(col(Notes.id).in_(tagged_note_ids))
 
     if search:
-        like_query = f"%{search}%"
         base_where.append(
             or_(
-                col(Notes.title).ilike(like_query),
-                col(Notes.content).ilike(like_query),
+                contains_ignoring_case(Notes.title, search),
+                contains_ignoring_case(Notes.content, search),
             )
         )
 
