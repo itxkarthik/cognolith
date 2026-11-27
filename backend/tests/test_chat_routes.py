@@ -79,20 +79,12 @@ def test_structured_sse_uses_named_json_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generated_chat_stream_opens_before_generation_events(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def generated_events(**_: object):
+async def test_generated_chat_stream_opens_before_generation_events() -> None:
+    async def generated_events():
         yield encode_sse("token", {"message_id": 2, "delta": "Ready"})
         yield encode_sse("completed", {"message": {"id": 2}})
 
-    monkeypatch.setattr("app.api.routes.chat.stream_chat_generation", generated_events)
-    stream = _stream_generated_chat_response(
-        user_id=1,
-        session_id=1,
-        user_message_id=1,
-        assistant_message_id=2,
-    )
+    stream = _stream_generated_chat_response(generated_events())
 
     assert await anext(stream) == ": connected\n\n"
     remaining = [event async for event in stream]

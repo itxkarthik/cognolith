@@ -127,6 +127,8 @@ export interface NoteCreate {
 	is_pinned?: boolean;
 	linked_document_id?: number | null;
 	linked_chat_session_id?: number | null;
+	// Set on creates queued offline, so a repeated send returns the same note
+	client_request_id?: string;
 }
 
 export interface NoteUpdate {
@@ -142,6 +144,8 @@ export interface NoteUpdate {
 	is_pinned?: boolean;
 	linked_document_id?: number | null;
 	linked_chat_session_id?: number | null;
+	// Revision the edit was based on; the server answers 409 if the note has moved on
+	expected_revision?: number;
 }
 
 export interface NoteResponse {
@@ -156,6 +160,7 @@ export interface NoteResponse {
 	tag_ids: number[];
 	linked_note_ids: number[];
 	version: number;
+	revision: number;
 	is_favorite: boolean;
 	is_archived: boolean;
 	is_pinned: boolean;
@@ -185,6 +190,9 @@ export interface DocumentUpdate {
 	language?: string;
 }
 
+// failed: content is stored but not embedded yet; the next search or chat retries it
+export type DocumentEmbeddingStatus = "pending" | "indexed" | "failed";
+
 export interface DocumentResponse {
 	id: number;
 	user_id: number;
@@ -204,6 +212,7 @@ export interface DocumentResponse {
 	word_count?: number | null;
 	page_count?: number | null;
 	processing_error?: string | null;
+	embedding_status: DocumentEmbeddingStatus;
 	is_deleted: boolean;
 	created_at: string;
 	updated_at: string;

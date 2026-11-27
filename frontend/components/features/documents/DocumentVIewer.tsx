@@ -6,7 +6,7 @@ import Link from "next/link";
 import { cn } from "@/lib/utils/cn";
 import type { DocumentResponse } from "@/types";
 
-import { formatBytes, formatDate, formatFileType, getStatusClasses } from "./utils";
+import { formatBytes, formatDate, formatFileType, getStatusClasses, NOT_SEARCHABLE_MESSAGE } from "./utils";
 
 interface DocumentViewerProps {
   document: DocumentResponse;
@@ -67,6 +67,11 @@ export function DocumentViewer({
         {document.status === "failed" ? (
           <p className="mt-4 rounded-sm border border-[#ff3b30] bg-[#ff3b30]/10 p-3 text-sm text-[#a50011]">
             Processing failed: {document.processing_error || "an unexpected error occurred."}
+          </p>
+        ) : null}
+        {document.status === "completed" && document.embedding_status === "failed" ? (
+          <p className="mt-4 rounded-sm border border-[#ff9f0a] bg-[#ff9f0a]/10 p-3 text-sm text-foreground">
+            {NOT_SEARCHABLE_MESSAGE}
           </p>
         ) : null}
 

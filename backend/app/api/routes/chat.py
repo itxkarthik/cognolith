@@ -28,10 +28,11 @@ from app.schemas.chat import (
 from app.schemas.error import StandardErrorResponse
 from app.schemas.note import NoteResponse
 from app.services.chat_generation import (
-    create_generation_messages,
-    create_retry_message,
+    ensure_no_active_generation,
+    ensure_retryable,
     generation_coordinator,
-    stream_chat_generation,
+    stream_new_reply,
+    stream_retry_reply,
     with_sse_keepalive,
 )
 from app.services.chat_service import (
@@ -46,15 +47,9 @@ logger = logging.getLogger(__name__)
 
 
 async def _stream_generated_chat_response(
-    *, user_id: int, session_id: int, user_message_id: int, assistant_message_id: int
+    events: AsyncGenerator[str, None],
 ) -> AsyncGenerator[str, None]:
     yield ": connected\n\n"
-    events = stream_chat_generation(
-        user_id=user_id,
-        session_id=session_id,
-        user_message_id=user_message_id,
-        assistant_message_id=assistant_message_id,
-    )
     async for event in with_sse_keepalive(events):
         yield event
 
@@ -216,6 +211,7 @@ def _to_note_response(note: Any) -> NoteResponse:
         tag_ids=[tag.id for tag in note.tags],
         linked_note_ids=[link.target_note_id for link in note.source_links],
         version=note.version,
+        revision=note.revision,
         is_favorite=note.is_favorite,
         is_archived=note.is_archived,
         is_pinned=note.is_pinned,
@@ -367,23 +363,11 @@ async def stream_message_endpoint(
     """
     if current_user.id is None:
         raise ValueError("Authenticated user has no id")
-    chat_session = get_chat_session_by_id(
-        session=session, current_user=current_user, chat_session_id=session_id
-    )
-    user_message, assistant_message, _ = create_generation_messages(
-        session=session,
-        user=current_user,
-        chat_session=chat_session,
-        content=body.content,
-    )
-    if user_message.id is None or assistant_message.id is None:
-        raise RuntimeError("Streaming messages were not persisted")
+    get_chat_session_by_id(session=session, current_user=current_user, chat_session_id=session_id)
+    ensure_no_active_generation(session_id)
     return StreamingResponse(
         _stream_generated_chat_response(
-            user_id=current_user.id,
-            session_id=session_id,
-            user_message_id=user_message.id,
-            assistant_message_id=assistant_message.id,
+            stream_new_reply(user_id=current_user.id, session_id=session_id, content=body.content)
         ),
         media_type="text/event-stream",
         headers=SSE_RESPONSE_HEADERS,
@@ -412,20 +396,12 @@ async def retry_message_endpoint(
     chat_session = get_chat_session_by_id(
         session=session, current_user=current_user, chat_session_id=session_id
     )
-    user_message, assistant_message, _ = create_retry_message(
-        session=session,
-        user=current_user,
-        chat_session=chat_session,
-        failed_message_id=message_id,
-    )
-    if user_message.id is None or assistant_message.id is None:
-        raise RuntimeError("Retry messages were not persisted")
+    ensure_retryable(session=session, chat_session=chat_session, failed_message_id=message_id)
     return StreamingResponse(
         _stream_generated_chat_response(
-            user_id=current_user.id,
-            session_id=session_id,
-            user_message_id=user_message.id,
-            assistant_message_id=assistant_message.id,
+            stream_retry_reply(
+                user_id=current_user.id, session_id=session_id, failed_message_id=message_id
+            )
         ),
         media_type="text/event-stream",
         headers=SSE_RESPONSE_HEADERS,

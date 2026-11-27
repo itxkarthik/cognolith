@@ -51,6 +51,25 @@ class FolderCreate(BaseModel):
         return sanitize_plain_text(value)
 
 
+class FolderUpdate(BaseModel):
+    """Fields left out are unchanged; `parent_folder_id: null` moves the folder to the root."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    parent_folder_id: int | None = None
+    color: str | None = Field(default=None, max_length=20)
+    icon: str | None = Field(default=None, max_length=50)
+    emoji: str | None = Field(default=None, max_length=10)
+
+    @field_validator("name", "description", "color", "icon", "emoji", mode="before")
+    @classmethod
+    def sanitize_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        validate_no_xss(value)
+        return sanitize_plain_text(value)
+
+
 class TagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     color: str | None = Field(default=None, max_length=20)
@@ -79,6 +98,10 @@ class NoteCreate(BaseModel):
     is_pinned: bool = False
     linked_document_id: int | None = None
     linked_chat_session_id: int | None = None
+    # Idempotency key: a create repeated with the same value returns the same note
+    client_request_id: str | None = Field(
+        default=None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9-]+$"
+    )
 
     @field_validator("title", mode="before")
     @classmethod
@@ -120,6 +143,9 @@ class NoteUpdate(BaseModel):
     is_pinned: bool | None = None
     linked_document_id: int | None = None
     linked_chat_session_id: int | None = None
+    # The revision the client last saw; a different current revision is a 409 conflict.
+    # Omitted, the update applies unconditionally.
+    expected_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -165,6 +191,7 @@ class NoteResponse(BaseModel):
     tag_ids: list[int] = Field(default_factory=list)
     linked_note_ids: list[int] = Field(default_factory=list)
     version: int
+    revision: int
     is_favorite: bool
     is_archived: bool
     is_pinned: bool

@@ -304,7 +304,7 @@ class ActivityLogs(SQLModel, table=True):
     details: dict | None = Field(default=None, sa_column=Column(JSONB))
     ip_address: str | None = Field(default=None)  # Store as string for INET type
     user_agent: str | None = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # Relationships
     user: User = Relationship(back_populates="activity_logs")

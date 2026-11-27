@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from typing import Any
 
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, select, update
 
+from app.ai.chunking import NoteChunk, chunk_note, chunking_preferences
 from app.ai.embeddings import generate_embedding, generate_embeddings
 from app.ai.llm import LLMService, build_chat_messages
 from app.ai.reranking import (
@@ -28,7 +29,7 @@ from app.ai.vectorstore import (
     PgVectorStore,
     VectorSearchResult,
 )
-from app.models.document import Document, DocumentChunks
+from app.models.document import Document, DocumentChunks, DocumentEmbeddingStatus
 from app.models.note import Notes
 from app.models.user import UserSettings
 from app.utils.text_processing import create_content_preview
@@ -56,6 +57,8 @@ class RAGNoteSource:
 class RAGResult:
     answer: str
     sources: dict[str, Any]
+    # Tokens the model generated for the answer; None when no model call reported them
+    generated_tokens: int | None = None
 
 
 @dataclass(slots=True)
@@ -98,6 +101,9 @@ class RAGContextSource:
     supporting_chunk_ids: tuple[int, ...] = ()
     origin: str = "vector"
 
+
+# Texts sent to the embedding model per request while re-indexing
+EMBEDDING_BATCH_SIZE = 32
 
 _CASUAL_QUERIES = {
     "bye",
@@ -258,16 +264,14 @@ def run_rag_pipeline(
         query=query,
         conversation_history=conversation_history,
     )
-    answer = _run_async(
-        LLMService(session=session, user_id=user_id).generate_response(
-            messages=prepared.messages
-        )
-    ).strip()
+    llm = LLMService(session=session, user_id=user_id)
+    answer = _run_async(llm.generate_response(messages=prepared.messages)).strip()
+    generated_tokens = llm.usage.generated_tokens
     if not prepared.grounded:
-        return RAGResult(answer=answer, sources=_empty_sources())
+        return RAGResult(answer=answer, sources=_empty_sources(), generated_tokens=generated_tokens)
 
     answer, sources = finalize_prepared_answer(answer, prepared=prepared)
-    return RAGResult(answer=answer, sources=sources)
+    return RAGResult(answer=answer, sources=sources, generated_tokens=generated_tokens)
 
 
 def prepare_rag_pipeline(
@@ -324,6 +328,7 @@ def prepare_rag_pipeline(
         vector_store=vector_store,
         user_id=user_id,
         query_embedding=query_embedding,
+        embedding_model=embedding_model,
         query=retrieval_query,
         lexical_query=lexical_query,
         retrieval_limit=max(20, top_k * 4),
@@ -340,6 +345,7 @@ def prepare_rag_pipeline(
             vector_store=vector_store,
             user_id=user_id,
             query_embedding=query_embedding,
+            embedding_model=embedding_model,
             query=retrieval_query,
             lexical_query=lexical_query,
             retrieval_limit=max(20, top_k * 4),
@@ -764,6 +770,7 @@ def _search_ranked_sources(
     vector_store: PgVectorStore,
     user_id: int,
     query_embedding: Sequence[float],
+    embedding_model: str,
     query: str,
     lexical_query: LexicalQuery,
     retrieval_limit: int,
@@ -777,6 +784,7 @@ def _search_ranked_sources(
     chunk_hits = (
         vector_store.similarity_search(
             user_id=user_id,
+            model=embedding_model,
             query_embedding=query_embedding,
             top_k=retrieval_limit,
             similarity_threshold=None,
@@ -788,6 +796,7 @@ def _search_ranked_sources(
     note_hits = (
         vector_store.note_similarity_search(
             user_id=user_id,
+            model=embedding_model,
             query_embedding=query_embedding,
             top_k=retrieval_limit,
             similarity_threshold=None,
@@ -991,6 +1000,7 @@ def _context_source_from_ranked(
         source_id=hit.note_id,
         title=hit.title,
         content=hit.content,
+        chunk_index=hit.chunk_index if isinstance(hit, NoteVectorSearchResult) else None,
         vector_score=(
             ranked.vector_score
             if ranked.vector_score is not None and ranked.vector_score >= similarity_threshold
@@ -1118,8 +1128,8 @@ def ensure_workspace_embeddings(
             if chunk.id is not None and chunk.id not in indexed_chunk_ids
         ]
 
-        for start in range(0, len(missing_chunks), 32):
-            batch = missing_chunks[start : start + 32]
+        for start in range(0, len(missing_chunks), EMBEDDING_BATCH_SIZE):
+            batch = missing_chunks[start : start + EMBEDDING_BATCH_SIZE]
             embeddings, _ = _run_async(
                 generate_embeddings(
                     session=session,
@@ -1134,6 +1144,16 @@ def ensure_workspace_embeddings(
                 user_id=user_id,
                 model=embedding_model,
             )
+        if missing_chunks:
+            # Every missing chunk is now embedded, including those a failed upload left
+            session.exec(
+                update(Document)
+                .where(
+                    col(Document.id).in_({chunk.document_id for chunk in missing_chunks}),
+                    col(Document.embedding_status) != DocumentEmbeddingStatus.indexed,
+                )
+                .values(embedding_status=DocumentEmbeddingStatus.indexed)
+            )
 
     if include_notes:
         active_notes = session.exec(
@@ -1142,30 +1162,37 @@ def ensure_workspace_embeddings(
         indexed_note_hashes = vector_store.note_embedding_hashes(
             user_id=user_id, model=embedding_model
         )
-        stale_notes: list[tuple[int, str, str]] = []
+        chunk_size, overlap = chunking_preferences(session, user_id)
+        stale_notes: list[list[NoteChunk]] = []
+        emptied_note_ids: set[int] = set()
         for note in active_notes:
             if note.id is None:
                 continue
-            embedding_text = f"{note.title}\n\n{note.content}"[:12000]
-            content_hash = hashlib.sha256(embedding_text.encode("utf-8")).hexdigest()
-            if indexed_note_hashes.get(note.id) != content_hash:
-                stale_notes.append((note.id, embedding_text, content_hash))
+            chunks = chunk_note(note, chunk_size=chunk_size, overlap=overlap)
+            if not chunks:
+                if note.id in indexed_note_hashes:
+                    emptied_note_ids.add(note.id)
+            elif indexed_note_hashes.get(note.id) != chunks[0].content_hash:
+                stale_notes.append(chunks)
+        vector_store.remove_note_embeddings(note_ids=emptied_note_ids)
 
-        for start in range(0, len(stale_notes), 32):
-            batch = stale_notes[start : start + 32]
-            embeddings, _ = _run_async(
-                generate_embeddings(
-                    session=session,
-                    user_id=user_id,
-                    texts=[embedding_text for _, embedding_text, _ in batch],
-                    model=embedding_model,
+        for batch in _whole_note_batches(stale_notes, max_chunks=EMBEDDING_BATCH_SIZE):
+            embeddings: list[list[float]] = []
+            for start in range(0, len(batch), EMBEDDING_BATCH_SIZE):
+                vectors, _ = _run_async(
+                    generate_embeddings(
+                        session=session,
+                        user_id=user_id,
+                        texts=[
+                            chunk.embedding_text
+                            for chunk in batch[start : start + EMBEDDING_BATCH_SIZE]
+                        ],
+                        model=embedding_model,
+                    )
                 )
-            )
+                embeddings.extend(vectors)
             vector_store.store_note_embeddings(
-                notes=[(note_id, content_hash) for note_id, _, content_hash in batch],
-                embeddings=embeddings,
-                user_id=user_id,
-                model=embedding_model,
+                chunks=batch, embeddings=embeddings, user_id=user_id, model=embedding_model
             )
 
     if include_chats:
@@ -1183,8 +1210,8 @@ def ensure_workspace_embeddings(
                     (message.id, message.session_id, embedding_text, content_hash)
                 )
 
-        for start in range(0, len(stale_messages), 32):
-            batch = stale_messages[start : start + 32]
+        for start in range(0, len(stale_messages), EMBEDDING_BATCH_SIZE):
+            batch = stale_messages[start : start + EMBEDDING_BATCH_SIZE]
             embeddings, _ = _run_async(
                 generate_embeddings(
                     session=session,
@@ -1202,6 +1229,24 @@ def ensure_workspace_embeddings(
                 user_id=user_id,
                 model=embedding_model,
             )
+
+
+def _whole_note_batches(
+    notes: Sequence[Sequence[NoteChunk]], *, max_chunks: int
+) -> Iterator[list[NoteChunk]]:
+    """
+    Group notes into batches of about `max_chunks` chunks without splitting a note:
+    storing a note replaces all of its rows, so its chunks must be stored together.
+    A note longer than `max_chunks` is a batch of its own.
+    """
+    batch: list[NoteChunk] = []
+    for chunks in notes:
+        if batch and len(batch) + len(chunks) > max_chunks:
+            yield batch
+            batch = []
+        batch.extend(chunks)
+    if batch:
+        yield batch
 
 
 def _load_document_map(*, session: Session, document_ids: list[int]) -> dict[int, Document]:

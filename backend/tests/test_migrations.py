@@ -41,7 +41,19 @@ def _alembic_config() -> Config:
 def test_embedding_tables_is_the_migration_head() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_current_head() == "0010_account_security"
+    assert script.get_current_head() == "0014_note_client_request_id"
+    assert script.get_revision("0014_note_client_request_id").down_revision == "0013_note_revision"
+    assert script.get_revision("0013_note_revision").down_revision == (
+        "0012_document_embedding_status"
+    )
+    assert (
+        script.get_revision("0012_document_embedding_status").down_revision
+        == "0011_note_chunk_embeddings"
+    )
+    assert (
+        script.get_revision("0011_note_chunk_embeddings").down_revision
+        == "0010_account_security"
+    )
     assert (
         script.get_revision("0010_account_security").down_revision == "0009_embedding_tables"
     )
@@ -386,3 +398,111 @@ def test_account_security_migration_rejects_case_duplicates() -> None:
     with engine.begin() as connection:
         connection.execute(text("DELETE FROM users"))
     command.upgrade(config, "head")
+
+
+def _column_names(connection: Connection, table: str) -> set[str]:
+    # Read from the catalog: reflecting the table warns on pgvector's vector type
+    rows = connection.execute(
+        text("SELECT column_name FROM information_schema.columns WHERE table_name = :table"),
+        {"table": table},
+    )
+    return {row.column_name for row in rows}
+
+
+def test_note_chunk_migration_keys_note_embeddings_by_chunk() -> None:
+    config = _alembic_config()
+    SQLModel.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        columns = _column_names(connection, "note_embeddings")
+        primary_key = inspector.get_pk_constraint("note_embeddings")["constrained_columns"]
+    assert {"chunk_index", "content"} <= columns
+    assert primary_key == ["note_id", "chunk_index"]
+
+    command.downgrade(config, "0010_account_security")
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        columns = _column_names(connection, "note_embeddings")
+        primary_key = inspector.get_pk_constraint("note_embeddings")["constrained_columns"]
+    assert not {"chunk_index", "content"} & columns
+    assert primary_key == ["note_id"]
+    command.upgrade(config, "head")
+
+
+def _insert_document(connection: Connection, user_id: int, title: str, status: str) -> int:
+    return connection.execute(
+        text(
+            """
+            INSERT INTO documents (
+                portable_id, created_at, updated_at, user_id, title, file_name, file_path,
+                file_size, file_type, mime_type, is_deleted, language, status, chunk_count,
+                last_accessed_at
+            ) VALUES (
+                gen_random_uuid(), NOW(), NOW(), :user_id, :title, 'f.txt', 'uploads/f.txt',
+                1, 'txt', 'text/plain', false, 'en', :status, 1, NOW()
+            ) RETURNING id
+            """
+        ),
+        {"user_id": user_id, "title": title, "status": status},
+    ).scalar_one()
+
+
+def _insert_chunk(connection: Connection, document_id: int) -> int:
+    return connection.execute(
+        text(
+            """
+            INSERT INTO document_chunks
+                (created_at, updated_at, document_id, chunk_index, content, vector_id)
+            VALUES (NOW(), NOW(), :document_id, 0, 'text', 'v')
+            RETURNING id
+            """
+        ),
+        {"document_id": document_id},
+    ).scalar_one()
+
+
+def test_document_embedding_status_backfill_reflects_stored_vectors() -> None:
+    config = _alembic_config()
+    SQLModel.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    command.upgrade(config, "0011_note_chunk_embeddings")
+    vector = "[" + ",".join(["1"] + ["0"] * (settings.EMBEDDING_DIMENSIONS - 1)) + "]"
+    with engine.begin() as connection:
+        _insert_user(connection, "backfill@example.com")
+        user_id = connection.execute(text("SELECT id FROM users")).scalar_one()
+        embedded = _insert_document(connection, user_id, "embedded", "completed")
+        missing = _insert_document(connection, user_id, "missing", "completed")
+        _insert_document(connection, user_id, "processing", "processing")
+        _insert_chunk(connection, missing)
+        connection.execute(
+            text(
+                """
+                INSERT INTO chunk_embeddings (chunk_id, document_id, user_id, model, embedding)
+                VALUES (:chunk_id, :document_id, :user_id, 'm', CAST(:vector AS vector))
+                """
+            ),
+            {
+                "chunk_id": _insert_chunk(connection, embedded),
+                "document_id": embedded,
+                "user_id": user_id,
+                "vector": vector,
+            },
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.begin() as connection:
+        rows = connection.execute(
+            text("SELECT title, embedding_status, processing_attempts FROM documents")
+        ).all()
+        assert {row.title: (row.embedding_status, row.processing_attempts) for row in rows} == {
+            "embedded": ("indexed", 0),
+            "missing": ("failed", 0),
+            "processing": ("pending", 0),
+        }
+        connection.execute(text("DELETE FROM users"))

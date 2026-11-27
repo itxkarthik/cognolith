@@ -41,6 +41,7 @@ class RAGNoteSourceTests(TestCase):
             title="Launch Plan",
             content="The release window is Friday morning.",
             score=0.72,
+            chunk_index=0,
         )
 
     def test_note_is_included_in_model_context(self) -> None:
@@ -402,12 +403,14 @@ class RAGNoteSourceTests(TestCase):
             title="Launch Plan",
             content="The Atlas release window is Friday morning.",
             score=0.82,
+            chunk_index=0,
         )
         extra = NoteVectorSearchResult(
             note_id=10,
             title="Project Archive",
             content="Historical project notes.",
             score=0.74,
+            chunk_index=0,
         )
 
         with (

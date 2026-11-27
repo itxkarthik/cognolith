@@ -15,6 +15,22 @@ ChatMessage = dict[str, str]
 
 
 @dataclass(slots=True)
+class TokenUsage:
+    """
+    Tokens the model generated, summed over every call that reports a count.
+    Stays None when Ollama reports none: an unknown count is not zero.
+    """
+
+    generated_tokens: int | None = None
+
+    def record(self, response: dict[str, Any]) -> None:
+        # eval_count: "Number of tokens generated in the response" (Ollama /api/chat)
+        count = response.get("eval_count")
+        if isinstance(count, int):
+            self.generated_tokens = (self.generated_tokens or 0) + count
+
+
+@dataclass(slots=True)
 class LLMConfig:
     provider: str
     model: str
@@ -30,8 +46,8 @@ class BaseLLMProvider(Protocol):
         model: str,
         temperature: float,
         max_tokens: int,
-    ) -> str:
-        ...
+        usage: TokenUsage | None = None,
+    ) -> str: ...
 
     def stream(
         self,
@@ -40,8 +56,8 @@ class BaseLLMProvider(Protocol):
         model: str,
         temperature: float,
         max_tokens: int,
-    ) -> AsyncIterator[str]:
-        ...
+        usage: TokenUsage | None = None,
+    ) -> AsyncIterator[str]: ...
 
 
 class OllamaLLMProvider:
@@ -56,6 +72,7 @@ class OllamaLLMProvider:
         model: str,
         temperature: float,
         max_tokens: int,
+        usage: TokenUsage | None = None,
     ) -> str:
         payload = self._build_payload(
             messages=messages,
@@ -78,6 +95,8 @@ class OllamaLLMProvider:
         if not isinstance(content, str):
             raise ValueError("Invalid Ollama chat response: missing content")
 
+        if usage is not None:
+            usage.record(data)
         return content
 
     async def stream(
@@ -87,6 +106,7 @@ class OllamaLLMProvider:
         model: str,
         temperature: float,
         max_tokens: int,
+        usage: TokenUsage | None = None,
     ) -> AsyncIterator[str]:
         payload = self._build_payload(
             messages=messages,
@@ -103,6 +123,9 @@ class OllamaLLMProvider:
                     if not line:
                         continue
                     data = json.loads(line)
+                    # The final object ("done": true) carries the token counts
+                    if data.get("done") and usage is not None:
+                        usage.record(data)
                     message = data.get("message")
                     if not isinstance(message, dict):
                         continue
@@ -178,6 +201,8 @@ class LLMService:
         self.session = session
         self.user_id = user_id
         self.provider: BaseLLMProvider = OllamaLLMProvider(base_url=base_url)
+        # Generated tokens across this service's calls (e.g. a draft plus its repair)
+        self.usage = TokenUsage()
 
     async def generate_response(
         self,
@@ -201,6 +226,7 @@ class LLMService:
             model=config.model,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
+            usage=self.usage,
         )
 
     async def stream_response(
@@ -221,6 +247,7 @@ class LLMService:
             model=config.model,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
+            usage=self.usage,
         ):
             yield chunk
 

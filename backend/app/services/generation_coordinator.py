@@ -47,10 +47,6 @@ class GenerationCoordinator(ABC):
         finally:
             self._release(session_id=session_id, token=token, message_id=None)
 
-    def cancellation_event(self, message_id: int) -> Event | None:
-        with self._events_lock:
-            return self._events.get(message_id)
-
     def finish(self, *, session_id: int, message_id: int) -> None:
         with self._events_lock:
             self._events.pop(message_id, None)

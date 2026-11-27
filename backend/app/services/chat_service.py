@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
@@ -11,13 +11,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select
 
-from app.ai.rag import run_rag_pipeline
+from app.ai.rag import RAGResult, run_rag_pipeline
 from app.core.exceptions import AIServiceUnavailableError
 from app.models.chat import ChatMessages, ChatRole, ChatSession
 from app.models.note import Notes
 from app.models.user import User
 from app.schemas.chat import ChatCreate, ChatMessageCreate
 from app.services.chat_generation import generation_coordinator
+from app.services.chat_history import build_conversation_history
 from app.utils.text_processing import create_content_preview
 
 logger = logging.getLogger(__name__)
@@ -130,22 +131,13 @@ def _generate_and_store_reply(
     if chat_session.id is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
     try:
-        rag_answer, rag_sources = _invoke_rag(
+        rag_result = _invoke_rag(
             session=session,
             current_user=current_user,
             query=payload.content,
-            conversation_history=[
-                {
-                    "role": (
-                        message.role.value
-                        if isinstance(message.role, ChatRole)
-                        else str(message.role)
-                    ),
-                    "content": message.content,
-                    "sources": message.sources,
-                }
-                for message in getattr(chat_session, "messages", [])[-6:]
-            ],
+            conversation_history=build_conversation_history(
+                getattr(chat_session, "messages", [])
+            ),
         )
     except Exception as exc:
         session.rollback()
@@ -162,14 +154,14 @@ def _generate_and_store_reply(
     assistant_message = ChatMessages(
         session_id=chat_session.id,
         role=ChatRole.assistant,
-        content=rag_answer,
+        content=rag_result.answer,
         model_used="rag-v1",
-        sources=rag_sources,
-        tokens_used=len(rag_answer.split()),
+        sources=rag_result.sources,
+        tokens_used=rag_result.generated_tokens,
     )
     session.add(assistant_message)
 
-    chat_session.last_message_at = datetime.now()
+    chat_session.last_message_at = datetime.now(UTC)
     if not chat_session.title:
         chat_session.title = create_content_preview(payload.content, max_length=80)
     session.add(chat_session)
@@ -265,17 +257,16 @@ def _invoke_rag(
     current_user: User,
     query: str,
     conversation_history: list[dict[str, Any]] | None = None,
-) -> tuple[str, dict]:
+) -> RAGResult:
     if current_user.id is None:
         raise HTTPException(status_code=400, detail="Invalid user context")
 
-    rag_result = run_rag_pipeline(
+    return run_rag_pipeline(
         session=session,
         user_id=current_user.id,
         query=query,
         conversation_history=conversation_history,
     )
-    return rag_result.answer, rag_result.sources
 
 
 async def stream_message_response(*, assistant_message: ChatMessages) -> AsyncGenerator[str, None]:

@@ -41,7 +41,7 @@ class ChatSession(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     description: str | None = Field(default=None)
     is_archived: bool = Field(default=False)
     is_pinned: bool = Field(default=False)
-    last_message_at: datetime = Field(default_factory=datetime.now)
+    last_message_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # Relationships
     user: "User" = Relationship(back_populates="chat_sessions")

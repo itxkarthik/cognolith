@@ -16,7 +16,8 @@ export type ChatStreamEvent =
   | { type: "sources"; message_id: number; sources: ChatMessageResponse["sources"] }
   | { type: "completed"; message: ChatMessageResponse }
   | { type: "cancelled"; message: ChatMessageResponse }
-  | { type: "error"; code: string; message: string; retryable: boolean; assistant_message_id: number };
+  // assistant_message_id is null when the reply never started (code GENERATION_NOT_STARTED)
+  | { type: "error"; code: string; message: string; retryable: boolean; assistant_message_id: number | null };
 
 export interface StreamOptions {
   signal?: AbortSignal;

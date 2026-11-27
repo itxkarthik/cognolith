@@ -10,7 +10,7 @@ re-index (python -m scripts.reindex_embeddings).
 
 from typing import Any
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Table, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Table, Text, func
 from sqlalchemy.types import UserDefinedType
 from sqlmodel import SQLModel
 
@@ -69,9 +69,13 @@ note_embeddings = Table(
     "note_embeddings",
     SQLModel.metadata,
     Column("note_id", Integer, ForeignKey("notes.id", ondelete="CASCADE"), primary_key=True),
+    # Notes are split like documents; each passage has its own vector
+    Column("chunk_index", Integer, primary_key=True),
     Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("model", String(100), nullable=False),
+    # Hash of the whole note and chunk settings; equal on all of a note's rows
     Column("content_hash", String(64), nullable=False),
+    Column("content", Text, nullable=False),
     Column("embedding", Vector(settings.EMBEDDING_DIMENSIONS), nullable=False),
     *_timestamps(),
     Index("ix_note_embeddings_user", "user_id", "note_id"),

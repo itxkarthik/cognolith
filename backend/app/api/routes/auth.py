@@ -3,6 +3,7 @@ from typing import Annotated, Any
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 
@@ -70,10 +71,21 @@ def set_auth_cookies(
     set_csrf_cookie(response, csrf_token or generate_csrf_token())
 
 
+REFRESH_ALREADY_ROTATED_DETAIL = "Session already refreshed by another request"
+
+
 def clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(key=settings.ACCESS_TOKEN_COOKIE_NAME, path="/")
     response.delete_cookie(key=settings.REFRESH_TOKEN_COOKIE_NAME, path="/")
     response.delete_cookie(key=settings.CSRF_COOKIE_NAME, path="/")
+
+
+def _refresh_failed(detail: str) -> JSONResponse:
+    # The client can't remove httpOnly cookies. Left in place, a revoked session's
+    # access cookie keeps the browser looking signed in until it expires.
+    failed = JSONResponse(status_code=401, content={"detail": detail})
+    clear_auth_cookies(failed)
+    return failed
 
 
 @router.post(
@@ -128,11 +140,16 @@ def login_access_token(
 
 @router.post(
     path="/auth/refresh",
+    response_model=Token,
     responses={
         400: {"model": StandardErrorResponse, "description": "Invalid token format"},
         401: {
             "model": StandardErrorResponse,
             "description": "Invalid or expired refresh token",
+        },
+        409: {
+            "model": StandardErrorResponse,
+            "description": "Already refreshed by a concurrent request; retry with the current cookies",
         },
         500: {"model": StandardErrorResponse, "description": "Internal server error"},
     },
@@ -141,23 +158,28 @@ def refresh_access_token(
     request: Request,
     response: Response,
     session: SessionDep,
-) -> Token:
+) -> Any:
     """
     Exchange the refresh-token cookie for a new access + refresh token pair.
     The old refresh token is revoked (rotation). The refresh token is only
     accepted from its httpOnly cookie, never from the request body.
+
+    A refresh that fails ends the session and deletes the auth cookies.
     """
     refresh_token = request.cookies.get(settings.REFRESH_TOKEN_COOKIE_NAME)
     if not refresh_token:
-        raise HTTPException(status_code=401, detail="Missing refresh token")
+        return _refresh_failed("Missing refresh token")
 
     # Identity comes only from the refresh token's owner, never the access-token cookie
     try:
         token_pair = auth_service.refresh_access_token_from_refresh(
             session=session, refresh_token=refresh_token
         )
+    except auth_service.RefreshAlreadyRotatedError:
+        # No new tokens and no cookie changes: the concurrent refresh set them
+        raise HTTPException(status_code=409, detail=REFRESH_ALREADY_ROTATED_DETAIL)
     except ValueError as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        return _refresh_failed(str(e))
 
     set_auth_cookies(
         response,

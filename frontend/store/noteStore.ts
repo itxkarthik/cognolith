@@ -1,5 +1,12 @@
 import { create } from "zustand";
 
+import { APIRequestError, onOfflineReplay } from "@/lib/api/client";
+import {
+	loadConflictDraft,
+	removeConflictDraft,
+	saveConflictDraft,
+	type ConflictDraft,
+} from "@/lib/utils/conflictDrafts";
 import {
 	createFolder as createFolderRequest,
 	createNote as createNoteRequest,
@@ -21,8 +28,29 @@ import type {
 	NoteUpdate,
 	TagCreate,
 } from "@/types";
+import { useAuthStore } from "@/store/authStore";
 
 type NotesViewMode = "grid" | "list";
+
+export type NoteDraftUpdate = ConflictDraft;
+
+// The note changed elsewhere after this editor loaded it; `latest` is the server copy
+export interface NoteConflict {
+	noteId: number;
+	latest: NoteResponse;
+	// Edits made offline that the server refused; the editor shows them until resolved
+	draft?: NoteDraftUpdate;
+}
+
+export class NoteConflictError extends Error {
+	constructor() {
+		super("This note was changed in another tab or device.");
+		this.name = "NoteConflictError";
+	}
+}
+
+// Draft saves per note, chained so each one sends the revision the previous returned
+const draftSaves = new Map<number, Promise<unknown>>();
 
 interface NoteFilters {
 	search: string;
@@ -48,6 +76,13 @@ interface NoteState {
 	fetchNoteById: (id: number) => Promise<void>;
 	createNote: (payload: NoteCreate) => Promise<NoteResponse>;
 	updateNoteById: (id: number, payload: NoteUpdate) => Promise<NoteResponse>;
+	noteConflict: NoteConflict | null;
+	// Save editor content based on the last revision this tab saw
+	saveNoteDraft: (id: number, payload: NoteDraftUpdate) => Promise<NoteResponse>;
+	// "mine" overwrites the newer server copy with `draft`; "theirs" discards the draft
+	resolveNoteConflict: (choice: "mine" | "theirs", draft?: NoteDraftUpdate) => Promise<NoteResponse | null>;
+	// Raise the conflict again for offline edits refused in an earlier session
+	restoreNoteConflict: (id: number) => Promise<void>;
 	deleteNoteById: (id: number) => Promise<void>;
 	fetchFolders: () => Promise<void>;
 	fetchTags: () => Promise<void>;
@@ -59,6 +94,10 @@ interface NoteState {
 	setTagFilter: (tagId: number | null) => void;
 	setViewMode: (mode: NotesViewMode) => void;
 	clearError: () => void;
+}
+
+function isConflict(error: unknown): boolean {
+	return error instanceof APIRequestError && error.statusCode === 409;
 }
 
 function buildListQuery(filters: NoteFilters, params: Partial<ListNotesParams> = {}): ListNotesParams {
@@ -92,6 +131,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 	notes: [],
 	total: 0,
 	selectedNote: null,
+	noteConflict: null,
 	folders: [],
 	tags: [],
 	filters: {
@@ -189,8 +229,73 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Failed to update note.";
 			set({ isSaving: false, error: message });
-			throw new Error(message);
+			// Keep the request error: callers tell a conflict (409) from other failures
+			throw error instanceof APIRequestError ? error : new Error(message);
 		}
+	},
+
+	saveNoteDraft: (id, payload) => {
+		const previous = draftSaves.get(id) ?? Promise.resolve();
+		const run = previous
+			.catch(() => undefined)
+			.then(async () => {
+				if (get().noteConflict?.noteId === id) throw new NoteConflictError();
+				const known = get().selectedNote?.id === id ? get().selectedNote : get().notes.find((note) => note.id === id);
+				try {
+					return await get().updateNoteById(id, { ...payload, expected_revision: known?.revision });
+				} catch (error) {
+					if (!isConflict(error)) throw error;
+					const latest = await getNoteById(id);
+					set({ noteConflict: { noteId: id, latest }, error: null });
+					throw new NoteConflictError();
+				}
+			});
+		draftSaves.set(id, run);
+		void run.finally(() => {
+			if (draftSaves.get(id) === run) draftSaves.delete(id);
+		}).catch(() => undefined);
+		return run;
+	},
+
+	resolveNoteConflict: async (choice, draft) => {
+		const conflict = get().noteConflict;
+		if (!conflict) return null;
+		const { noteId, latest } = conflict;
+		if (choice === "theirs") {
+			removeConflictDraft(noteId);
+			set((state) => ({
+				noteConflict: null,
+				notes: state.notes.map((note) => (note.id === noteId ? latest : note)),
+				selectedNote: state.selectedNote?.id === noteId ? latest : state.selectedNote,
+			}));
+			return latest;
+		}
+		set({ noteConflict: null });
+		try {
+			const saved = await get().updateNoteById(noteId, { ...draft, expected_revision: latest.revision });
+			removeConflictDraft(noteId);
+			return saved;
+		} catch (error) {
+			if (isConflict(error)) {
+				// Changed again while deciding: ask again against the newest copy
+				set({ noteConflict: { ...conflict, latest: await getNoteById(noteId) }, error: null });
+				throw new NoteConflictError();
+			}
+			// Not saved: keep asking, so the offline edits aren't dropped from view
+			set({ noteConflict: conflict });
+			throw error;
+		}
+	},
+
+	restoreNoteConflict: async (id) => {
+		if (get().noteConflict?.noteId === id) return;
+		const ownerId = useAuthStore.getState().user?.id;
+		const draft = ownerId === undefined ? null : loadConflictDraft(id, ownerId);
+		if (!draft) return;
+		const latest = await getNoteById(id);
+		// The open note's conflict takes the banner. Another note's refused edits stay
+		// stored and come back when that note is opened again.
+		if (get().selectedNote?.id === id) set({ noteConflict: { noteId: id, latest, draft } });
 	},
 
 	deleteNoteById: async (id) => {
@@ -291,3 +396,28 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 		set({ error: null });
 	},
 }));
+
+const NOTE_URL = /^\/notes\/(\d+)$/;
+
+// A note save queued offline has now been replayed
+onOfflineReplay((request, result) => {
+	const match = request.method === "PATCH" ? NOTE_URL.exec(request.url) : null;
+	if (!match) return;
+	const noteId = Number(match[1]);
+	if (result.status === "applied") {
+		const saved = result.data as NoteResponse;
+		// Take its revision, so the next save isn't mistaken for a stale one
+		useNoteStore.setState((state) => ({
+			notes: state.notes.map((note) => (note.id === noteId ? saved : note)),
+			selectedNote: state.selectedNote?.id === noteId ? saved : state.selectedNote,
+		}));
+	} else if (result.status === "conflict") {
+		// The queued write is gone now; keep its edits until the user picks a version
+		const draft: NoteDraftUpdate = { ...(request.data as NoteUpdate | undefined) };
+		delete (draft as NoteUpdate).expected_revision;
+		saveConflictDraft(noteId, request.ownerId, draft);
+		void getNoteById(noteId)
+			.then((latest) => useNoteStore.setState({ noteConflict: { noteId, latest, draft } }))
+			.catch(() => undefined);
+	}
+});

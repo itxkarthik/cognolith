@@ -59,3 +59,6 @@ export function formatFileType(fileType: string) {
   const normalized = fileType.startsWith(".") ? fileType.slice(1) : fileType;
   return normalized.toUpperCase();
 }
+
+export const NOT_SEARCHABLE_MESSAGE =
+  "Chat and search can't use this document yet: its embeddings could not be generated. They are retried on your next search or chat.";

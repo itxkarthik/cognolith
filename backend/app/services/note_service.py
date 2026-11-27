@@ -3,15 +3,18 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import ColumnElement, func, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, or_, select
 
+from app.core.exceptions import ConflictError
 from app.models.document import Document
 from app.models.note import NoteFolders, NoteLinks, NoteLinkType, Notes, NoteTagRelations, NoteTags
 from app.models.user import User
-from app.schemas.note import FolderCreate, NoteCreate, NoteUpdate, TagCreate
+from app.schemas.note import FolderCreate, FolderUpdate, NoteCreate, NoteUpdate, TagCreate
 from app.utils.sanitization import strip_all_html
+from app.utils.search import contains_ignoring_case
 from app.utils.text_processing import (
     create_content_preview,
     extract_wiki_link_titles,
@@ -23,11 +26,31 @@ from app.utils.text_processing import (
 # useful without a row per keystroke burst.
 NOTE_VERSION_INTERVAL = timedelta(minutes=10)
 NOTE_VERSION_RETENTION = 50
+NOTE_CONFLICT_MESSAGE = (
+    "This note was changed in another tab or device since you opened it. "
+    "Load the latest version or overwrite it with yours."
+)
 _VERSIONED_FIELDS = {"title", "content"}
+# Namespace of the per-user folder-tree lock (pg_advisory_xact_lock's first key)
+_FOLDER_TREE_LOCK = 0x464F4C44  # "FOLD"
+_FOLDER_NAME_MAX_LENGTH = 255
 
 
 def create_note(*, session: Session, current_user: User, payload: NoteCreate) -> Notes:
+    """
+    Create a note with its tags and links in one transaction.
+
+    A create sent again with the same `client_request_id` (an offline replay whose
+    response was lost, or two tabs replaying) returns the note it already created.
+    """
     user_id = _require_persisted_id(current_user.id, "User")
+    request_id = payload.client_request_id
+    if request_id is not None:
+        created = _note_created_by(session=session, user_id=user_id, request_id=request_id)
+        if created is not None:
+            return created
+    if payload.folder_id is not None:
+        _lock_folder_tree(session=session, user_id=user_id)
     _validate_folder_access(session=session, user_id=user_id, folder_id=payload.folder_id)
     _validate_document_access(
         session=session, user_id=user_id, document_id=payload.linked_document_id
@@ -56,36 +79,60 @@ def create_note(*, session: Session, current_user: User, payload: NoteCreate) ->
         word_count=len(preview_source.split()),
         char_count=len(preview_source),
         read_time_minutes=(max(1, len(preview_source.split()) // 200) if preview_source else 1),
+        client_request_id=request_id,
     )
-    session.add(note)
-    session.commit()
-    session.refresh(note)
+    try:
+        session.add(note)
+        session.flush()  # assigns the id the relationships refer to
+        if payload.tag_ids:
+            _apply_note_tags(session=session, user_id=user_id, note=note, tag_ids=payload.tag_ids)
+        if payload.linked_note_ids:
+            _apply_note_links(
+                session=session,
+                current_user=current_user,
+                source_note=note,
+                target_note_ids=payload.linked_note_ids,
+            )
+        _apply_wiki_links(
+            session=session, current_user=current_user, source_note=note, content=clean_content
+        )
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        # A concurrent send of the same create won the unique (user, request id) index
+        created = (
+            _note_created_by(session=session, user_id=user_id, request_id=request_id)
+            if request_id is not None
+            else None
+        )
+        if created is None:
+            raise
+        return created
+    except BaseException:
+        session.rollback()  # e.g. an invalid tag: no note without its relations
+        raise
+
     note_id = _require_persisted_id(note.id, "Note")
-
-    if payload.tag_ids:
-        assign_tags_to_note(
-            session=session,
-            current_user=current_user,
-            note_id=note_id,
-            tag_ids=payload.tag_ids,
-        )
-
-    if payload.linked_note_ids:
-        link_notes(
-            session=session,
-            current_user=current_user,
-            source_note_id=note_id,
-            target_note_ids=payload.linked_note_ids,
-        )
-
-    sync_wiki_links(
-        session=session,
-        current_user=current_user,
-        source_note_id=note_id,
-        content=clean_content,
-    )
-
     return get_note_by_id(session=session, current_user=current_user, note_id=note_id)
+
+
+def _note_created_by(*, session: Session, user_id: int, request_id: str) -> Notes | None:
+    """
+    The note a create with this client request id already made, with its relations.
+    Deleted since: 404, so a late replay doesn't bring it back.
+    """
+    note = (
+        session.exec(
+            select(Notes)
+            .where(Notes.user_id == user_id, Notes.client_request_id == request_id)
+            .options(joinedload(Notes.tags))  # pyright: ignore[reportArgumentType]
+        )
+        .unique()
+        .first()
+    )
+    if note is not None and note.is_deleted:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return note
 
 
 def list_notes(
@@ -117,11 +164,10 @@ def list_notes(
         base_where.append(col(Notes.id).in_(tagged_note_ids))
 
     if search:
-        like_query = f"%{search}%"
         base_where.append(
             or_(
-                col(Notes.title).ilike(like_query),
-                col(Notes.content).ilike(like_query),
+                contains_ignoring_case(Notes.title, search),
+                contains_ignoring_case(Notes.content, search),
             )
         )
 
@@ -185,9 +231,18 @@ def update_note(
 ) -> Notes:
     user_id = _require_persisted_id(current_user.id, "User")
     note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
-    update_data = payload.model_dump(exclude_unset=True)
+    update_data = payload.model_dump(exclude_unset=True, exclude={"expected_revision"})
     if not update_data:
         return note
+    if update_data.get("folder_id") is not None:
+        _lock_folder_tree(session=session, user_id=user_id)
+    # Lock the row until commit: two saves made from one revision can't both pass the
+    # check, and concurrent writes can't lose a revision increment
+    note.revision = session.exec(
+        select(Notes.revision).where(col(Notes.id) == note.id).with_for_update()
+    ).one()
+    if payload.expected_revision is not None and note.revision != payload.expected_revision:
+        raise ConflictError(NOTE_CONFLICT_MESSAGE)
 
     _validate_folder_access(
         session=session, user_id=user_id, folder_id=update_data.get("folder_id")
@@ -224,39 +279,31 @@ def update_note(
             continue
         setattr(note, field_name, value)
 
-    note.last_edited_at = datetime.now()
+    note.last_edited_at = datetime.now(UTC)
+    note.revision += 1
 
-    # Snapshot, pruning and update commit together, so a failed update leaves no orphan
+    # Tags and links are saved under the same row lock as the revision: committed
+    # separately, an older save could overwrite them after a newer one finished
+    if payload.tag_ids is not None:
+        _apply_note_tags(session=session, user_id=user_id, note=note, tag_ids=payload.tag_ids)
+    if payload.linked_note_ids is not None:
+        _apply_note_links(
+            session=session,
+            current_user=current_user,
+            source_note=note,
+            target_note_ids=payload.linked_note_ids,
+        )
+    if payload.content is not None:
+        _apply_wiki_links(
+            session=session, current_user=current_user, source_note=note, content=note.content
+        )
+
+    # Snapshot, pruning, relationships and update commit together, so a failed update
+    # leaves nothing half-applied
     session.add(note)
     _prune_version_history(session=session, note=note)
     session.commit()
-    session.refresh(note)
     persisted_note_id = _require_persisted_id(note.id, "Note")
-
-    if payload.tag_ids is not None:
-        assign_tags_to_note(
-            session=session,
-            current_user=current_user,
-            note_id=persisted_note_id,
-            tag_ids=payload.tag_ids,
-        )
-
-    if payload.linked_note_ids is not None:
-        sync_note_links(
-            session=session,
-            current_user=current_user,
-            source_note_id=persisted_note_id,
-            target_note_ids=payload.linked_note_ids,
-        )
-
-    if payload.content is not None:
-        sync_wiki_links(
-            session=session,
-            current_user=current_user,
-            source_note_id=persisted_note_id,
-            content=note.content,
-        )
-
     return get_note_by_id(session=session, current_user=current_user, note_id=persisted_note_id)
 
 
@@ -270,7 +317,11 @@ def soft_delete_note(*, session: Session, current_user: User, note_id: int) -> N
 
 def create_folder(*, session: Session, current_user: User, payload: FolderCreate) -> NoteFolders:
     user_id = _require_persisted_id(current_user.id, "User")
+    _lock_folder_tree(session=session, user_id=user_id)
     _validate_folder_access(session=session, user_id=user_id, folder_id=payload.parent_folder_id)
+    _ensure_folder_name_free(
+        session=session, user_id=user_id, parent_id=payload.parent_folder_id, name=payload.name
+    )
     folder = NoteFolders(
         user_id=user_id,
         name=payload.name,
@@ -286,28 +337,173 @@ def create_folder(*, session: Session, current_user: User, payload: FolderCreate
     return folder
 
 
+def update_folder(
+    *, session: Session, current_user: User, folder_id: int, payload: FolderUpdate
+) -> NoteFolders:
+    user_id = _require_persisted_id(current_user.id, "User")
+    # Before the cycle check: two crossed moves would each pass it unserialized
+    _lock_folder_tree(session=session, user_id=user_id)
+    folder = _get_folder(session=session, user_id=user_id, folder_id=folder_id)
+    changes = payload.model_dump(exclude_unset=True)
+    if "name" in changes and changes["name"] is None:
+        raise HTTPException(status_code=422, detail="Folder name cannot be empty")
+
+    parent_id = changes.get("parent_folder_id", folder.parent_folder_id)
+    if "parent_folder_id" in changes and parent_id is not None:
+        _validate_folder_access(session=session, user_id=user_id, folder_id=parent_id)
+        if parent_id in _folder_subtree_ids(session=session, user_id=user_id, root_id=folder_id):
+            raise HTTPException(
+                status_code=409, detail="A folder can't be moved into itself or its subfolders"
+            )
+    name = changes.get("name", folder.name)
+    if name != folder.name or parent_id != folder.parent_folder_id:
+        _ensure_folder_name_free(
+            session=session, user_id=user_id, parent_id=parent_id, name=name, exclude_id=folder_id
+        )
+
+    for field, value in changes.items():
+        setattr(folder, field, value)
+    session.add(folder)
+    session.commit()
+    session.refresh(folder)
+    return folder
+
+
 def delete_folder(*, session: Session, current_user: User, folder_id: int) -> None:
+    """
+    Delete a folder and move its notes and subfolders up to its parent (the root for a
+    top-level folder), in one transaction. Nothing inside is hidden or lost; a subfolder
+    whose name is taken in the parent gets a numbered suffix.
+    """
+    user_id = _require_persisted_id(current_user.id, "User")
+    # Before collecting the contents: nothing can be added to the folder meanwhile
+    _lock_folder_tree(session=session, user_id=user_id)
+    folder = _get_folder(session=session, user_id=user_id, folder_id=folder_id)
+    parent_id = folder.parent_folder_id
+
+    session.exec(
+        update(Notes)
+        .where(col(Notes.user_id) == user_id, col(Notes.folder_id) == folder_id)
+        .values(folder_id=parent_id, revision=col(Notes.revision) + 1)
+    )
+    children = session.exec(
+        select(NoteFolders)
+        .where(NoteFolders.user_id == user_id, NoteFolders.parent_folder_id == folder_id)
+        .order_by(col(NoteFolders.name).asc(), col(NoteFolders.id).asc())
+    ).all()
+    taken = _folder_names(session=session, user_id=user_id, parent_id=parent_id)
+    for child in children:
+        child.name = _unique_folder_name(child.name, taken)
+        taken.add(child.name)
+        child.parent_folder_id = parent_id
+        session.add(child)
+    # Write the moves first: `subfolders` cascades delete-orphan, so the folder must
+    # have no children left when it is deleted
+    session.flush()
+    session.expire(folder, ["subfolders", "notes"])
+    # The emptied row is removed rather than flagged: a flagged row would still hold
+    # its name in the unique (user, name, parent) constraint
+    session.delete(folder)
+    session.commit()
+
+
+def _get_folder(*, session: Session, user_id: int, folder_id: int) -> NoteFolders:
     folder = session.exec(
         select(NoteFolders).where(
             NoteFolders.id == folder_id,
-            NoteFolders.user_id == current_user.id,
+            NoteFolders.user_id == user_id,
             col(NoteFolders.is_deleted).is_not(True),
         )
     ).first()
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
-    folder.is_deleted = True
-    session.add(folder)
-    session.commit()
+    return folder
+
+
+def _in_folder_parent(parent_id: int | None) -> ColumnElement[bool]:
+    column = col(NoteFolders.parent_folder_id)
+    return column.is_(None) if parent_id is None else column == parent_id
+
+
+def _folder_names(*, session: Session, user_id: int, parent_id: int | None) -> set[str]:
+    # Soft-deleted rows count: the unique constraint covers them too
+    return set(
+        session.exec(
+            select(NoteFolders.name).where(
+                NoteFolders.user_id == user_id, _in_folder_parent(parent_id)
+            )
+        ).all()
+    )
+
+
+def _ensure_folder_name_free(
+    *,
+    session: Session,
+    user_id: int,
+    parent_id: int | None,
+    name: str,
+    exclude_id: int | None = None,
+) -> None:
+    statement = select(NoteFolders.id).where(
+        NoteFolders.user_id == user_id, NoteFolders.name == name, _in_folder_parent(parent_id)
+    )
+    if exclude_id is not None:
+        statement = statement.where(NoteFolders.id != exclude_id)
+    if session.exec(statement).first() is not None:
+        raise HTTPException(status_code=409, detail="A folder with this name already exists here")
+
+
+def _unique_folder_name(name: str, taken: set[str]) -> str:
+    """`name`, or "name (2)", "name (3)", ... shortened so it still fits the column."""
+    if name not in taken:
+        return name
+    suffix = 2
+    while True:
+        marker = f" ({suffix})"
+        candidate = name[: _FOLDER_NAME_MAX_LENGTH - len(marker)].rstrip() + marker
+        if candidate not in taken:
+            return candidate
+        suffix += 1
+
+
+def _lock_folder_tree(*, session: Session, user_id: int) -> None:
+    """
+    Serialize changes to one user's folder tree until the transaction ends.
+
+    Taken by every write that moves, deletes or places something in a folder, and
+    before any row lock, so the checks that follow (cycles, names, a folder's
+    contents) can't be invalidated by a concurrent write before commit.
+    """
+    session.exec(select(func.pg_advisory_xact_lock(_FOLDER_TREE_LOCK, user_id))).one()
+
+
+def _folder_subtree_ids(*, session: Session, user_id: int, root_id: int) -> set[int]:
+    """The folder and all folders below it."""
+    subtree = {root_id}
+    frontier = {root_id}
+    while frontier:
+        children = session.exec(
+            select(NoteFolders.id).where(
+                NoteFolders.user_id == user_id, col(NoteFolders.parent_folder_id).in_(frontier)
+            )
+        ).all()
+        frontier = {child for child in children if child is not None} - subtree
+        subtree |= frontier
+    return subtree
 
 
 def move_note_to_folder(
     *, session: Session, current_user: User, note_id: int, folder_id: int | None
 ) -> Notes:
     user_id = _require_persisted_id(current_user.id, "User")
+    _lock_folder_tree(session=session, user_id=user_id)
     _validate_folder_access(session=session, user_id=user_id, folder_id=folder_id)
     note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
+    note.revision = session.exec(
+        select(Notes.revision).where(col(Notes.id) == note.id).with_for_update()
+    ).one()
     note.folder_id = folder_id
+    note.revision += 1
     session.add(note)
     session.commit()
     session.refresh(note)
@@ -340,28 +536,27 @@ def create_tag(*, session: Session, current_user: User, payload: TagCreate) -> N
 def assign_tags_to_note(
     *, session: Session, current_user: User, note_id: int, tag_ids: list[int]
 ) -> Notes:
+    user_id = _require_persisted_id(current_user.id, "User")
     note = get_note_by_id(session=session, current_user=current_user, note_id=note_id)
-    if not tag_ids:
-        note.tags = []
-        session.add(note)
-        session.commit()
-        session.refresh(note)
-        return note
-
-    tags = session.exec(
-        select(NoteTags).where(
-            NoteTags.user_id == current_user.id,
-            col(NoteTags.id).in_(tag_ids),
-        )
-    ).all()
-    if len(tags) != len(set(tag_ids)):
-        raise HTTPException(status_code=400, detail="One or more tags are invalid")
-
-    note.tags = list(tags)
+    _apply_note_tags(session=session, user_id=user_id, note=note, tag_ids=tag_ids)
     session.add(note)
     session.commit()
     session.refresh(note)
     return note
+
+
+def _apply_note_tags(*, session: Session, user_id: int, note: Notes, tag_ids: list[int]) -> None:
+    """Set a note's tags without committing."""
+    tags = (
+        session.exec(
+            select(NoteTags).where(NoteTags.user_id == user_id, col(NoteTags.id).in_(tag_ids))
+        ).all()
+        if tag_ids
+        else []
+    )
+    if len(tags) != len(set(tag_ids)):
+        raise HTTPException(status_code=400, detail="One or more tags are invalid")
+    note.tags = list(tags)
 
 
 def remove_tag_from_note(
@@ -375,32 +570,6 @@ def remove_tag_from_note(
     return note
 
 
-def link_notes(
-    *,
-    session: Session,
-    current_user: User,
-    source_note_id: int,
-    target_note_ids: list[int],
-) -> None:
-    source_note = get_note_by_id(session=session, current_user=current_user, note_id=source_note_id)
-    for target_note_id in set(target_note_ids):
-        if source_note_id == target_note_id:
-            continue
-        target_note = get_note_by_id(
-            session=session, current_user=current_user, note_id=target_note_id
-        )
-        existing = session.exec(
-            select(NoteLinks).where(
-                NoteLinks.source_note_id == source_note.id,
-                NoteLinks.target_note_id == target_note.id,
-            )
-        ).first()
-        if existing:
-            continue
-        session.add(NoteLinks(source_note_id=source_note.id, target_note_id=target_note.id))
-    session.commit()
-
-
 def sync_note_links(
     *,
     session: Session,
@@ -409,6 +578,19 @@ def sync_note_links(
     target_note_ids: list[int],
 ) -> None:
     source_note = get_note_by_id(session=session, current_user=current_user, note_id=source_note_id)
+    _apply_note_links(
+        session=session,
+        current_user=current_user,
+        source_note=source_note,
+        target_note_ids=target_note_ids,
+    )
+    session.commit()
+
+
+def _apply_note_links(
+    *, session: Session, current_user: User, source_note: Notes, target_note_ids: list[int]
+) -> None:
+    """Set a note's outgoing links without committing."""
     valid_target_ids = set(target_note_ids) - {source_note.id}
 
     for target_id in valid_target_ids:
@@ -427,14 +609,24 @@ def sync_note_links(
         if not already_exists:
             session.add(NoteLinks(source_note_id=source_note.id, target_note_id=target_id))
 
-    session.commit()
-
 
 def sync_wiki_links(
     *, session: Session, current_user: User, source_note_id: int, content: str
 ) -> tuple[int, int]:
     """Synchronize Obsidian-style [[Note title]] links for one note."""
     source_note = get_note_by_id(session=session, current_user=current_user, note_id=source_note_id)
+    added, removed = _apply_wiki_links(
+        session=session, current_user=current_user, source_note=source_note, content=content
+    )
+    if added or removed:
+        session.commit()
+    return added, removed
+
+
+def _apply_wiki_links(
+    *, session: Session, current_user: User, source_note: Notes, content: str
+) -> tuple[int, int]:
+    """Match a note's [[Note title]] links to its content without committing."""
     requested_titles = {title.casefold() for title in extract_wiki_link_titles(content)}
     user_notes = session.exec(
         select(Notes).where(
@@ -473,9 +665,6 @@ def sync_wiki_links(
                 )
             )
             added += 1
-
-    if added or removed:
-        session.commit()
 
     return added, removed
 

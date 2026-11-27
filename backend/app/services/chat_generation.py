@@ -4,13 +4,13 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 from threading import Event
 from typing import Any
 
 from fastapi import HTTPException
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, select, update
 
 from app.ai.grounding import build_grounding_repair_messages, validate_grounded_answer
 from app.ai.llm import LLMService
@@ -18,12 +18,15 @@ from app.ai.rag import PreparedRAGResponse, finalize_prepared_answer, prepare_ra
 from app.core.database import engine
 from app.models.chat import ChatGenerationStatus, ChatMessages, ChatRole, ChatSession
 from app.models.user import User, UserSettings
+from app.services.chat_history import REPLY_TO_KEY, build_conversation_history
 from app.services.generation_coordinator import generation_coordinator
 
 logger = logging.getLogger(__name__)
 
 GENERATION_FAILED_MESSAGE = "The AI response could not be completed."
-REPLY_TO_KEY = "reply_to_message_id"
+INTERRUPTED_MESSAGE = "The reply was interrupted. Retry to generate it again."
+# Recent messages read to build the history (several attempts can share one question)
+HISTORY_SCAN_LIMIT = 40
 
 
 def encode_sse(event: str, payload: dict[str, Any]) -> str:
@@ -99,13 +102,20 @@ def _message_payload(message: ChatMessages) -> dict[str, Any]:
     }
 
 
+def ensure_no_active_generation(session_id: int) -> None:
+    """
+    Early 409 for the common case, before the response starts. The claim itself is
+    taken when the stream runs, so a client that disconnects first leaves nothing held.
+    """
+    if generation_coordinator.is_session_active(session_id):
+        raise HTTPException(status_code=409, detail="A reply is already being generated.")
+
+
 def create_generation_messages(
     *, session: Session, user: User, chat_session: ChatSession, content: str
 ) -> tuple[ChatMessages, ChatMessages, Event]:
     if chat_session.id is None or user.id is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
-    if generation_coordinator.is_session_active(chat_session.id):
-        raise HTTPException(status_code=409, detail="A reply is already being generated.")
     now = datetime.now(UTC)
     user_message = ChatMessages(session_id=chat_session.id, role=ChatRole.user, content=content)
     assistant = ChatMessages(
@@ -125,28 +135,16 @@ def create_generation_messages(
     if not chat_session.title:
         chat_session.title = content[:80]
     session.add(chat_session)
-    session.commit()
-    session.refresh(user_message)
-    session.refresh(assistant)
-    if assistant.id is None:
-        raise RuntimeError("Assistant message was not persisted")
-    try:
-        cancellation = generation_coordinator.start(
-            session_id=chat_session.id, message_id=assistant.id
-        )
-    except Exception:
-        assistant.generation_status = ChatGenerationStatus.failed
-        assistant.generation_error = "Generation could not be started."
-        assistant.generation_completed_at = datetime.now(UTC)
-        session.add(assistant)
-        session.commit()
-        raise
+    cancellation = _claim_and_commit(
+        session=session, session_id=chat_session.id, reply=assistant, question=user_message
+    )
     return user_message, assistant, cancellation
 
 
-def create_retry_message(
-    *, session: Session, user: User, chat_session: ChatSession, failed_message_id: int
-) -> tuple[ChatMessages, ChatMessages, Event]:
+def ensure_retryable(
+    *, session: Session, chat_session: ChatSession, failed_message_id: int
+) -> ChatMessages:
+    """Return the question a stopped or failed reply answered, or raise 409."""
     failed = session.get(ChatMessages, failed_message_id)
     if (
         failed is None
@@ -158,38 +156,115 @@ def create_retry_message(
         raise HTTPException(
             status_code=409, detail="Only stopped or failed replies can be retried."
         )
-    if chat_session.id is None or generation_coordinator.is_session_active(chat_session.id):
-        raise HTTPException(status_code=409, detail="A reply is already being generated.")
+    if chat_session.id is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    ensure_no_active_generation(chat_session.id)
     user_message = _original_user_message(session=session, failed=failed)
     if user_message is None or user_message.id is None:
         raise HTTPException(status_code=409, detail="The original user message was not found.")
-    now = datetime.now(UTC)
+    return user_message
+
+
+def create_retry_message(
+    *, session: Session, user: User, chat_session: ChatSession, failed_message_id: int
+) -> tuple[ChatMessages, ChatMessages, Event]:
+    user_message = ensure_retryable(
+        session=session, chat_session=chat_session, failed_message_id=failed_message_id
+    )
+    if chat_session.id is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
     assistant = ChatMessages(
         session_id=chat_session.id,
         role=ChatRole.assistant,
         content="",
         model_used="rag-v2-stream",
         generation_status=ChatGenerationStatus.streaming,
-        generation_started_at=now,
+        generation_started_at=datetime.now(UTC),
         generation_metadata={"retry_of": failed_message_id, REPLY_TO_KEY: user_message.id},
     )
     session.add(assistant)
-    session.commit()
-    session.refresh(assistant)
-    if assistant.id is None:
-        raise RuntimeError("Retry message was not persisted")
-    try:
-        cancellation = generation_coordinator.start(
-            session_id=chat_session.id, message_id=assistant.id
-        )
-    except Exception:
-        assistant.generation_status = ChatGenerationStatus.failed
-        assistant.generation_error = "Generation could not be started."
-        assistant.generation_completed_at = datetime.now(UTC)
-        session.add(assistant)
-        session.commit()
-        raise
+    cancellation = _claim_and_commit(session=session, session_id=chat_session.id, reply=assistant)
     return user_message, assistant, cancellation
+
+
+def _claim_and_commit(
+    *,
+    session: Session,
+    session_id: int,
+    reply: ChatMessages,
+    question: ChatMessages | None = None,
+) -> Event:
+    """
+    Claim the chat session for `reply` before its rows are committed: losing the race
+    rolls them back instead of leaving an orphan question or a reply stuck streaming.
+
+    Until this returns, the caller's stream hasn't taken ownership of the claim, so
+    every failure after it is taken releases it here.
+    """
+    session.flush()  # assigns the reply's id, which the claim is keyed on
+    reply_id = reply.id
+    if reply_id is None:
+        raise RuntimeError("Assistant message was not persisted")
+    try:
+        cancellation = generation_coordinator.start(session_id=session_id, message_id=reply_id)
+    except HTTPException:
+        session.rollback()
+        raise
+    committed = False
+    try:
+        session.commit()
+        committed = True
+        session.refresh(reply)
+        if question is not None:
+            session.refresh(question)
+    except BaseException:
+        session.rollback()
+        if committed:
+            _mark_reply_failed(reply_id)
+        generation_coordinator.finish(session_id=session_id, message_id=reply_id)
+        raise
+    return cancellation
+
+
+def _mark_reply_failed(reply_id: int) -> None:
+    """Best effort, in its own session: a committed reply must not stay streaming."""
+    try:
+        with Session(engine) as session:
+            session.exec(
+                update(ChatMessages)
+                .where(
+                    col(ChatMessages.id) == reply_id,
+                    col(ChatMessages.generation_status) == ChatGenerationStatus.streaming,
+                )
+                .values(
+                    generation_status=ChatGenerationStatus.failed,
+                    generation_error=GENERATION_FAILED_MESSAGE,
+                    generation_completed_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+    except Exception:
+        # The startup sweep fails it on the next restart
+        logger.exception("Could not mark a reply failed", extra={"message_id": reply_id})
+
+
+def fail_interrupted_generations(session: Session) -> int:
+    """
+    Mark replies left `streaming` by a crash or restart as failed, so they can be
+    retried. Run at startup: claims live in this process's memory, so no reply can
+    still be generating then.
+    """
+    result = session.exec(
+        update(ChatMessages)
+        .where(col(ChatMessages.generation_status) == ChatGenerationStatus.streaming)
+        .values(
+            generation_status=ChatGenerationStatus.failed,
+            generation_error=INTERRUPTED_MESSAGE,
+            generation_completed_at=datetime.now(UTC),
+        )
+    )
+    session.commit()
+    return result.rowcount or 0
 
 
 def _original_user_message(*, session: Session, failed: ChatMessages) -> ChatMessages | None:
@@ -228,6 +303,18 @@ def _original_user_message(*, session: Session, failed: ChatMessages) -> ChatMes
     ).first()
 
 
+def _start_failed_event(message: str) -> str:
+    return encode_sse(
+        "error",
+        {
+            "code": "GENERATION_NOT_STARTED",
+            "message": message,
+            "retryable": False,
+            "assistant_message_id": None,
+        },
+    )
+
+
 def _prepare_rag_in_own_session(
     *, user_id: int, query: str, conversation_history: list[dict[str, Any]]
 ) -> PreparedRAGResponse:
@@ -247,48 +334,92 @@ def _prepare_rag_in_own_session(
         return prepared
 
 
-async def stream_chat_generation(
-    *, user_id: int, session_id: int, user_message_id: int, assistant_message_id: int
+BeginReply = Callable[[Session, User, ChatSession], tuple[ChatMessages, ChatMessages, Event]]
+
+
+def stream_new_reply(*, user_id: int, session_id: int, content: str) -> AsyncGenerator[str, None]:
+    """Answer a new question; its rows are written once the stream runs."""
+
+    def begin(
+        session: Session, user: User, chat_session: ChatSession
+    ) -> tuple[ChatMessages, ChatMessages, Event]:
+        return create_generation_messages(
+            session=session, user=user, chat_session=chat_session, content=content
+        )
+
+    return stream_chat_generation(user_id=user_id, session_id=session_id, begin=begin)
+
+
+def stream_retry_reply(
+    *, user_id: int, session_id: int, failed_message_id: int
 ) -> AsyncGenerator[str, None]:
+    """Generate a stopped or failed reply again."""
+
+    def begin(
+        session: Session, user: User, chat_session: ChatSession
+    ) -> tuple[ChatMessages, ChatMessages, Event]:
+        return create_retry_message(
+            session=session,
+            user=user,
+            chat_session=chat_session,
+            failed_message_id=failed_message_id,
+        )
+
+    return stream_chat_generation(user_id=user_id, session_id=session_id, begin=begin)
+
+
+async def stream_chat_generation(
+    *, user_id: int, session_id: int, begin: BeginReply
+) -> AsyncGenerator[str, None]:
+    """
+    Claim the chat session, write the reply's rows and stream the answer.
+
+    All of it happens inside the running stream: if the client disconnects before
+    the body starts, no claim is held and no reply is left `streaming`. Once `begin`
+    returns, the try/finally below owns the claim and releases it on every path.
+    """
     started = time.perf_counter()
-    cancellation = generation_coordinator.cancellation_event(assistant_message_id)
-    if cancellation is None:
-        return
     draft = ""
     original_draft = ""
     with Session(engine) as session:
         user = session.get(User, user_id)
-        user_message = session.get(ChatMessages, user_message_id)
-        assistant = session.get(ChatMessages, assistant_message_id)
-        if user is None or user_message is None or assistant is None:
-            generation_coordinator.finish(session_id=session_id, message_id=assistant_message_id)
+        chat_session = session.get(ChatSession, session_id)
+        if user is None or chat_session is None or chat_session.user_id != user_id:
+            yield _start_failed_event("Chat session not found.")
             return
-        yield encode_sse(
-            "generation_started",
-            {
-                "session_id": session_id,
-                "user_message": _message_payload(user_message),
-                "assistant_message": _message_payload(assistant),
-            },
-        )
         try:
-            history_rows = session.exec(
+            user_message, assistant, cancellation = begin(session, user, chat_session)
+        except HTTPException as exc:
+            # A race the route's early check could not see; nothing was written
+            yield _start_failed_event(str(exc.detail))
+            return
+        if assistant.id is None:
+            # The claim is keyed on this id, so none can be held
+            raise RuntimeError("Reply row was not persisted")
+        assistant_message_id = assistant.id
+        try:
+            if user_message.id is None:
+                raise RuntimeError("Question row was not persisted")
+            user_message_id = user_message.id
+            yield encode_sse(
+                "generation_started",
+                {
+                    "session_id": session_id,
+                    "user_message": _message_payload(user_message),
+                    "assistant_message": _message_payload(assistant),
+                },
+            )
+            # Scan further back than the turns kept: failed drafts and retries are skipped
+            recent_rows = session.exec(
                 select(ChatMessages)
                 .where(
                     ChatMessages.session_id == session_id,
                     col(ChatMessages.id) < user_message_id,
                 )
-                .order_by(col(ChatMessages.created_at).desc())
-                .limit(6)
+                .order_by(col(ChatMessages.created_at).desc(), col(ChatMessages.id).desc())
+                .limit(HISTORY_SCAN_LIMIT)
             ).all()
-            history = [
-                {
-                    "role": row.role.value if isinstance(row.role, ChatRole) else str(row.role),
-                    "content": row.content,
-                    "sources": row.sources,
-                }
-                for row in reversed(history_rows)
-            ]
+            history = build_conversation_history(list(reversed(recent_rows)))
             # Retrieval is synchronous (DB queries + embedding calls); keep it off the
             # event loop so other users' streams aren't stalled while it runs
             prepared = await asyncio.to_thread(
@@ -363,7 +494,8 @@ async def stream_chat_generation(
                 final_answer, sources = finalize_prepared_answer(draft, prepared=prepared)
                 assistant.content = final_answer
                 assistant.sources = sources
-                assistant.tokens_used = len(final_answer.split())
+                # The draft and any repair pass both generated tokens for this reply
+                assistant.tokens_used = llm.usage.generated_tokens
                 assistant.response_time_ms = int((time.perf_counter() - started) * 1000)
                 assistant.generation_status = ChatGenerationStatus.completed
                 metadata = {

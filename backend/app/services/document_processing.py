@@ -8,7 +8,10 @@ DOCUMENT_PROCESSING_CONCURRENCY at a time, while the client polls the status.
 The documents table is the durable record: a document still "processing" at startup
 was interrupted by a restart or crash and is processed again. That is safe because
 processing resets the document first. Shutdown cancels in-flight work, leaving those
-documents to be resumed on the next start.
+documents to be resumed on the next start without counting the interrupted run.
+
+Each run counts an attempt before it starts. A file that crashes or hangs the process
+is therefore resumed MAX_PROCESSING_ATTEMPTS times at most, then marked failed.
 """
 
 from __future__ import annotations
@@ -16,17 +19,24 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlmodel import Session, col, select
 
 from app.core.config import settings
 from app.core.database import engine
-from app.models.document import Document
+from app.models.document import Document, DocumentStatus
 
 logger = logging.getLogger(__name__)
 
 ProcessFunction = Callable[..., Awaitable[Any]]
+
+MAX_PROCESSING_ATTEMPTS = 3
+ATTEMPTS_EXHAUSTED_ERROR = (
+    f"Processing stopped after {MAX_PROCESSING_ATTEMPTS} interrupted attempts. "
+    "The file may be too large or malformed; upload it again to retry."
+)
 
 
 async def _process_existing_document(**kwargs: Any) -> Any:
@@ -63,18 +73,35 @@ class DocumentProcessor:
         return True
 
     def resume_interrupted(self) -> int:
-        """Schedule every document left in "processing" by a previous run."""
+        """
+        Schedule every document left in "processing" by a previous run, and fail the
+        ones that have used all their attempts.
+        """
         with Session(engine) as session:
-            rows = session.exec(
-                select(Document.id, Document.user_id).where(
-                    Document.status == "processing",
+            interrupted = session.exec(
+                select(Document).where(
+                    Document.status == DocumentStatus.processing,
                     col(Document.is_deleted).is_(False),
                 )
             ).all()
+            to_resume: list[tuple[int, int]] = []
+            for document in interrupted:
+                if document.id is None or document.user_id is None:
+                    continue
+                if document.processing_attempts >= MAX_PROCESSING_ATTEMPTS:
+                    document.status = DocumentStatus.failed
+                    document.processing_error = ATTEMPTS_EXHAUSTED_ERROR
+                    document.processing_completed_at = datetime.now(UTC)
+                    session.add(document)
+                    logger.warning(
+                        "Gave up processing a document after repeated interruptions",
+                        extra={"document_id": document.id, "attempts": document.processing_attempts},
+                    )
+                else:
+                    to_resume.append((document.id, document.user_id))
+            session.commit()
         resumed = 0
-        for document_id, user_id in rows:
-            if document_id is None or user_id is None:
-                continue
+        for document_id, user_id in to_resume:
             if self.schedule(user_id=user_id, document_id=document_id):
                 resumed += 1
         return resumed

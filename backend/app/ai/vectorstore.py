@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import Connection, text
 from sqlmodel import Session, col, select
 
+from app.ai.chunking import NoteChunk
 from app.ai.reranking import LexicalQuery
 from app.core.config import settings
 from app.models.chat import ChatMessages, ChatRole, ChatSession
@@ -75,8 +76,10 @@ class VectorSearchResult:
 class NoteVectorSearchResult:
     note_id: int
     title: str
+    # The note's best-matching passage, not the whole note
     content: str
     score: float
+    chunk_index: int
 
 
 @dataclass(slots=True)
@@ -174,7 +177,7 @@ class PgVectorStore:
             .execute(
                 text(
                     """
-				SELECT note_id, content_hash
+				SELECT DISTINCT note_id, content_hash
 				FROM note_embeddings
 				WHERE user_id = :user_id AND model = :model
 				"""
@@ -217,14 +220,19 @@ class PgVectorStore:
     def store_note_embeddings(
         self,
         *,
-        notes: Sequence[tuple[int, str]],
+        chunks: Sequence[NoteChunk],
         embeddings: Sequence[Sequence[float]],
         user_id: int,
         model: str,
     ) -> None:
-        if len(notes) != len(embeddings):
-            raise ValueError("Note count does not match embedding count")
-        if not notes:
+        """
+        Replace the stored chunks of every note in `chunks` with these. Pass all of a
+        note's chunks in one call: rows past its last chunk, left from a longer previous
+        version, are removed.
+        """
+        if len(chunks) != len(embeddings):
+            raise ValueError("Chunk count does not match embedding count")
+        if not chunks:
             return
 
         dimensions = len(embeddings[0])
@@ -234,35 +242,65 @@ class PgVectorStore:
 
         values_clauses: list[str] = []
         params: dict[str, object] = {}
-        for index, ((note_id, content_hash), embedding) in enumerate(zip(notes, embeddings)):
+        for index, (chunk, embedding) in enumerate(zip(chunks, embeddings, strict=True)):
             if len(embedding) != dimensions:
                 raise ValueError("All embedding vectors must use the same dimensions")
             prefix = f"n{index}"
             values_clauses.append(
-                f"(:{prefix}_note_id, :{prefix}_user_id, :{prefix}_model, "
-                f":{prefix}_content_hash, CAST(:{prefix}_embedding AS vector))"
+                f"(:{prefix}_note_id, :{prefix}_chunk_index, :{prefix}_user_id, :{prefix}_model, "
+                f":{prefix}_content_hash, :{prefix}_content, CAST(:{prefix}_embedding AS vector))"
             )
-            params[f"{prefix}_note_id"] = note_id
+            params[f"{prefix}_note_id"] = chunk.note_id
+            params[f"{prefix}_chunk_index"] = chunk.chunk_index
             params[f"{prefix}_user_id"] = user_id
             params[f"{prefix}_model"] = model
-            params[f"{prefix}_content_hash"] = content_hash
+            params[f"{prefix}_content_hash"] = chunk.content_hash
+            params[f"{prefix}_content"] = chunk.content
             params[f"{prefix}_embedding"] = self._to_vector_literal(embedding)
 
-        self.session.connection().execute(
+        # Upsert, then drop the rows past each note's new chunk count. Not delete-then-
+        # insert: a concurrent re-index of the same note would insert rows this
+        # transaction's delete can't see, and the insert would then fail on the key.
+        connection = self.session.connection()
+        connection.execute(
             text(
                 f"""
-				INSERT INTO note_embeddings (note_id, user_id, model, content_hash, embedding)
+				INSERT INTO note_embeddings
+					(note_id, chunk_index, user_id, model, content_hash, content, embedding)
 				VALUES {", ".join(values_clauses)}
-				ON CONFLICT (note_id)
+				ON CONFLICT (note_id, chunk_index)
 				DO UPDATE SET
 					user_id = EXCLUDED.user_id,
 					model = EXCLUDED.model,
 					content_hash = EXCLUDED.content_hash,
+					content = EXCLUDED.content,
 					embedding = EXCLUDED.embedding,
 					updated_at = NOW()
 				"""
             ),
             parameters=params,
+        )
+        chunk_counts: dict[int, int] = {}
+        for chunk in chunks:
+            chunk_counts[chunk.note_id] = max(chunk_counts.get(chunk.note_id, 0), chunk.chunk_index + 1)
+        note_ids = sorted(chunk_counts)
+        connection.execute(
+            text(
+                """
+				DELETE FROM note_embeddings ne
+				USING unnest(CAST(:note_ids AS int[]), CAST(:counts AS int[])) AS kept(note_id, chunk_count)
+				WHERE ne.note_id = kept.note_id AND ne.chunk_index >= kept.chunk_count
+				"""
+            ),
+            parameters={"note_ids": note_ids, "counts": [chunk_counts[i] for i in note_ids]},
+        )
+
+    def remove_note_embeddings(self, *, note_ids: Collection[int]) -> None:
+        if not note_ids:
+            return
+        self.session.connection().execute(
+            text("DELETE FROM note_embeddings WHERE note_id = ANY(CAST(:note_ids AS int[]))"),
+            parameters={"note_ids": sorted(note_ids)},
         )
 
     def store_chat_message_embeddings(
@@ -431,6 +469,7 @@ class PgVectorStore:
         self,
         *,
         user_id: int,
+        model: str,
         query_embedding: Sequence[float],
         top_k: int = 5,
         similarity_threshold: float | None = None,
@@ -441,9 +480,11 @@ class PgVectorStore:
 
         self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
-        where_clauses = ["ce.user_id = :user_id"]
+        # Vectors from another model live in a different space even at equal dimensions
+        where_clauses = ["ce.user_id = :user_id", "ce.model = :model"]
         params: dict[str, object] = {
             "user_id": user_id,
+            "model": model,
             "embedding": embedding_literal,
             "top_k": max(1, top_k),
         }
@@ -491,6 +532,7 @@ class PgVectorStore:
         self,
         *,
         user_id: int,
+        model: str,
         query_embedding: Sequence[float],
         top_k: int = 5,
         similarity_threshold: float | None = None,
@@ -499,11 +541,11 @@ class PgVectorStore:
         if not query_embedding:
             return []
 
-        self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
-        where_clauses = ["ne.user_id = :user_id", "n.is_deleted = FALSE"]
+        where_clauses = ["ne.user_id = :user_id", "ne.model = :model", "n.is_deleted = FALSE"]
         params: dict[str, object] = {
             "user_id": user_id,
+            "model": model,
             "embedding": embedding_literal,
             "top_k": max(1, top_k),
         }
@@ -516,20 +558,29 @@ class PgVectorStore:
             where_clauses.append("n.id = ANY(CAST(:note_ids AS int[]))")
             params["note_ids"] = list(note_ids)
 
+        # Each note's best passage, ranked. Exact over the user's note chunks rather than
+        # an HNSW top-N: a long note with many close passages would fill a candidate list
+        # and push other notes out, and a personal workspace has few enough notes to scan.
         rows = (
             self.session.connection()
             .execute(
                 text(
                     f"""
-				SELECT
-					n.id AS note_id,
-					n.title AS title,
-					n.content AS content,
-					(1 - (ne.embedding <=> CAST(:embedding AS vector))) AS score
-				FROM note_embeddings ne
-				INNER JOIN notes n ON n.id = ne.note_id
-				WHERE {" AND ".join(where_clauses)}
-				ORDER BY ne.embedding <=> CAST(:embedding AS vector)
+				WITH best_per_note AS (
+					SELECT DISTINCT ON (ne.note_id)
+						ne.note_id,
+						ne.chunk_index,
+						ne.content,
+						(1 - (ne.embedding <=> CAST(:embedding AS vector))) AS score
+					FROM note_embeddings ne
+					INNER JOIN notes n ON n.id = ne.note_id
+					WHERE {" AND ".join(where_clauses)}
+					ORDER BY ne.note_id, ne.embedding <=> CAST(:embedding AS vector)
+				)
+				SELECT b.note_id, n.title, b.chunk_index, b.content, b.score
+				FROM best_per_note b
+				INNER JOIN notes n ON n.id = b.note_id
+				ORDER BY b.score DESC
 				LIMIT :top_k
 				"""
                 ),
@@ -543,6 +594,7 @@ class PgVectorStore:
                 title=row.title,
                 content=row.content,
                 score=float(row.score),
+                chunk_index=row.chunk_index,
             )
             for row in rows
         ]
@@ -707,6 +759,7 @@ class PgVectorStore:
         self,
         *,
         user_id: int,
+        model: str,
         query_embedding: Sequence[float],
         top_k: int = 20,
         similarity_threshold: float | None = None,
@@ -718,9 +771,10 @@ class PgVectorStore:
 
         self._tune_vector_search()
         embedding_literal = self._to_vector_literal(query_embedding)
-        where_clauses = ["cme.user_id = :user_id"]
+        where_clauses = ["cme.user_id = :user_id", "cme.model = :model"]
         params: dict[str, object] = {
             "user_id": user_id,
+            "model": model,
             "embedding": embedding_literal,
             "top_k": max(1, top_k),
         }

@@ -10,6 +10,7 @@ from app.schemas.graph import GraphAllResponse, GraphNodeResponse, GraphResponse
 from app.schemas.note import (
     FolderCreate,
     FolderResponse,
+    FolderUpdate,
     NoteCreate,
     NoteList,
     NoteResponse,
@@ -22,6 +23,7 @@ from app.services.note_service import (
     create_note,
     create_note_link,
     create_tag,
+    delete_folder,
     delete_note_link,
     get_full_user_graph,
     get_note_by_id,
@@ -31,6 +33,7 @@ from app.services.note_service import (
     list_tags,
     rebuild_wiki_links,
     soft_delete_note,
+    update_folder,
     update_note,
 )
 
@@ -52,6 +55,7 @@ def _to_note_response(note: Notes) -> NoteResponse:
             _require_id(link.target_note_id, "Linked note") for link in note.source_links
         ],
         version=note.version,
+        revision=note.revision,
         is_favorite=note.is_favorite,
         is_archived=note.is_archived,
         is_pinned=note.is_pinned,
@@ -212,6 +216,44 @@ def create_folder_endpoint(
     *, session: SessionDep, current_user: CurrentUser, body: FolderCreate
 ) -> Any:
     return create_folder(session=session, current_user=current_user, payload=body)
+
+
+@router.patch(
+    path="/folders/{folder_id}",
+    response_model=FolderResponse,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        404: {"model": StandardErrorResponse, "description": "Folder not found"},
+        409: {
+            "model": StandardErrorResponse,
+            "description": "Name taken in the target folder, or a move into its own subfolder",
+        },
+        422: {"model": StandardErrorResponse, "description": "Validation error"},
+    },
+)
+def update_folder_endpoint(
+    *, session: SessionDep, current_user: CurrentUser, folder_id: int, body: FolderUpdate
+) -> Any:
+    """Rename, restyle or move a folder."""
+    return update_folder(
+        session=session, current_user=current_user, folder_id=folder_id, payload=body
+    )
+
+
+@router.delete(
+    path="/folders/{folder_id}",
+    response_model=Message,
+    responses={
+        401: {"model": StandardErrorResponse, "description": "Authentication required"},
+        404: {"model": StandardErrorResponse, "description": "Folder not found"},
+    },
+)
+def delete_folder_endpoint(
+    *, session: SessionDep, current_user: CurrentUser, folder_id: int
+) -> Any:
+    """Delete a folder; its notes and subfolders move up to its parent."""
+    delete_folder(session=session, current_user=current_user, folder_id=folder_id)
+    return Message(message="Folder deleted; its contents moved to the parent folder")
 
 
 @router.post(

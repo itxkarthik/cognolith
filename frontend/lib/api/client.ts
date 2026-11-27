@@ -3,7 +3,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { apiConfig, tokenKeys, getTimeoutForEndpoint } from "@/config/api";
 import { useAuthStore } from "@/store/authStore";
 import { isRetryableError, retryWithExponentialBackoff, DEFAULT_RETRY_CONFIG } from "@/lib/utils/retry";
-import { requestQueue, type QueuedRequest } from "@/lib/utils/requestQueue";
+import { isQueueable, requestQueue, type QueuedRequest } from "@/lib/utils/requestQueue";
 import type { ApiError } from "@/types";
 
 type RequestWithRetry = InternalAxiosRequestConfig & {
@@ -113,22 +113,46 @@ const refreshClient = axios.create({
 	},
 });
 
+declare module "axios" {
+	interface AxiosRequestConfig {
+		// Set on queue replays, which must not be queued again
+		offlineReplay?: boolean;
+	}
+}
+
+// Note creates are the one queued write a repeat would duplicate (a replay whose response
+// was lost, or two tabs without Web Locks). The key makes the server return the note
+// the first send created.
+const NOTE_CREATE_URL = /^\/notes\/?$/;
+
+function withCreateKey(method: string, url: string, data: unknown): unknown {
+	if (method !== "POST" || !NOTE_CREATE_URL.test(url)) return data;
+	if (typeof data !== "object" || data === null || Array.isArray(data) || "client_request_id" in data) return data;
+	const key = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+	return { ...data, client_request_id: key };
+}
+
 apiClient.interceptors.request.use((config) => {
-	// Queue requests if offline (for POST, PUT, PATCH)
-	const isOnline = typeof navigator !== "undefined" && navigator.onLine;
+	const isOnline = typeof navigator === "undefined" || navigator.onLine;
 	const method = (config.method ?? "get").toUpperCase();
 
-	if (!isOnline && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-		// Queue the request for later
-		requestQueue.add(method, config.url || "", {
-			data: config.data,
-			params: config.params,
-		});
-
+	if (!isOnline && !config.offlineReplay && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+		const url = config.url || "";
+		const ownerId = useAuthStore.getState().user?.id;
+		// A write is queued only for a known account, so it can't replay as another one
+		if (ownerId === undefined || !isQueueable(method, url, config.data)) {
+			return Promise.reject(
+				new APIRequestError("You are offline. Try again once the connection is back.", {
+					statusCode: 0,
+					errorCode: "OFFLINE",
+				})
+			);
+		}
+		requestQueue.add(ownerId, method, url, { data: withCreateKey(method, url, config.data), params: config.params });
 		return Promise.reject(
-			new APIRequestError("Request queued - you are currently offline", {
+			new APIRequestError("Saved offline; it will sync when the connection is back.", {
 				statusCode: 0,
-				errorCode: "OFFLINE",
+				errorCode: "OFFLINE_QUEUED",
 			})
 		);
 	}
@@ -172,21 +196,40 @@ apiClient.interceptors.request.use((config) => {
 // Refresh tokens are single-use, so concurrent 401s must share one refresh call.
 let refreshInFlight: Promise<void> | null = null;
 
+// Tabs share the auth cookies. Holding this lock makes them refresh one after another,
+// so the next tab sends the token the previous one received instead of the rotated one.
+const REFRESH_LOCK = "cognolith-auth-refresh";
+
+async function postRefresh(): Promise<void> {
+	try {
+		await refreshClient.post(apiConfig.endpoints.refresh, {});
+	} catch (error) {
+		// 409: another tab refreshed with this token a moment ago and the shared cookies
+		// already hold the new tokens (browsers without Web Locks, or a lost race)
+		if (axios.isAxiosError(error) && error.response?.status === 409) return;
+		throw error;
+	}
+}
+
 function refreshSession(): Promise<void> {
 	if (!refreshInFlight) {
-		refreshInFlight = refreshClient
-			.post(apiConfig.endpoints.refresh, {})
-			.then(() => undefined)
-			.finally(() => {
-				refreshInFlight = null;
-			});
+		const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+		const refresh: Promise<void> = locks
+			? locks.request(REFRESH_LOCK, postRefresh).then(() => undefined)
+			: postRefresh();
+		refreshInFlight = refresh.finally(() => {
+			refreshInFlight = null;
+		});
 	}
 	return refreshInFlight;
 }
 
 apiClient.interceptors.response.use(
 	(response) => response,
-	async (error: AxiosError<ApiError>) => {
+	async (error: AxiosError<ApiError> | APIRequestError) => {
+		// Raised by the request interceptor (offline): already final, and wrapping it
+		// again would drop its errorCode (OFFLINE, OFFLINE_QUEUED)
+		if (error instanceof APIRequestError) return Promise.reject(error);
 		const originalRequest = error.config as RequestWithRetry | undefined;
 
 		// Handle token refresh on 401
@@ -255,29 +298,70 @@ apiClient.interceptors.response.use(
 	}
 );
 
-export async function processOfflineQueue(): Promise<{ succeeded: number; failed: number }> {
-	if (requestQueue.isEmpty()) {
-		return { succeeded: 0, failed: 0 };
-	}
+export type OfflineReplayResult =
+	| { status: "applied"; data: unknown }
+	// The server copy changed since the write was queued; it was not applied
+	| { status: "conflict" }
+	| { status: "rejected"; statusCode: number };
 
+type OfflineReplayListener = (request: QueuedRequest, result: OfflineReplayResult) => void;
+
+const replayListeners = new Set<OfflineReplayListener>();
+
+/** Be told how each replayed offline write ended, e.g. to refresh what it changed. */
+export function onOfflineReplay(listener: OfflineReplayListener): () => void {
+	replayListeners.add(listener);
+	return () => replayListeners.delete(listener);
+}
+
+export async function processOfflineQueue(): Promise<{ succeeded: number; failed: number; conflicts: number }> {
+	await requestQueue.ready();
 	let succeeded = 0;
 	let failed = 0;
+	let conflicts = 0;
+	if (requestQueue.isEmpty()) return { succeeded, failed, conflicts };
+
+	// The cookies decide whose account a replay writes to, and another tab may have
+	// signed in as someone else since these writes were queued
+	let signedInId: number;
+	try {
+		signedInId = (await apiClient.get<{ id: number }>(apiConfig.endpoints.me)).data.id;
+	} catch {
+		return { succeeded, failed, conflicts }; // offline or signed out: keep the queue
+	}
 
 	await requestQueue.execute(async (req: QueuedRequest) => {
+		if (req.ownerId !== signedInId) {
+			// Another account's write: never sent, and never replayed later either
+			failed++;
+			return "done";
+		}
+		let result: OfflineReplayResult;
 		try {
-			await apiClient({
+			const response = await apiClient({
 				method: req.method.toLowerCase(),
 				url: req.url,
-				data: req.config.data,
-				params: req.config.params,
+				data: req.data,
+				params: req.params,
+				offlineReplay: true,
 			});
 			succeeded++;
-			return true;
-		} catch {
-			failed++;
-			return false;
+			result = { status: "applied", data: response.data };
+		} catch (error) {
+			const statusCode = error instanceof APIRequestError ? error.statusCode : undefined;
+			// Offline again, or the server failing: keep it, and everything after it
+			if (!statusCode || statusCode >= 500 || statusCode === 408 || statusCode === 429) return "retry";
+			if (statusCode === 409) {
+				conflicts++;
+				result = { status: "conflict" };
+			} else {
+				failed++;
+				result = { status: "rejected", statusCode };
+			}
 		}
+		replayListeners.forEach((listener) => listener(req, result));
+		return "done";
 	});
 
-	return { succeeded, failed };
+	return { succeeded, failed, conflicts };
 }

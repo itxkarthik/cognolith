@@ -1,3 +1,4 @@
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
 from unittest import TestCase
@@ -6,7 +7,9 @@ from unittest.mock import patch
 from fastapi import HTTPException
 from sqlmodel import Session
 
+from app.ai.rag import RAGResult
 from app.core.exceptions import AIServiceUnavailableError
+from app.models.chat import ChatMessages, ChatRole
 from app.models.user import User
 from app.schemas.chat import ChatMessageCreate
 from app.services.chat_service import send_message_and_get_response
@@ -76,7 +79,11 @@ class ChatServiceTests(TestCase):
             ),
             patch(
                 "app.services.chat_service._invoke_rag",
-                return_value=("Grounded answer", {"documents": [], "chunks": []}),
+                return_value=RAGResult(
+                    answer="Grounded answer",
+                    sources={"documents": [], "chunks": []},
+                    generated_tokens=42,
+                ),
             ),
             patch("app.services.chat_service._acquire_chat_generation_lock"),
         ):
@@ -89,6 +96,8 @@ class ChatServiceTests(TestCase):
 
         self.assertEqual(user_message.content, "Hello")
         self.assertEqual(assistant_message.content, "Grounded answer")
+        # The model's reported token count, not a word count
+        self.assertEqual(assistant_message.tokens_used, 42)
         self.assertEqual(session.commit_count, 1)
         self.assertEqual(session.rollback_count, 0)
         self.assertEqual(session.added, [user_message, assistant_message, chat_session])
@@ -96,9 +105,11 @@ class ChatServiceTests(TestCase):
     def test_chat_history_passes_assistant_source_metadata_to_rag(self) -> None:
         session, current_user, chat_session = _chat_context()
         chat_session.messages = [
-            SimpleNamespace(role="user", content="What are my projects?", sources=None),
-            SimpleNamespace(
-                role="assistant",
+            ChatMessages(id=1, session_id=7, role=ChatRole.user, content="What are my projects?"),
+            ChatMessages(
+                id=2,
+                session_id=7,
+                role=ChatRole.assistant,
                 content="GoTorrent [1]",
                 sources={
                     "documents": [{"document_id": 22}],
@@ -115,7 +126,10 @@ class ChatServiceTests(TestCase):
             ),
             patch(
                 "app.services.chat_service._invoke_rag",
-                return_value=("Grounded answer", {"documents": [], "chunks": [], "notes": []}),
+                return_value=RAGResult(
+                    answer="Grounded answer",
+                    sources={"documents": [], "chunks": [], "notes": []},
+                ),
             ) as invoke_rag,
             patch("app.services.chat_service._acquire_chat_generation_lock"),
         ):
@@ -158,3 +172,30 @@ class ChatServiceTests(TestCase):
         invoke_rag.assert_not_called()
         self.assertEqual(session.added, [])
         self.assertEqual(session.commit_count, 0)
+
+    def test_last_message_time_is_recorded_in_utc(self) -> None:
+        session, current_user, chat_session = _chat_context()
+
+        with (
+            patch(
+                "app.services.chat_service.get_chat_session_by_id",
+                return_value=chat_session,
+            ),
+            patch(
+                "app.services.chat_service._invoke_rag",
+                return_value=RAGResult(
+                    answer="Grounded answer",
+                    sources={"documents": [], "chunks": []},
+                    generated_tokens=42,
+                ),
+            ),
+            patch("app.services.chat_service._acquire_chat_generation_lock"),
+        ):
+            send_message_and_get_response(
+                session=cast(Session, session),
+                current_user=cast(User, current_user),
+                chat_session_id=chat_session.id,
+                payload=ChatMessageCreate(content="Hello", role="user"),
+            )
+
+        self.assertEqual(chat_session.last_message_at.utcoffset(), timedelta(0))

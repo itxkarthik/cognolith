@@ -125,6 +125,7 @@ class Notes(PortableIdMixin, TimestampMixin, SQLModel, table=True):
             text("lower(content) gin_trgm_ops"),
             postgresql_using="gin",
         ),
+        Index("uix_notes_user_client_request_id", "user_id", "client_request_id", unique=True),
     )
     id: int | None = Field(default=None, primary_key=True)
     portable_id: UUID = Field(
@@ -155,6 +156,10 @@ class Notes(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     )
     parent_note_id: int | None = Field(default=None, foreign_key="notes.id", ondelete="CASCADE")
     version: int = Field(default=1)
+    # Bumped on every write; editors send the one they saw so a stale save is refused
+    revision: int = Field(default=1, sa_column_kwargs={"server_default": "1"})
+    # Sent by a client that may repeat a create (an offline replay); unique per user
+    client_request_id: str | None = Field(default=None, max_length=64)
     previous_version_id: int | None = Field(
         default=None, foreign_key="notes.id", ondelete="SET NULL"
     )
@@ -166,8 +171,8 @@ class Notes(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     word_count: int | None = Field(default=None)
     char_count: int | None = Field(default=None)
     read_time_minutes: int | None = Field(default=None)
-    last_accessed_at: datetime = Field(default_factory=datetime.now)
-    last_edited_at: datetime = Field(default_factory=datetime.now)
+    last_accessed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_edited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # Relationships
     user: "User" = Relationship(

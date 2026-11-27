@@ -8,20 +8,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, update
 from sqlmodel import Session, col, or_, select
 
+from app.ai.chunking import chunking_preferences
 from app.ai.document_summary import generate_document_summary
 from app.ai.embeddings import generate_embeddings
 from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
 from app.core.exceptions import AIServiceUnavailableError
-from app.models.document import Document, DocumentChunks
-from app.models.user import User, UserSettings
+from app.models.document import Document, DocumentChunks, DocumentEmbeddingStatus
+from app.models.user import User
 from app.schemas.document import DocumentUpdate
 from app.services.document_processing import document_processor
 from app.utils.file_processing import extract_text_from_file
 from app.utils.file_validation import validate_upload_file
+from app.utils.search import contains_ignoring_case
 from app.utils.text_processing import clean_text, create_content_preview, split_text_into_chunks
 
 logger = logging.getLogger(__name__)
@@ -112,13 +114,6 @@ async def upload_and_process_document(
     return document
 
 
-def _chunking_preferences(session: Session, user_id: int) -> tuple[int, int]:
-    """The user's chunk size/overlap, with overlap kept below the size it slides over."""
-    preferences = session.get(UserSettings, user_id) or UserSettings(user_id=user_id)
-    chunk_size = preferences.chunk_size
-    return chunk_size, min(preferences.chunk_overlap, chunk_size // 2)
-
-
 async def process_existing_document(
     session: Session,
     user_id: int,
@@ -131,6 +126,8 @@ async def process_existing_document(
         raise ValueError("Deleted documents cannot be processed")
 
     document.status = "processing"
+    document.processing_attempts += 1
+    document.embedding_status = DocumentEmbeddingStatus.pending
     document.processing_started_at = datetime.now(UTC)
     document.processing_completed_at = None
     document.processing_error = None
@@ -146,9 +143,8 @@ async def process_existing_document(
     session.commit()
 
     try:
-        # PDF/DOCX parsing is CPU-bound and synchronous; keep it off the event loop
-        content = clean_text(await asyncio.to_thread(extract_text_from_file, document.file_path))
-        chunk_size, chunk_overlap = _chunking_preferences(session, user_id)
+        content = clean_text(await _extract_text(document.file_path))
+        chunk_size, chunk_overlap = chunking_preferences(session, user_id)
         chunks = split_text_into_chunks(content, chunk_size=chunk_size, overlap=chunk_overlap)
         document.content = content
         document.content_preview = create_content_preview(content)
@@ -170,6 +166,7 @@ async def process_existing_document(
             chunk_rows.append(chunk_row)
         session.flush()
 
+        document.embedding_status = DocumentEmbeddingStatus.indexed
         if chunk_rows:
             try:
                 embeddings, embedding_model = await generate_embeddings(
@@ -184,6 +181,7 @@ async def process_existing_document(
                     model=embedding_model,
                 )
             except Exception:
+                document.embedding_status = DocumentEmbeddingStatus.failed
                 logger.exception(
                     "Failed to generate document embeddings; content remains available",
                     extra={"document_id": document.id, "user_id": user_id},
@@ -210,6 +208,10 @@ async def process_existing_document(
         session.commit()
         session.refresh(document)
         return document
+    except asyncio.CancelledError:
+        # Stopped by shutdown, which says nothing about the file: don't count the run
+        _uncount_attempt(session=session, document_id=document_id)
+        raise
     except Exception as exc:
         logger.exception(
             "Document processing failed",
@@ -224,6 +226,39 @@ async def process_existing_document(
         )
         _mark_document_failed(session=session, document_id=document_id, reason=reason)
         raise
+
+
+async def _extract_text(file_path: str) -> str:
+    """
+    Extract a file's text off the event loop (PDF/DOCX parsing is CPU-bound).
+
+    The timeout frees the processing slot and fails the document; the thread can't be
+    interrupted and finishes in the background, its result discarded.
+    """
+    timeout = settings.DOCUMENT_EXTRACTION_TIMEOUT_SECONDS
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(extract_text_from_file, file_path), timeout=timeout
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Text extraction took longer than {timeout:g} seconds",
+        ) from None
+
+
+def _uncount_attempt(*, session: Session, document_id: int) -> None:
+    try:
+        session.rollback()
+        session.exec(
+            update(Document)
+            .where(col(Document.id) == document_id, col(Document.processing_attempts) > 0)
+            .values(processing_attempts=col(Document.processing_attempts) - 1)
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("Could not restore the processing attempt count", extra={"document_id": document_id})
 
 
 async def _validate_and_prepare(file: UploadFile) -> None:
@@ -282,12 +317,14 @@ def list_documents(
     ]
 
     if search:
-        like_query = f"%{search}%"
+        # Content is matched through the chunks, whose lower(content) has a trigram
+        # index; the raw documents.content column has none
+        matching_chunk = select(DocumentChunks.id).where(
+            DocumentChunks.document_id == Document.id,
+            contains_ignoring_case(DocumentChunks.content, search),
+        )
         base_where.append(
-            or_(
-                col(Document.title).ilike(like_query),
-                col(Document.content).ilike(like_query),
-            )
+            or_(contains_ignoring_case(Document.title, search), matching_chunk.exists())
         )
 
     # Get total count using efficient SQL COUNT
