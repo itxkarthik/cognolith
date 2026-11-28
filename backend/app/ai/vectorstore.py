@@ -702,6 +702,32 @@ class PgVectorStore:
                             OR lower(d.title) LIKE :phrase_pattern
                             OR lower(d.title) LIKE :compact_pattern
                         )
+                        UNION
+                        -- Query words split between the title and the text: chunks
+                        -- with any query word, in documents whose title has one,
+                        -- that match the whole query together with the title
+                        SELECT split_chunks.id
+                        FROM documents d
+                        CROSS JOIN LATERAL (
+                            -- The query's lexemes, quoted so they aren't stemmed again
+                            SELECT CAST(NULLIF(array_to_string(ARRAY(
+                                SELECT quote_literal(lexeme)
+                                FROM unnest(tsvector_to_array(
+                                    to_tsvector(text_search_config(d.language), :phrase)
+                                )) AS lexeme
+                            ), ' | '), '') AS tsquery) AS any_word
+                        ) AS words
+                        CROSS JOIN LATERAL (
+                            SELECT dc.id
+                            FROM document_chunks dc
+                            WHERE dc.document_id = d.id
+                                AND dc.search_vector @@ words.any_word
+                                AND (d.title_vector || dc.search_vector)
+                                    @@ websearch_to_tsquery(dc.search_config, :phrase)
+                            ORDER BY dc.chunk_index
+                            LIMIT :top_k
+                        ) AS split_chunks
+                        WHERE {owner} AND d.title_vector @@ words.any_word
                     ),
                     lexical_matches AS (
                         SELECT

@@ -215,6 +215,22 @@ def test_a_document_title_match_finds_its_chunks(session: Session) -> None:
     assert [hit.document_id for hit in hits] == [document_id]
 
 
+def test_query_words_split_between_title_and_text_still_match(session: Session) -> None:
+    user = _create_user(session)
+    assert user.id is not None
+    document_id = _document(
+        session, user, "Budget report", "en", ["Forecast improved this quarter.", "Other text."]
+    )
+    # Only the title or only the text: not every query word, so no match
+    _document(session, user, "Budget notes", "en", ["Nothing relevant."])
+
+    hits = PgVectorStore(session=session).lexical_chunk_search(
+        user_id=user.id, query=build_lexical_query("budget forecast"), top_k=5
+    )
+
+    assert [(hit.document_id, hit.chunk_index) for hit in hits] == [(document_id, 0)]
+
+
 def test_lexical_search_reads_the_stored_vector_indexes(session: Session) -> None:
     user = _create_user(session)
     assert user.id is not None
