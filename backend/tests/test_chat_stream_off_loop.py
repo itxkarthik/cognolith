@@ -19,6 +19,7 @@ from app.models.user import UserCreate
 from app.services import chat_generation
 from app.services.chat_generation import generation_coordinator, stream_new_reply
 from app.services.chat_history import REPLY_TO_KEY
+from app.services.workspace_indexer import workspace_indexer
 
 TOKENS = ["The ", "answer ", "is ", "forty-two."]
 
@@ -303,3 +304,20 @@ async def test_a_client_leaving_while_the_release_waits_for_a_thread_still_frees
         assert not generation_coordinator.is_session_active(chat_session_id)
     finally:
         executor.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("fake_model")
+async def test_a_stopped_reply_is_queued_for_indexing(chat: tuple[int, int]) -> None:
+    user_id, chat_session_id = chat
+    stream = stream_new_reply(user_id=user_id, session_id=chat_session_id, content="Q")
+
+    async for sse in stream:
+        if sse.startswith("event: token"):
+            break  # the client leaves after the first token
+    # Starting the reply committed the session, which marked the owner already
+    with workspace_indexer._lock:  # pyright: ignore[reportPrivateUsage]
+        workspace_indexer._due.clear()  # pyright: ignore[reportPrivateUsage]
+    await stream.aclose()
+
+    assert user_id in workspace_indexer.pending()

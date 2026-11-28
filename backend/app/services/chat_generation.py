@@ -760,7 +760,6 @@ async def stream_chat_generation(
             generation_completed_at=datetime.now(UTC),
             **values,
         )
-        workspace_indexer.mark_dirty(user_id)
         await release_claim()
         if message["generation_status"] == ChatGenerationStatus.cancelled:
             yield encode_sse("cancelled", {"message": message})
@@ -808,6 +807,9 @@ async def stream_chat_generation(
             },
         )
     finally:
+        # Completed, stopped or failed, the reply's final text is indexed; its final
+        # write is a bulk UPDATE, which the commit hook doesn't see
+        workspace_indexer.mark_dirty(user_id)
         if stopping and not released:
             # Synchronous for the same reason as the cancelled write above
             generation_coordinator.finish(session_id=session_id, message_id=reply_id)
