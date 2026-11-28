@@ -11,9 +11,11 @@ Invoke-WebRequest -UseBasicParsing "$frontendUrl/auth/login" | Out-Null
 if ($env:SMOKE_EMAIL) {
     if (-not $env:SSE_CHECK_PASSWORD) { throw "SSE_CHECK_PASSWORD is required with SMOKE_EMAIL" }
     $composeFile = if ($env:COMPOSE_FILE) { $env:COMPOSE_FILE } else { "docker-compose.production.yml" }
-    $streamUrl = if ($env:SMOKE_STREAM_URL) { $env:SMOKE_STREAM_URL } else { "http://frontend:3000" }
+    # Without SMOKE_STREAM_URL: plain HTTP on the compose network, where the Secure
+    # session cookies go over it
+    $target = if ($env:SMOKE_STREAM_URL) { @("--base-url", $env:SMOKE_STREAM_URL) } else { @("--internal", "--base-url", "http://frontend:3000") }
     docker compose -f $composeFile exec -T -e SSE_CHECK_PASSWORD backend `
-        python -m scripts.check_sse_streaming --base-url $streamUrl --email $env:SMOKE_EMAIL
+        python -m scripts.check_sse_streaming @target --email $env:SMOKE_EMAIL
     if ($LASTEXITCODE -ne 0) { throw "The streaming check failed (exit $LASTEXITCODE)" }
 } else {
     Write-Output "Skipping the streaming check (set SMOKE_EMAIL and SSE_CHECK_PASSWORD)."
