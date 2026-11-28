@@ -52,7 +52,9 @@ def remove_uploaded_files(file_paths: list[str]) -> None:
         _remove_uploaded_file(file_path)
 
 
-def _mark_document_failed(*, session: Session, document_id: int | None, reason: str) -> None:
+def _mark_document_failed(
+    *, session: Session, document_id: int | None, reason: str, stop: Event | None = None
+) -> None:
     try:
         session.rollback()
     except Exception:
@@ -62,8 +64,12 @@ def _mark_document_failed(*, session: Session, document_id: int | None, reason: 
         return
 
     try:
-        document = session.get(Document, document_id)
+        document = session.get(Document, document_id, with_for_update=True)
         if document is None:
+            return
+        if not _holds_lease(session, document_id, stop):
+            # Another process runs the document now; its run decides the outcome
+            session.rollback()
             return
 
         document.status = "failed"
@@ -143,6 +149,17 @@ def _check_stop(stop: Event | None) -> None:
         raise ProcessingStoppedError
 
 
+def _holds_lease(session: Session, document_id: int, stop: Event | None) -> bool:
+    """Whether this run still holds the queue's lease; see StopRequest.holds_lease."""
+    return not isinstance(stop, StopRequest) or stop.holds_lease(session, document_id)
+
+
+def _keep_lease(session: Session, document_id: int, stop: Event | None) -> None:
+    # Until this transaction commits, no other process can take the document over
+    if not _holds_lease(session, document_id, stop):
+        raise ProcessingStoppedError
+
+
 def process_existing_document(
     session: Session,
     user_id: int,
@@ -153,11 +170,18 @@ def process_existing_document(
     Extract, chunk, embed and summarise a document. Blocking: it runs in a worker
     thread, and checks `stop` between steps so shutdown doesn't wait for a whole run.
     """
-    document = session.get(Document, document_id)
+    # Locked, then the lease: a run that lost its lease may still be writing the
+    # document, and this waits for it to commit or roll back
+    document = session.get(Document, document_id, with_for_update=True)
     if document is None or document.user_id != user_id:
         raise ValueError("Document is unavailable for processing")
     if document.is_deleted:
         raise ValueError("Deleted documents cannot be processed")
+    _keep_lease(session, document_id, stop)
+    if document.status != "processing":
+        # Finished by the process that held it before this one's claim
+        session.rollback()
+        return document
 
     document.status = "processing"
     document.processing_attempts += 1
@@ -245,6 +269,7 @@ def process_existing_document(
         document.status = "completed"
         document.processing_completed_at = datetime.now(UTC)
         session.add(document)
+        _keep_lease(session, document_id, stop)
         session.commit()
         session.refresh(document)
         return document
@@ -265,7 +290,7 @@ def process_existing_document(
             if isinstance(exc, HTTPException) and isinstance(exc.detail, str)
             else "Unexpected server error during document processing"
         )
-        _mark_document_failed(session=session, document_id=document_id, reason=reason)
+        _mark_document_failed(session=session, document_id=document_id, reason=reason, stop=stop)
         raise
 
 

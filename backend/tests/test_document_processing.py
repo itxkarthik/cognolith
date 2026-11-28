@@ -8,16 +8,16 @@ from io import BytesIO
 from typing import Any
 
 import pytest
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile
 from sqlalchemy import text
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app import crud
 from app.ai import rag
 from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
 from app.core.database import engine
-from app.models.document import Document, DocumentEmbeddingStatus
+from app.models.document import Document, DocumentChunks, DocumentEmbeddingStatus
 from app.models.user import User, UserCreate
 from app.services import document_service
 from app.services.document_processing import (
@@ -25,6 +25,7 @@ from app.services.document_processing import (
     MAX_PROCESSING_ATTEMPTS,
     DocumentProcessor,
     ProcessingStoppedError,
+    StopRequest,
     document_processor,
 )
 
@@ -602,3 +603,145 @@ def test_lease_work_does_not_wait_for_a_job_holding_the_document_row(queued) -> 
             without_waiting(processor._release, document_id, token)  # pyright: ignore[reportPrivateUsage]
         finally:
             job.rollback()  # lets a waiting call finish, so the pool can close
+
+
+# A run that lost its lease must not write the document (review of #29)
+
+
+def _leased_stop(document_id: int, token: str) -> StopRequest:
+    _set_lease(document_id, token, "now() + interval '1 minute'")
+    stop = StopRequest()
+    stop.lease_token = token
+    return stop
+
+
+def test_a_run_that_lost_its_lease_does_not_commit_its_result(
+    session: Session, tmp_path, monkeypatch
+) -> None:
+    user = _user(session)
+    document = _text_document(session, user, tmp_path)
+    assert user.id is not None and document.id is not None
+    document_id = document.id
+    stop = _leased_stop(document_id, "first")
+
+    async def summary_after_a_takeover(**_: Any) -> str:
+        # The process stalled here and another one claimed the document
+        _set_lease(document_id, "second", "now() + interval '1 minute'")
+        return "stale summary"
+
+    monkeypatch.setattr(document_service, "generate_embeddings", _fake_embeddings())
+    monkeypatch.setattr(document_service, "generate_document_summary", summary_after_a_takeover)
+
+    with Session(engine) as job, pytest.raises(ProcessingStoppedError):
+        document_service.process_existing_document(job, user.id, document.id, stop=stop)
+
+    session.expire_all()
+    left = session.get(Document, document.id)
+    assert left is not None
+    assert (left.status, left.summary) == ("processing", None)
+    assert stop.lease_lost
+
+
+def test_a_run_that_lost_its_lease_does_not_fail_the_document(
+    session: Session, tmp_path, monkeypatch
+) -> None:
+    user = _user(session)
+    document = _text_document(session, user, tmp_path)
+    assert user.id is not None and document.id is not None
+    document_id = document.id
+    stop = _leased_stop(document_id, "first")
+
+    def unreadable_after_a_takeover(_: str) -> str:
+        _set_lease(document_id, "second", "now() + interval '1 minute'")
+        raise HTTPException(status_code=422, detail="Failed to read file")
+
+    monkeypatch.setattr(document_service, "extract_text_from_file", unreadable_after_a_takeover)
+
+    with Session(engine) as job, pytest.raises(HTTPException):
+        document_service.process_existing_document(job, user.id, document.id, stop=stop)
+
+    session.expire_all()
+    left = session.get(Document, document.id)
+    assert left is not None
+    # The new holder's to decide
+    assert (left.status, left.processing_error) == ("processing", None)
+
+
+def test_a_claimed_document_that_was_finished_meanwhile_is_left_alone(
+    session: Session, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(document_service, "generate_embeddings", _fake_embeddings())
+    monkeypatch.setattr(document_service, "generate_document_summary", _no_summary)
+    user = _user(session)
+    document = _text_document(session, user, tmp_path)
+    assert user.id is not None and document.id is not None
+    document_service.process_existing_document(session, user.id, document.id)
+    session.refresh(document)
+    finished = (document.status, document.chunk_count, document.processing_attempts)
+    # Claimed from a snapshot taken just before the previous holder committed
+    stop = _leased_stop(document.id, "late")
+
+    with Session(engine) as job:
+        document_service.process_existing_document(job, user.id, document.id, stop=stop)
+
+    session.expire_all()
+    left = session.get(Document, document.id)
+    assert left is not None
+    assert (left.status, left.chunk_count, left.processing_attempts) == finished
+    assert finished[0] == "completed"
+
+
+def test_a_takeover_during_a_run_keeps_only_the_new_holders_result(
+    session: Session, tmp_path, monkeypatch
+) -> None:
+    user = _user(session)
+    document = _text_document(session, user, tmp_path, content="Atlas notes " * 50)
+    assert user.id is not None and document.id is not None
+    user_id, document_id = user.id, document.id
+    first = _leased_stop(document_id, "first")
+    in_summary = threading.Event()
+    resume = threading.Event()
+    calls: list[str] = []
+
+    async def summary(**_: Any) -> str:
+        if not calls:
+            calls.append("first")
+            in_summary.set()
+            resume.wait(5)  # stalled, holding the document row
+            return "first summary"
+        calls.append("second")
+        return "second summary"
+
+    monkeypatch.setattr(document_service, "generate_embeddings", _fake_embeddings())
+    monkeypatch.setattr(document_service, "generate_document_summary", summary)
+
+    def run(stop: StopRequest) -> BaseException | None:
+        with Session(engine) as job:
+            try:
+                document_service.process_existing_document(job, user_id, document_id, stop=stop)
+            except BaseException as error:  # noqa: BLE001 - returned for the assertions
+                return error
+        return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stalled = pool.submit(run, first)
+        assert in_summary.wait(5)
+        second = _leased_stop(document.id, "second")
+        taking_over = pool.submit(run, second)
+        time.sleep(0.3)  # the new holder waits for the stalled run's row lock
+        resume.set()
+        assert isinstance(stalled.result(timeout=10), ProcessingStoppedError)
+        assert taking_over.result(timeout=10) is None
+
+    session.expire_all()
+    done = session.get(Document, document.id)
+    assert done is not None
+    assert (done.status, done.summary, calls) == (
+        "completed",
+        "second summary",
+        ["first", "second"],
+    )
+    chunks = session.exec(
+        select(DocumentChunks).where(DocumentChunks.document_id == document.id)
+    ).all()
+    assert len(chunks) == done.chunk_count

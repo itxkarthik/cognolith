@@ -78,10 +78,33 @@ class StopRequest(Event):
     def __init__(self) -> None:
         super().__init__()
         self.lease_lost = False
+        # The run's lease, once claimed; None for a run outside the queue
+        self.lease_token: str | None = None
 
     def stop_for_lost_lease(self) -> None:
         self.lease_lost = True
         self.set()
+
+    def holds_lease(self, session: Session, document_id: int) -> bool:
+        """
+        Lock this run's lease in `session`'s transaction, so no process can take the
+        document over until that transaction ends. False, and stopped, if another
+        process has it now. Lock the document row first: every process takes the
+        two in that order, so they can't deadlock.
+        """
+        if self.lease_token is None:
+            return True
+        held = session.connection().execute(
+            text(
+                "SELECT 1 FROM document_processing_leases "
+                "WHERE document_id = :document_id AND token = :token FOR UPDATE"
+            ),
+            {"document_id": document_id, "token": self.lease_token},
+        )
+        if held.first() is None:
+            self.stop_for_lost_lease()
+            return False
+        return True
 
 
 def _process_existing_document(**kwargs: Any) -> Any:
@@ -183,6 +206,7 @@ class DocumentProcessor:
                 token = uuid4().hex
                 if not await asyncio.to_thread(self._claim, document_id, token):
                     return
+                stop.lease_token = token
                 renewing = asyncio.create_task(self._renew_lease(document_id, token, stop))
                 try:
                     # Shielded: a cancelled task can't stop the thread, which must still
