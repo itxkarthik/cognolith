@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -224,3 +225,42 @@ async def test_a_stream_passes_through_chunk_by_chunk() -> None:
     assert "x-ratelimit-limit" in headers
     bodies = [message.get("body") for message in sent if message["type"] == "http.response.body"]
     assert [body for body in bodies if body] == [b"data: 0\n\n", b"data: 1\n\n", b"data: 2\n\n"]
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [b'"' + b"x" * 200 + b'"'],  # one body message
+        [b'"' + b"x" * 50, b"x" * 150 + b'"'],  # the last chunk crosses the cap
+    ],
+)
+def test_a_body_over_the_cap_is_sent_without_hashing(
+    monkeypatch: pytest.MonkeyPatch, chunks: list[bytes]
+) -> None:
+    from app.core import cache_middleware
+
+    def no_hashing(_: bytes) -> str:
+        raise AssertionError("hashed a body over the cap")
+
+    monkeypatch.setattr(cache_middleware, "make_etag", no_hashing)
+
+    async def inner(scope: Any, receive: Any, send: Any) -> None:
+        # Raw messages, the last one carrying data, as a plain JSON response sends
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        for index, chunk in enumerate(chunks):
+            more_body = index < len(chunks) - 1
+            await send({"type": "http.response.body", "body": chunk, "more_body": more_body})
+
+    client = TestClient(ETagAndCacheMiddleware(inner, max_etag_body_bytes=100))
+
+    response = client.get("/big")
+
+    assert response.content == b"".join(chunks)
+    assert "etag" not in response.headers
+    assert response.headers["cache-control"] == cache_middleware.NO_STORE

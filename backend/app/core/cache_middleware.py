@@ -50,8 +50,8 @@ class ETagAndCacheMiddleware:
         size = 0
         fingerprinting = False
 
-        async def flush_unfingerprinted() -> None:
-            # Too large to hash: send what was held, then stream the rest as-is
+        async def flush_unfingerprinted(more_body: bool) -> None:
+            # Too large to hash: send what was held, then stream any rest as-is
             nonlocal fingerprinting, start
             fingerprinting = False
             assert start is not None
@@ -59,7 +59,7 @@ class ETagAndCacheMiddleware:
             await send(start)
             start = None
             await send(
-                {"type": "http.response.body", "body": b"".join(buffered), "more_body": True}
+                {"type": "http.response.body", "body": b"".join(buffered), "more_body": more_body}
             )
             buffered.clear()
 
@@ -91,9 +91,12 @@ class ETagAndCacheMiddleware:
             body = message.get("body", b"")
             buffered.append(body)
             size += len(body)
-            if message.get("more_body", False):
-                if size > self.max_etag_body_bytes:
-                    await flush_unfingerprinted()
+            more_body = message.get("more_body", False)
+            # Checked for the final message too: a whole response may come in one
+            if size > self.max_etag_body_bytes:
+                await flush_unfingerprinted(more_body)
+                return
+            if more_body:
                 return
 
             fingerprinting = False
