@@ -1,6 +1,8 @@
 """Content is embedded in the background, never on the read path (issue #24)."""
 
 import asyncio
+import threading
+import time
 from collections.abc import Sequence
 
 import pytest
@@ -217,3 +219,63 @@ def test_startup_catches_up_every_user(user: User, monkeypatch: pytest.MonkeyPat
 
     asyncio.run(scenario())
     assert indexed == [user.id]
+
+
+def test_a_long_index_run_does_not_hold_up_other_users() -> None:
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    indexed: list[int] = []
+
+    def index(user_id: int) -> bool:
+        if user_id == 1:
+            slow_started.set()
+            release_slow.wait(5)  # a large import
+        indexed.append(user_id)
+        return True
+
+    indexer = WorkspaceIndexer(index_user=index, debounce_seconds=0, poll_seconds=0.01)
+
+    async def scenario() -> list[int]:
+        indexer.mark_dirty(1)
+        await indexer.start_loop()
+        await asyncio.to_thread(slow_started.wait, 5)
+        indexer.mark_dirty(2)
+        for _ in range(100):
+            if 2 in indexed:
+                break
+            await asyncio.sleep(0.01)
+        done_while_slow = list(indexed)
+        release_slow.set()
+        await indexer.stop()
+        return done_while_slow
+
+    assert asyncio.run(scenario()) == [2]
+
+
+def test_one_user_is_never_indexed_twice_at_once() -> None:
+    running: set[int] = set()
+    overlapped = False
+    lock = threading.Lock()
+
+    def index(user_id: int) -> bool:
+        nonlocal overlapped
+        with lock:
+            overlapped = overlapped or user_id in running
+            running.add(user_id)
+        time.sleep(0.05)
+        with lock:
+            running.discard(user_id)
+        return True
+
+    indexer = WorkspaceIndexer(index_user=index, debounce_seconds=0, poll_seconds=0.005)
+
+    async def scenario() -> None:
+        await indexer.start_loop()
+        for _ in range(10):
+            indexer.mark_dirty(4)  # saved again while being indexed
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.1)
+        await indexer.stop()
+
+    asyncio.run(scenario())
+    assert not overlapped

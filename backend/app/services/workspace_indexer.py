@@ -6,8 +6,10 @@ owner here (a Session hook, so every write path is covered), as does a finished
 chat reply. After a short debounce the user's workspace is brought up to date by
 `ensure_workspace_embeddings`, in a worker thread with its own session.
 
-A transaction-scoped advisory lock per user keeps two processes from indexing the
-same workspace at once; the one that doesn't get it tries again later. A failed run
+Up to INDEX_CONCURRENCY users are indexed at once, so one large workspace doesn't
+hold up everyone else's. A transaction-scoped advisory lock per user keeps two
+processes from indexing the same workspace at once; the one that doesn't get it
+tries again later. A failed run
 (the embedding model down, say) is retried after RETRY_SECONDS, and startup marks
 every user, which catches up on anything a restart interrupted.
 """
@@ -18,6 +20,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from threading import Lock
 from typing import Any
 
@@ -39,6 +42,8 @@ logger = logging.getLogger(__name__)
 DEBOUNCE_SECONDS = 2.0
 RETRY_SECONDS = 60.0
 POLL_SECONDS = 0.5
+# Users indexed at once per process (each holds a database connection)
+INDEX_CONCURRENCY = 2
 # Advisory lock class for "indexing this user's workspace" ("INDX")
 INDEX_LOCK_CLASS = 0x494E4458
 
@@ -73,6 +78,7 @@ class WorkspaceIndexer:
         debounce_seconds: float = DEBOUNCE_SECONDS,
         retry_seconds: float = RETRY_SECONDS,
         poll_seconds: float = POLL_SECONDS,
+        concurrency: int = INDEX_CONCURRENCY,
     ) -> None:
         self._index_user = index_user or index_user_workspace
         self._debounce = debounce_seconds
@@ -82,6 +88,9 @@ class WorkspaceIndexer:
         # user id -> monotonic time the user is due for indexing
         self._due: dict[int, float] = {}
         self._task: asyncio.Task[None] | None = None
+        self._concurrency = concurrency
+        # user id -> its run in progress
+        self._running: dict[int, asyncio.Task[None]] = {}
 
     def mark_dirty(self, user_id: int, *, delay: float | None = None) -> None:
         """Index the user's workspace soon. Thread-safe; called from worker threads."""
@@ -100,41 +109,64 @@ class WorkspaceIndexer:
         user_ids = await asyncio.to_thread(_all_user_ids)
         for user_id in user_ids:
             self.mark_dirty(user_id)
-        self._task = asyncio.create_task(self._run(), name="workspace-indexer")
+        await self.start_loop()
+
+    async def start_loop(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run(), name="workspace-indexer")
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        self._task = None
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        # A run's thread finishes on its own; only the wait for it is cancelled
+        running = list(self._running.values())
+        for run in running:
+            run.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
 
     async def run_due(self) -> None:
-        """Index every user whose time has come, one at a time."""
-        while (user_id := self._take_due()) is not None:
-            try:
-                indexed = await asyncio.to_thread(self._index_user, user_id)
-            except Exception:
-                logger.exception("Workspace indexing failed", extra={"user_id": user_id})
-                indexed = False
-                self.mark_dirty(user_id, delay=self._retry)
-                continue
-            if not indexed:
-                self.mark_dirty(user_id)
+        """Index every user whose time has come, and wait until done."""
+        while True:
+            self._start_due()
+            if not self._running:
+                return
+            await asyncio.wait(list(self._running.values()), return_when=asyncio.FIRST_COMPLETED)
 
     async def _run(self) -> None:
         while True:
-            await self.run_due()
+            self._start_due()
             await asyncio.sleep(self._poll)
+
+    def _start_due(self) -> None:
+        # Several users at once, so one large workspace doesn't hold up the rest
+        while len(self._running) < self._concurrency and (user_id := self._take_due()) is not None:
+            run = asyncio.create_task(self._index(user_id), name=f"index-user-{user_id}")
+            self._running[user_id] = run
+            run.add_done_callback(lambda done, user_id=user_id: self._forget(user_id, done))
+
+    async def _index(self, user_id: int) -> None:
+        try:
+            indexed = await asyncio.to_thread(self._index_user, user_id)
+        except Exception:
+            logger.exception("Workspace indexing failed", extra={"user_id": user_id})
+            self.mark_dirty(user_id, delay=self._retry)
+            return
+        if not indexed:
+            self.mark_dirty(user_id)
+
+    def _forget(self, user_id: int, run: asyncio.Task[None]) -> None:
+        if self._running.get(user_id) is run:
+            del self._running[user_id]
 
     def _take_due(self) -> int | None:
         now = time.monotonic()
         with self._lock:
             for user_id, due in self._due.items():
-                if due <= now:
+                # A user being indexed waits for that run: never twice at once
+                if due <= now and user_id not in self._running:
                     del self._due[user_id]
                     return user_id
         return None
