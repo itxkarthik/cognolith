@@ -7,11 +7,12 @@ DOCUMENT_PROCESSING_CONCURRENCY at a time per process, while the client polls th
 status. Each run is blocking work (file parsing, database writes, model calls), so
 it runs in a worker thread and the event loop stays free for requests.
 
-The documents table is the queue. A process claims a document by setting its
-`processing_lease_until` and a fresh `processing_lease_token`, and renews the lease
-while the run lasts, so no two processes run the same document. A process that
-stalls past its lease loses the document: its renewal finds another token, and the
-run stops at its next step. Every process polls for documents still
+The documents table is the queue. A process claims a document with a lease row in
+`document_processing_leases` (a fresh token, an expiry) and renews it while the run
+lasts, so no two processes run the same document. A process that stalls past its
+lease loses the document: its renewal finds another token, and the run stops at its
+next step. Leases live apart from the documents row, which a run keeps write-locked
+through its model calls, so claiming and renewing never wait for a run. Every process polls for documents still
 "processing" whose lease is missing or expired: new uploads (whichever process
 received them), and documents of a process that crashed or was stopped. That is
 safe because processing resets the document first. Shutdown asks in-flight runs to
@@ -52,10 +53,14 @@ ATTEMPTS_EXHAUSTED_ERROR = (
 PROCESSING_LEASE_SECONDS = 60.0
 POLL_SECONDS = 5.0
 
+# Documents waiting for a process: no lease, or one whose holder stopped renewing it
 _CLAIMABLE = """
-    status = 'processing'
-    AND is_deleted = false
-    AND (processing_lease_until IS NULL OR processing_lease_until < now())
+    d.status = 'processing'
+    AND d.is_deleted = false
+    AND NOT EXISTS (
+        SELECT 1 FROM document_processing_leases l
+        WHERE l.document_id = d.id AND l.lease_until >= now()
+    )
 """
 
 
@@ -192,8 +197,9 @@ class DocumentProcessor:
                     )
                 finally:
                     renewing.cancel()
-                    # Synchronous: this may run in a cancelled task, where awaits fail
-                    self._release(document_id, token)
+                    # In a thread, off the loop; shielded, so the lease is freed even
+                    # if this task is cancelled meanwhile
+                    await asyncio.shield(asyncio.to_thread(self._release, document_id, token))
         finally:
             self._stops.pop(document_id, None)
 
@@ -233,12 +239,12 @@ class DocumentProcessor:
             exhausted = connection.execute(
                 text(
                     f"""
-                    UPDATE documents SET
+                    UPDATE documents AS d SET
                         status = 'failed',
                         processing_error = :error,
                         processing_completed_at = timezone('utc', now())
-                    WHERE {_CLAIMABLE} AND processing_attempts >= :max_attempts
-                    RETURNING id, processing_attempts
+                    WHERE {_CLAIMABLE} AND d.processing_attempts >= :max_attempts
+                    RETURNING d.id, d.processing_attempts
                     """
                 ),
                 {"error": ATTEMPTS_EXHAUSTED_ERROR, "max_attempts": MAX_PROCESSING_ATTEMPTS},
@@ -249,18 +255,24 @@ class DocumentProcessor:
                     extra={"document_id": row.id, "attempts": row.processing_attempts},
                 )
             rows = connection.execute(
-                text(f"SELECT id, user_id FROM documents WHERE {_CLAIMABLE} ORDER BY id")
+                text(f"SELECT d.id, d.user_id FROM documents d WHERE {_CLAIMABLE} ORDER BY d.id")
             ).all()
         return [(int(row.id), int(row.user_id)) for row in rows]
 
     def _claim(self, document_id: int, token: str) -> bool:
+        # Only a waiting document, and only over an expired lease: a concurrent
+        # claim of the same document waits for this one and then finds it live
         return self._update_lease(
             f"""
-            UPDATE documents SET
-                processing_lease_until = now() + make_interval(secs => :lease),
-                processing_lease_token = :token
-            WHERE id = :document_id AND {_CLAIMABLE}
-            RETURNING id
+            INSERT INTO document_processing_leases (document_id, token, lease_until)
+            SELECT d.id, :token, now() + make_interval(secs => :lease)
+            FROM documents d
+            WHERE d.id = :document_id AND {_CLAIMABLE}
+            ON CONFLICT (document_id) DO UPDATE SET
+                token = EXCLUDED.token,
+                lease_until = EXCLUDED.lease_until
+            WHERE document_processing_leases.lease_until < now()
+            RETURNING document_id
             """,
             document_id,
             token,
@@ -270,10 +282,10 @@ class DocumentProcessor:
         """False when the lease is no longer this run's."""
         return self._update_lease(
             """
-            UPDATE documents
-            SET processing_lease_until = now() + make_interval(secs => :lease)
-            WHERE id = :document_id AND processing_lease_token = :token
-            RETURNING id
+            UPDATE document_processing_leases
+            SET lease_until = now() + make_interval(secs => :lease)
+            WHERE document_id = :document_id AND token = :token
+            RETURNING document_id
             """,
             document_id,
             token,
@@ -283,10 +295,9 @@ class DocumentProcessor:
         try:
             self._update_lease(
                 """
-                UPDATE documents
-                SET processing_lease_until = NULL, processing_lease_token = NULL
-                WHERE id = :document_id AND processing_lease_token = :token
-                RETURNING id
+                DELETE FROM document_processing_leases
+                WHERE document_id = :document_id AND token = :token
+                RETURNING document_id
                 """,
                 document_id,
                 token,

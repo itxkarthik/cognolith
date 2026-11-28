@@ -3,10 +3,10 @@
 - chat_generation_claims: one row per chat session with a reply being generated,
   renewed by its process's heartbeat; a stale row can be taken over. Cancel requests
   are a flag on the row, so they reach the process generating the reply.
-- documents.processing_lease_until / processing_lease_token: the process running a
-  document holds it until then; any process may claim a "processing" document
-  without a live lease. The token keeps a holder that lost its lease from renewing
-  or freeing the new one.
+- document_processing_leases: the process running a "processing" document holds a
+  lease on it until lease_until; any process may claim a document without a live
+  lease. The token keeps a holder that lost its lease from renewing or freeing the
+  next one. Apart from the documents row, which a run keeps write-locked.
 - ix_chat_messages_streaming: the interrupted-reply sweep, which runs every lease
   period in every process, reads only streaming replies.
 
@@ -42,12 +42,16 @@ def upgrade() -> None:
         sa.Column("cancel_requested", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
     op.create_index("ix_chat_generation_claims_message", "chat_generation_claims", ["message_id"])
-    op.add_column(
-        "documents",
-        sa.Column("processing_lease_until", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "documents", sa.Column("processing_lease_token", sa.String(length=32), nullable=True)
+    op.create_table(
+        "document_processing_leases",
+        sa.Column(
+            "document_id",
+            sa.Integer(),
+            sa.ForeignKey("documents.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column("token", sa.String(length=32), nullable=False),
+        sa.Column("lease_until", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index(
         "ix_chat_messages_streaming",
@@ -59,7 +63,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_chat_messages_streaming", table_name="chat_messages")
-    op.drop_column("documents", "processing_lease_token")
-    op.drop_column("documents", "processing_lease_until")
+    op.drop_table("document_processing_leases")
     op.drop_index("ix_chat_generation_claims_message", table_name="chat_generation_claims")
     op.drop_table("chat_generation_claims")

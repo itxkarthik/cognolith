@@ -3,17 +3,20 @@
 import asyncio
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from typing import Any
 
 import pytest
 from fastapi import UploadFile
+from sqlalchemy import text
 from sqlmodel import Session
 
 from app import crud
 from app.ai import rag
 from app.ai.vectorstore import PgVectorStore
 from app.core.config import settings
+from app.core.database import engine
 from app.models.document import Document, DocumentEmbeddingStatus
 from app.models.user import User, UserCreate
 from app.services import document_service
@@ -150,7 +153,7 @@ def test_shutdown_stops_in_flight_processing_and_frees_the_document(
     stopped = session.get(Document, document_id)
     assert stopped is not None
     # Free for any process to resume at once
-    assert (stopped.status, stopped.processing_lease_until) == ("processing", None)
+    assert (stopped.status, _lease_token(document_id)) == ("processing", None)
 
 
 def test_processing_runs_off_the_event_loop(queued) -> None:
@@ -177,6 +180,26 @@ def test_processing_runs_off_the_event_loop(queued) -> None:
 
 
 # Several processes (issue #29): two processors stand in for two processes
+
+
+def _lease_token(document_id: int) -> str | None:
+    with engine.connect() as connection:
+        return connection.execute(
+            text("SELECT token FROM document_processing_leases WHERE document_id = :id"),
+            {"id": document_id},
+        ).scalar_one_or_none()
+
+
+def _set_lease(document_id: int, token: str, until_sql: str) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO document_processing_leases (document_id, token, lease_until) "
+                f"VALUES (:id, :token, {until_sql}) ON CONFLICT (document_id) DO UPDATE "
+                "SET token = EXCLUDED.token, lease_until = EXCLUDED.lease_until"
+            ),
+            {"id": document_id, "token": token},
+        )
 
 
 def test_a_document_is_processed_by_one_process_only(queued) -> None:
@@ -209,12 +232,7 @@ def test_a_document_is_processed_by_one_process_only(queued) -> None:
 def test_a_crashed_processs_document_is_picked_up_after_its_lease(session: Session, queued) -> None:
     user_id, [document_id] = queued(1)
     # A process claimed it, then died without freeing it
-    document = session.get(Document, document_id)
-    assert document is not None
-    session.connection().exec_driver_sql(
-        "UPDATE documents SET processing_lease_until = now() + interval '1 minute'"
-    )
-    session.commit()
+    _set_lease(document_id, "crashed", "now() + interval '1 minute'")
     runs: list[int] = []
 
     def process(*, document_id: int, **_: Any) -> None:
@@ -223,10 +241,7 @@ def test_a_crashed_processs_document_is_picked_up_after_its_lease(session: Sessi
     async def scenario() -> tuple[int, int]:
         processor = DocumentProcessor(process=process)
         while_held = await processor.schedule_waiting()
-        session.connection().exec_driver_sql(
-            "UPDATE documents SET processing_lease_until = now() - interval '1 second'"
-        )
-        session.commit()
+        await asyncio.to_thread(_set_lease, document_id, "crashed", "now() - interval '1 second'")
         after_expiry = await processor.schedule_waiting()
         await processor.wait_idle()
         return while_held, after_expiry
@@ -283,7 +298,7 @@ def test_runs_waiting_for_a_slot_do_not_start_after_shutdown(session: Session, q
     session.expire_all()
     left = session.get(Document, waiting)
     assert left is not None
-    assert (left.status, left.processing_lease_until) == ("processing", None)
+    assert (left.status, _lease_token(waiting)) == ("processing", None)
 
 
 # With the database
@@ -549,11 +564,7 @@ async def test_a_run_that_lost_its_lease_stops_counted_and_leaves_the_new_holder
     processor.schedule(user_id=user.id, document_id=document.id)
     await asyncio.sleep(0.05)
     # The process stalled past its lease and another one claimed the document
-    session.connection().exec_driver_sql(
-        "UPDATE documents SET processing_lease_token = 'other', "
-        "processing_lease_until = now() + interval '1 minute'"
-    )
-    session.commit()
+    await asyncio.to_thread(_set_lease, document.id, "other", "now() + interval '1 minute'")
 
     await asyncio.wait_for(processor.wait_idle(), timeout=5)
 
@@ -562,6 +573,32 @@ async def test_a_run_that_lost_its_lease_stops_counted_and_leaves_the_new_holder
     assert stalled is not None
     # Stopped before finishing, without touching the new holder's lease
     assert stalled.status == "processing"
-    assert stalled.processing_lease_token == "other"
+    assert _lease_token(document.id) == "other"
     # A process that stalls on a file uses up an attempt
     assert stalled.processing_attempts == 1
+
+
+def test_lease_work_does_not_wait_for_a_job_holding_the_document_row(queued) -> None:
+    user_id, [document_id] = queued(1)
+    del user_id
+    processor = DocumentProcessor()
+    token = "running-job"
+    assert processor._claim(document_id, token)  # pyright: ignore[reportPrivateUsage]
+
+    # The job writes the document and keeps its transaction open through model calls
+    with engine.connect() as job, ThreadPoolExecutor(max_workers=1) as pool:
+        job.execute(
+            text("UPDATE documents SET summary = 'in progress' WHERE id = :id"), {"id": document_id}
+        )
+
+        def without_waiting(call: Any, *args: Any) -> Any:
+            # A call that waited for the job's row lock would time out here
+            return pool.submit(call, *args).result(timeout=2)
+
+        try:
+            assert without_waiting(processor._extend, document_id, token)  # pyright: ignore[reportPrivateUsage]
+            assert not without_waiting(processor._claim, document_id, "another-process")  # pyright: ignore[reportPrivateUsage]
+            assert without_waiting(processor._waiting_documents) == []  # pyright: ignore[reportPrivateUsage]
+            without_waiting(processor._release, document_id, token)  # pyright: ignore[reportPrivateUsage]
+        finally:
+            job.rollback()  # lets a waiting call finish, so the pool can close
