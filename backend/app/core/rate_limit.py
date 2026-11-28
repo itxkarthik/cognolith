@@ -11,47 +11,36 @@ logger = logging.getLogger(__name__)
 
 def get_storage_uri() -> str:
     """
-    Return storage URI for rate limiting.
+    Where the rate limiter keeps its counters.
 
-    Uses Redis in production (distributed across workers) or memory in local dev.
-
-    Fallback Behavior:
-    - If REDIS_URL is configured: Try to connect with 5s timeout
-    - If Redis connection fails: Fall back to in-memory storage (single-worker only)
-    - If no REDIS_URL: Use in-memory storage by default
-
-    In-Memory Storage Limitations:
-    - Only works with single worker process (gunicorn -w 1)
-    - Rate limits not shared across workers
-    - Recommended for development only
+    Redis when REDIS_URL is set, so every process counts against the same limits.
+    Without it the counters are in this process's memory, which only limits anything
+    when there is one process: with several, each would allow the full limit. So
+    several workers without a reachable Redis refuse to start.
     """
-    if settings.REDIS_URL:
-        try:
-            # Test Redis connection with timeout
-            import redis
-
-            redis_client = redis.from_url(
-                settings.REDIS_URL,
-                socket_connect_timeout=5,
-                socket_keepalive=True,
-                socket_keepalive_options={
-                    1: 3,  # TCP_KEEPIDLE
-                    2: 3,  # TCP_KEEPINTVL
-                },
+    shared = settings.BACKEND_WORKERS > 1
+    if not settings.REDIS_URL:
+        if shared:
+            raise RuntimeError(
+                "BACKEND_WORKERS > 1 needs REDIS_URL: in-memory rate limits are per process"
             )
-            # Ping to verify connection
-            redis_client.ping()
-            logger.info("Redis connected successfully for rate limiting")
-            return settings.REDIS_URL
-        except Exception as e:
-            logger.warning(
-                f"Redis connection failed ({str(e)}), falling back to in-memory rate limiting. "
-                f"This only works with a single worker process."
-            )
-            return "memory://"
+        logger.debug("Using in-memory rate limiting (one process)")
+        return "memory://"
+    try:
+        import redis
 
-    logger.debug("Using in-memory rate limiting (not suitable for multi-worker deployments)")
-    return "memory://"
+        redis.from_url(settings.REDIS_URL, socket_connect_timeout=5).ping()
+    except Exception as exc:
+        if shared:
+            raise RuntimeError(f"Redis for rate limiting is unreachable: {exc}") from exc
+        logger.warning(
+            "Redis connection failed (%s); falling back to in-memory rate limiting, "
+            "which is only correct with one process",
+            exc,
+        )
+        return "memory://"
+    logger.info("Redis connected for rate limiting")
+    return settings.REDIS_URL
 
 
 limiter = Limiter(

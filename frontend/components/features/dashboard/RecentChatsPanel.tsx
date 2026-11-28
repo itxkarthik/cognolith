@@ -4,17 +4,16 @@ import { ArrowRight, MessageSquareText } from "lucide-react";
 import Link from "next/link";
 
 import { extractPreview, formatDate } from "@/components/features/dashboard/utils";
-import type { ChatResponse } from "@/types";
+import type { ChatSessionSummary } from "@/types";
 
 interface RecentChatsPanelProps {
-  sessions: ChatResponse[];
+  sessions: ChatSessionSummary[];
   isLoading: boolean;
   errorMessage: string | null;
 }
 
-function latestMessage(session: ChatResponse): string {
-  const message = session.messages[session.messages.length - 1];
-  return message ? extractPreview(message.content, 110) : "No messages yet.";
+function latestMessage(session: ChatSessionSummary): string {
+  return session.last_message ? extractPreview(session.last_message.content, 110) : "No messages yet.";
 }
 
 export function RecentChatsPanel({ sessions, isLoading, errorMessage }: RecentChatsPanelProps) {

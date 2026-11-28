@@ -13,6 +13,7 @@ import type {
 	ChatCreate,
 	ChatMessageResponse,
 	ChatResponse,
+	ChatSessionSummary,
 	NoteResponse,
 } from "@/types";
 import {
@@ -25,7 +26,7 @@ import {
 type StreamedMessages = Record<number, string>;
 
 interface ChatState {
-	sessions: ChatResponse[];
+	sessions: ChatSessionSummary[];
 	total: number;
 	selectedSession: ChatResponse | null;
 	isLoading: boolean;
@@ -46,7 +47,21 @@ interface ChatState {
 	clearError: () => void;
 }
 
-function sortByLastMessageAt(sessions: ChatResponse[]): ChatResponse[] {
+// Matches the server's preview length (LAST_MESSAGE_PREVIEW_CHARS)
+const PREVIEW_CHARS = 300;
+
+/** The list entry for a session whose messages are loaded. */
+export function toSessionSummary(session: ChatResponse): ChatSessionSummary {
+	const { messages, ...rest } = session;
+	const last = [...messages].reverse().find((message) => message.content.trim().length > 0);
+	return {
+		...rest,
+		message_count: messages.length,
+		last_message: last ? { role: last.role, content: last.content.slice(0, PREVIEW_CHARS) } : null,
+	};
+}
+
+function sortByLastMessageAt(sessions: ChatSessionSummary[]): ChatSessionSummary[] {
 	return [...sessions].sort((left, right) => {
 		const leftTime = new Date(left.last_message_at).getTime();
 		const rightTime = new Date(right.last_message_at).getTime();
@@ -54,14 +69,15 @@ function sortByLastMessageAt(sessions: ChatResponse[]): ChatResponse[] {
 	});
 }
 
-function upsertSession(sessions: ChatResponse[], session: ChatResponse): ChatResponse[] {
+function upsertSession(sessions: ChatSessionSummary[], session: ChatResponse): ChatSessionSummary[] {
+	const summary = toSessionSummary(session);
 	const exists = sessions.some((item) => item.id === session.id);
 	if (!exists) {
-		return sortByLastMessageAt([session, ...sessions]);
+		return sortByLastMessageAt([summary, ...sessions]);
 	}
 
 	return sortByLastMessageAt(
-		sessions.map((item) => (item.id === session.id ? session : item))
+		sessions.map((item) => (item.id === session.id ? summary : item))
 	);
 }
 
@@ -104,19 +120,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 				limit: params.limit ?? 30,
 			});
 
-			set((state) => {
-				const selectedId = state.selectedSession?.id;
-				const nextSessions = sortByLastMessageAt(response.data ?? []);
-				const selectedSession = selectedId
-					? nextSessions.find((item) => item.id === selectedId) ?? state.selectedSession
-					: state.selectedSession;
-
-				return {
-					sessions: nextSessions,
-					total: response.count ?? 0,
-					selectedSession,
-					isLoading: false,
-				};
+			// The list carries no messages, so the open session is left as loaded
+			set({
+				sessions: sortByLastMessageAt(response.data ?? []),
+				total: response.count ?? 0,
+				isLoading: false,
 			});
 		} catch (error) {
 			set({

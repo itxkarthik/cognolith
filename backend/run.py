@@ -13,6 +13,7 @@ if __name__ == "__main__":
         port=settings.PORT,
         reload=settings.DEBUG,
         log_level=settings.LOG_LEVEL.lower(),
+        workers=settings.BACKEND_WORKERS,
         ws_max_size=settings.WEBSOCKET_MAX_MESSAGE_SIZE,
         # Browser traffic arrives through the Next.js rewrite; take the client IP
         # from X-Forwarded-For only when the request comes from a trusted proxy.

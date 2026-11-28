@@ -1,85 +1,122 @@
-"""ETag and cache control middleware."""
+"""
+Cache headers and ETags for API responses, as pure ASGI middleware.
 
-from collections.abc import Callable
+API responses belong to the signed-in user, so none may be stored by a shared cache.
+A JSON 200 to a GET is sent `private, no-cache` with an ETag: the browser keeps it
+but asks again every time, and gets an empty 304 when nothing changed. Everything
+else is `no-store`, and event streams also forbid transformation so a proxy can't
+compress (and so buffer) them.
+"""
 
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response, StreamingResponse
+import hashlib
 
-from app.utils.etag_utils import generate_etag, get_cache_duration, should_cache_request
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+REVALIDATE = "private, no-cache"
+NO_STORE = "no-cache, no-store, must-revalidate"
+EVENT_STREAM = "no-cache, no-store, no-transform"
+# Larger bodies are sent without an ETag rather than held in memory to hash
+MAX_ETAG_BODY_BYTES = 4 * 1024 * 1024
+# Dropped from a 304, which carries no body
+_BODY_HEADERS = {"content-length", "content-type", "content-encoding"}
 
 
-class ETagAndCacheMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware for adding ETag and cache control headers to responses.
+def make_etag(body: bytes) -> str:
+    return f'"{hashlib.sha256(body).hexdigest()}"'
 
-    Features:
-    - Generates ETag for GET responses
-    - Adds Cache-Control headers based on endpoint type
-    - Handles If-None-Match requests with 304 Not Modified
-    - Skips ETag generation for streaming responses
-    """
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        """Process request and add caching headers."""
-        response = await call_next(request)
+def etag_matches(if_none_match: str | None, etag: str) -> bool:
+    """RFC 9110 If-None-Match: weak comparison over a list of tags, or `*`."""
+    if not if_none_match:
+        return False
+    candidates = {tag.strip().removeprefix("W/") for tag in if_none_match.split(",")}
+    return "*" in candidates or etag in candidates
 
-        # Event streams must not be compressed or buffered by intermediaries
-        if response.headers.get("content-type", "").startswith("text/event-stream"):
-            response.headers["Cache-Control"] = "no-cache, no-store, no-transform"
-            return response
 
-        # Only process GET requests
-        if request.method != "GET":
-            # Add no-cache for POST, PUT, DELETE, PATCH
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            return response
+class ETagAndCacheMiddleware:
+    def __init__(self, app: ASGIApp, max_etag_body_bytes: int = MAX_ETAG_BODY_BYTES) -> None:
+        self.app = app
+        self.max_etag_body_bytes = max_etag_body_bytes
 
-        # Skip ETag generation for streaming responses
-        if isinstance(response, StreamingResponse):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            return response
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if_none_match = Headers(scope=scope).get("if-none-match")
+        is_get = scope["method"] == "GET"
+        start: Message | None = None
+        buffered: list[bytes] = []
+        size = 0
+        fingerprinting = False
 
-        # Check if response is cacheable
-        if not should_cache_request(request.method, response.status_code):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            return response
+        async def flush_unfingerprinted(more_body: bool) -> None:
+            # Too large to hash: send what was held, then stream any rest as-is
+            nonlocal fingerprinting, start
+            fingerprinting = False
+            assert start is not None
+            MutableHeaders(scope=start)["Cache-Control"] = NO_STORE
+            await send(start)
+            start = None
+            await send(
+                {"type": "http.response.body", "body": b"".join(buffered), "more_body": more_body}
+            )
+            buffered.clear()
 
-        # Determine cache policy based on endpoint
-        endpoint_path = request.url.path
-        if "/search" in endpoint_path:
-            endpoint_type = "search"
-        elif any(x in endpoint_path for x in ["notes", "documents", "chat"]):
-            if endpoint_path.endswith("/"):
-                endpoint_type = "list"
-            else:
-                endpoint_type = "detail"
-        else:
-            endpoint_type = "list"
+        async def send_with_cache_headers(message: Message) -> None:
+            nonlocal start, size, fingerprinting
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                content_type = headers.get("content-type", "")
+                if content_type.startswith("text/event-stream"):
+                    headers["Cache-Control"] = EVENT_STREAM
+                elif "cache-control" not in headers:
+                    if (
+                        is_get
+                        and message["status"] == 200
+                        and content_type.startswith("application/json")
+                    ):
+                        # Held until the body is complete, to hash it
+                        start = message
+                        fingerprinting = True
+                        return
+                    headers["Cache-Control"] = NO_STORE
+                    headers.setdefault("Pragma", "no-cache")
+                await send(message)
+                return
 
-        cache_control, max_age = get_cache_duration(endpoint_type)
-        response.headers["Cache-Control"] = cache_control
+            if not fingerprinting or message["type"] != "http.response.body":
+                await send(message)
+                return
+            body = message.get("body", b"")
+            buffered.append(body)
+            size += len(body)
+            more_body = message.get("more_body", False)
+            # Checked for the final message too: a whole response may come in one
+            if size > self.max_etag_body_bytes:
+                await flush_unfingerprinted(more_body)
+                return
+            if more_body:
+                return
 
-        # Generate ETag from response body (skip for streaming)
-        if response.status_code == 200 and not hasattr(response, "body_iterator"):
-            try:
-                # For non-streaming responses, generate ETag
-                if hasattr(response, "body"):
-                    body = response.body
-                    if isinstance(body, bytes):
-                        etag = generate_etag(body.decode("utf-8"))
-                        response.headers["ETag"] = etag
+            fingerprinting = False
+            assert start is not None
+            payload = b"".join(buffered)
+            etag = make_etag(payload)
+            headers = MutableHeaders(scope=start)
+            headers["Cache-Control"] = REVALIDATE
+            headers["ETag"] = etag
+            if etag_matches(if_none_match, etag):
+                start["status"] = 304
+                start["headers"] = [
+                    (name, value)
+                    for name, value in headers.raw
+                    if name.decode("latin-1") not in _BODY_HEADERS
+                ]
+                await send(start)
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+                return
+            await send(start)
+            await send({"type": "http.response.body", "body": payload, "more_body": False})
 
-                        # Check If-None-Match header
-                        if_none_match = request.headers.get("If-None-Match")
-                        if if_none_match and if_none_match == etag:
-                            # Return 304 Not Modified
-                            return Response(status_code=304, headers=response.headers)
-            except Exception:
-                # If ETag generation fails, return response as-is
-                pass
-
-        return response
-
-        return response
+        await self.app(scope, receive, send_with_cache_headers)

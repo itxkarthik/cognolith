@@ -1,0 +1,59 @@
+# Optional reverse proxy in front of Cognolith (issue #28).
+#
+# Chat replies are streamed with Server-Sent Events. This config sends the two
+# streaming routes straight to the backend, unbuffered, and everything else to
+# the frontend. Through the frontend alone streaming also works; this removes the
+# Next.js rewrite from the streaming path.
+#
+# nginx must reach backend:3000 and frontend:3000: run it on the compose network
+# "cognolith" (or publish those ports on 127.0.0.1 and change the upstreams).
+# Add nginx's address on that network to FORWARDED_ALLOW_IPS, so the backend
+# trusts the X-Forwarded-For it sets and rate limits stay per client.
+# Check the result with scripts/release/smoke.sh and SMOKE_STREAM_URL set to the
+# public URL.
+
+upstream cognolith_frontend {
+    server frontend:3000;
+    keepalive 16;
+}
+
+upstream cognolith_backend {
+    server backend:3000;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    server_name cognolith.example.com;  # TLS omitted for brevity; terminate it here
+
+    # The backend refuses bodies over MAX_REQUEST_BODY_SIZE (15 MB) itself
+    client_max_body_size 16m;
+
+    # POST /api/v1/chat/sessions/{id}/messages/stream
+    # POST /api/v1/chat/sessions/{id}/messages/{message id}/retry/stream
+    location ~ ^/api/v1/chat/sessions/[0-9]+/messages/(?:[0-9]+/retry/)?stream$ {
+        proxy_pass http://cognolith_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Pass each event on as it arrives
+        proxy_buffering off;
+        proxy_cache off;
+        gzip off;
+        # Idle limit between reads; the backend sends a keep-alive every 15 s
+        proxy_read_timeout 120s;
+    }
+
+    location / {
+        proxy_pass http://cognolith_frontend;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}

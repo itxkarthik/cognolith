@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, true
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, select
 
@@ -16,7 +16,7 @@ from app.core.exceptions import AIServiceUnavailableError
 from app.models.chat import ChatMessages, ChatRole, ChatSession
 from app.models.note import Notes
 from app.models.user import User
-from app.schemas.chat import ChatCreate, ChatMessageCreate
+from app.schemas.chat import ChatCreate, ChatMessageCreate, ChatMessagePreview, ChatSessionSummary
 from app.services.chat_generation import generation_coordinator
 from app.services.chat_history import build_conversation_history
 from app.utils.text_processing import create_content_preview
@@ -66,36 +66,94 @@ def create_chat_session(
     return chat_session
 
 
+# Characters of the last message returned with a listed session
+LAST_MESSAGE_PREVIEW_CHARS = 300
+
+
 def list_chat_sessions(
     *, session: Session, current_user: User, skip: int = 0, limit: int = 20
-) -> tuple[list[ChatSession], int]:
+) -> tuple[list[ChatSessionSummary], int]:
     """
-    List chat sessions with efficient pagination and eager message loading.
+    One page of the user's chat sessions, newest activity first, without their messages.
 
-    Performance improvements:
-    - Uses SQL COUNT(*) for efficient counting (not fetching all rows)
-    - Uses database LIMIT/OFFSET instead of in-memory slicing
-    - Eagerly loads messages with joinedload to prevent N+1 queries
+    Each session carries its message count and the start of its last non-empty
+    message, both computed in the query: the sidebar used to load every message of
+    every listed session just to show one line.
     """
-    # Get total count using efficient SQL COUNT
-    count_statement = (
-        select(func.count()).select_from(ChatSession).where(ChatSession.user_id == current_user.id)
+    total_count = (
+        session.exec(
+            select(func.count())
+            .select_from(ChatSession)
+            .where(ChatSession.user_id == current_user.id)
+        ).one()
+        or 0
     )
-    total_count = session.exec(count_statement).one() or 0
 
-    # Fetch chat sessions with eager-loaded messages and pagination
-    statement = (
-        select(ChatSession)
+    message_count = (
+        select(func.count())
+        .select_from(ChatMessages)
+        .where(ChatMessages.session_id == ChatSession.id)
+        .scalar_subquery()
+    )
+    # Uses ix_chat_messages_session_created; an empty reply still streaming is skipped
+    last_message = (
+        select(
+            col(ChatMessages.role).label("role"),
+            func.left(ChatMessages.content, LAST_MESSAGE_PREVIEW_CHARS).label("preview"),
+        )
+        .where(
+            ChatMessages.session_id == ChatSession.id,
+            func.length(func.btrim(ChatMessages.content)) > 0,
+        )
+        .order_by(col(ChatMessages.created_at).desc(), col(ChatMessages.id).desc())
+        .limit(1)
+        .lateral("last_message")
+    )
+    rows = session.exec(
+        select(
+            ChatSession,
+            message_count.label("message_count"),
+            last_message.c.role,
+            last_message.c.preview,
+        )
+        .outerjoin(last_message, true())
         .where(ChatSession.user_id == current_user.id)
-        .order_by(col(ChatSession.last_message_at).desc())
-        # Eagerly load messages to prevent N+1 query issue when accessing session.messages
-        .options(joinedload(ChatSession.messages))  # pyright: ignore[reportArgumentType]
+        .order_by(col(ChatSession.last_message_at).desc(), col(ChatSession.id).desc())
         .limit(limit)
         .offset(skip)
-    )
+    ).all()
+    return [_session_summary(*row) for row in rows], total_count
 
-    sessions = session.exec(statement).unique().all()
-    return list(sessions), total_count
+
+def _session_summary(
+    chat_session: ChatSession,
+    message_count: int,
+    role: object,
+    preview: str | None,
+) -> ChatSessionSummary:
+    if chat_session.id is None or chat_session.user_id is None:
+        raise RuntimeError("Chat session must be persisted before listing")
+    last = (
+        ChatMessagePreview(
+            role=role.value if isinstance(role, ChatRole) else str(role),
+            content=preview,
+        )
+        if preview is not None
+        else None
+    )
+    return ChatSessionSummary(
+        id=chat_session.id,
+        user_id=chat_session.user_id,
+        title=chat_session.title,
+        description=chat_session.description,
+        is_archived=chat_session.is_archived,
+        is_pinned=chat_session.is_pinned,
+        last_message_at=chat_session.last_message_at,
+        created_at=chat_session.created_at,
+        updated_at=chat_session.updated_at,
+        message_count=message_count,
+        last_message=last,
+    )
 
 
 def send_message_and_get_response(

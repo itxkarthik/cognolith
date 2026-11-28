@@ -64,14 +64,12 @@ export default function ChatPage() {
           </div>
         ) : (
           sessions.map((session) => {
-            const lastMessage = session.messages[session.messages.length - 1];
-
             return (
               <Link key={session.id} href={`/dashboard/chat/${session.id}`} className="block border border-border bg-background p-4 hover:bg-muted">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h2 className="line-clamp-1 text-sm font-bold text-foreground">{session.title || `Session ${session.id}`}</h2>
-                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{lastMessage?.content || "No messages yet"}</p>
+                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{session.last_message?.content || "No messages yet"}</p>
                     <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
                       <Clock3 className="h-3.5 w-3.5" />
                       <span>{formatDate(session.last_message_at)}</span>

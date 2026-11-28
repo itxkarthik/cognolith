@@ -15,12 +15,12 @@ import { listDocuments } from "@/lib/api/documents";
 import { getAIReadiness } from "@/lib/api/health";
 import { listNotes } from "@/lib/api/notes";
 import { useAuth } from "@/lib/hooks/useAuth";
-import type { ChatResponse, DocumentResponse, NoteResponse } from "@/types";
+import type { ChatSessionSummary, DocumentResponse, NoteResponse } from "@/types";
 
 interface DashboardData {
   notes: NoteResponse[];
   documents: DocumentResponse[];
-  sessions: ChatResponse[];
+  sessions: ChatSessionSummary[];
   noteCount: number;
   documentCount: number;
   chatCount: number;

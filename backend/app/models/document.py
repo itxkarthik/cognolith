@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import ARRAY, String, text
+from sqlalchemy import ARRAY, DateTime, ForeignKey, Integer, String, Table, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlmodel import Column, Field, Index, Relationship, SQLModel, UniqueConstraint
 
@@ -36,19 +36,7 @@ class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     __table_args__ = (
         Index("ix_document_user_created", "user_id", "created_at"),
         Index("ix_documents_user_status", "user_id", "status"),
-        Index(
-            "ix_document_search",
-            text("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))"),
-            postgresql_using="gin",
-        ),
         Index("ix_document_tags", "tags", postgresql_using="gin"),
-        Index(
-            "ix_document_full_text",
-            text(
-                "to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, ''))"
-            ),
-            postgresql_using="gin",
-        ),
     )
     id: int | None = Field(default=None, primary_key=True)
     portable_id: UUID = Field(
@@ -102,11 +90,6 @@ class Document(PortableIdMixin, TimestampMixin, SQLModel, table=True):
 class DocumentChunks(TimestampMixin, SQLModel, table=True):
     __tablename__: ClassVar[str] = "document_chunks"  # pyright: ignore
     __table_args__ = (
-        Index(
-            "ix_document_chunks_content_search",
-            text("to_tsvector('english', content)"),
-            postgresql_using="gin",
-        ),
         UniqueConstraint("document_id", "chunk_index", name="uix_document_chunks"),
         Index(
             "ix_document_chunks_content_trgm",
@@ -127,3 +110,22 @@ class DocumentChunks(TimestampMixin, SQLModel, table=True):
 
     # Relationships
     document: Document = Relationship(back_populates="chunks")
+
+
+# The backend process running a "processing" document holds a lease on it here,
+# until `lease_until` (database clock); past that, any process may claim it. Kept out
+# of the documents row, which processing holds write-locked through its model calls.
+# The token identifies the current lease, so a holder that lost it can't renew or
+# free the next one.
+document_processing_leases = Table(
+    "document_processing_leases",
+    SQLModel.metadata,
+    Column(
+        "document_id",
+        Integer,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("token", String(32), nullable=False),
+    Column("lease_until", DateTime(timezone=True), nullable=False),
+)

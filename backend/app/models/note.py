@@ -104,18 +104,6 @@ class Notes(PortableIdMixin, TimestampMixin, SQLModel, table=True):
             postgresql_where=true(),
         ),
         Index(
-            "ix_notes_search",
-            text("to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))"),
-            postgresql_using="gin",
-        ),
-        Index(
-            "ix_notes_full_search",
-            text(
-                "to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, '') || ' ' || coalesce(summary, ''))"
-            ),
-            postgresql_using="gin",
-        ),
-        Index(
             "ix_notes_title_trgm",
             text("lower(title) gin_trgm_ops"),
             postgresql_using="gin",

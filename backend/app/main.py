@@ -8,8 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
-from sqlmodel import Session
 
 from app.ai.embedding_validation import validate_embedding_setup
 from app.api.main import api_router
@@ -17,19 +15,21 @@ from app.api.routes.test import router as test_router
 from app.core.cache_middleware import ETagAndCacheMiddleware
 from app.core.config import settings
 from app.core.csrf import CSRFMiddleware
-from app.core.database import engine, test_db_connection
+from app.core.database import test_db_connection
 from app.core.exceptions import AppError, global_exception_handler
 from app.core.middleware import (
     MaxRequestBodySizeMiddleware,
+    RateLimitMiddleware,
     RequestIDMiddleware,
     RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
 )
 from app.core.rate_limit import limiter
 from app.services.backup_scheduler import BackupScheduler
-from app.services.chat_generation import fail_interrupted_generations
+from app.services.chat_generation import abandoned_reply_sweeper
 from app.services.document_processing import document_processor
 from app.services.maintenance_scheduler import MaintenanceScheduler
+from app.services.workspace_indexer import workspace_indexer
 
 logger = logging.getLogger(__name__)
 
@@ -52,19 +52,17 @@ async def lifespan(_: FastAPI):
 
         await validate_embedding_setup()
 
-        # Replies cut off by the last shutdown or crash become retryable
-        with Session(engine) as session:
-            interrupted = fail_interrupted_generations(session)
-        if interrupted:
-            logger.info("Marked %s interrupted chat repl(ies) as failed", interrupted)
+        # Replies cut off by a stopped or crashed process become retryable
+        await abandoned_reply_sweeper.start()
 
-        # Uploads interrupted by the last shutdown or crash are processed again
-        resumed = document_processor.resume_interrupted()
-        if resumed:
-            logger.info("Resumed processing of %s interrupted document(s)", resumed)
+        # Processes documents waiting in the queue: new uploads, and those of a
+        # stopped or crashed process
+        await document_processor.start()
 
         await backup_scheduler.start()
         await maintenance_scheduler.start()
+        # Embeds new and changed content; chat and search only read vectors
+        await workspace_indexer.start()
 
         logger.info("✓ Application startup complete")
     except Exception as e:
@@ -74,6 +72,8 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        await workspace_indexer.stop()
+        await abandoned_reply_sweeper.stop()
         await maintenance_scheduler.stop()
         await backup_scheduler.stop()
         await document_processor.shutdown()
@@ -98,28 +98,19 @@ app.add_exception_handler(RateLimitExceeded, cast(Any, _rate_limit_exceeded_hand
 app.add_exception_handler(AppError, global_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
-# 1. Request ID — runs first so all downstream middleware/routes have access
-app.add_middleware(RequestIDMiddleware)
-
-# 2. Request Logging — logs all requests/responses with structured JSON format
-app.add_middleware(RequestLoggingMiddleware)
-
-# 3. CSRF Protection — validates CSRF tokens on state-changing requests
-app.add_middleware(CSRFMiddleware)
-
-# 4. Security Headers — added to every response
-app.add_middleware(SecurityHeadersMiddleware)
-
-# 5. Max Request Body Size — reject oversized payloads early
-app.add_middleware(MaxRequestBodySizeMiddleware)
-
-# 6. Rate limiting — applies the limiter's default limit to every undecorated route
-app.add_middleware(SlowAPIMiddleware)
-
-# 7. ETag and Cache Control — adds ETag and cache headers for client-side caching
+# Middleware, outermost first: CORS > request id > logging > security headers >
+# body size > rate limit > CSRF > cache/ETag > routes. Each add_middleware call wraps
+# the ones added before it, so they are added innermost first.
+# CORS is outermost so even a refused request (403, 413, 429) is readable by the
+# browser; the request id comes next so every log line and error carries it.
 app.add_middleware(ETagAndCacheMiddleware)
-
-# 8. CORS — locked down to specific methods and headers
+app.add_middleware(CSRFMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(MaxRequestBodySizeMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(RequestIDMiddleware)
+# Outermost; locked down to specific methods and headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.all_cors_origins,

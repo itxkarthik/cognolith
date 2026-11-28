@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, ClassVar
 from uuid import UUID, uuid4
 
 from pydantic import ConfigDict
-from sqlalchemy import desc
+from sqlalchemy import Boolean, DateTime, Integer, Table, desc, false, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlmodel import Column, Field, Index, Relationship, SQLModel, String
@@ -73,7 +73,15 @@ class ChatGenerationStatus(StrEnum):
 
 class ChatMessages(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     __tablename__: ClassVar[str] = "chat_messages"  # pyright: ignore
-    __table_args__ = (Index("ix_chat_messages_session_created", "session_id", desc("created_at")),)
+    __table_args__ = (
+        Index("ix_chat_messages_session_created", "session_id", desc("created_at")),
+        # The interrupted-reply sweep runs every lease period and reads only these
+        Index(
+            "ix_chat_messages_streaming",
+            "session_id",
+            postgresql_where=text("generation_status = 'streaming'"),
+        ),
+    )
     model_config = ConfigDict(protected_namespaces=())  # pyright: ignore[reportAssignmentType]
     id: int | None = Field(default=None, primary_key=True)
     portable_id: UUID = Field(
@@ -100,3 +108,22 @@ class ChatMessages(PortableIdMixin, TimestampMixin, SQLModel, table=True):
     generation_completed_at: datetime | None = Field(default=None)
     # Relationships
     session: ChatSession = Relationship(back_populates="messages")
+
+
+# One row per chat session with a reply being generated, shared by every backend
+# process. A process keeps its claims' heartbeat fresh; a claim whose heartbeat is
+# older than the lease belongs to a process that died and may be taken over. No
+# foreign keys: claims are short-lived and the coordinator's tests use bare ids.
+chat_generation_claims = Table(
+    "chat_generation_claims",
+    SQLModel.metadata,
+    Column("session_id", Integer, primary_key=True),
+    # Identifies this claim, so only its holder releases it
+    Column("token", String(64), nullable=False),
+    # The reply being streamed; NULL for a non-streaming reservation
+    Column("message_id", Integer, nullable=True),
+    Column("owner", String(128), nullable=False),
+    Column("heartbeat_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("cancel_requested", Boolean, nullable=False, server_default=false()),
+    Index("ix_chat_generation_claims_message", "message_id"),
+)

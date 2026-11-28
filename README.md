@@ -396,17 +396,19 @@ sh scripts/release/smoke.sh
 ./scripts/release/smoke.ps1
 ```
 
-Confirm that chat answers stream token by token through your public URL. A buffering proxy would deliver the whole answer at once:
+With `SMOKE_EMAIL` and `SSE_CHECK_PASSWORD` set to an account, the smoke checks also stream one chat reply and fail if it arrives in one burst (a buffering proxy). The reply goes to that account's "SSE streaming check" chat. The stream is fetched through the frontend inside the Compose network by default; set `SMOKE_STREAM_URL` to your public URL to cover any proxy in front:
 
 ```bash
-docker compose -f docker-compose.production.yml exec backend python -m scripts.check_sse_streaming --base-url https://your-host --email you@example.com
+SMOKE_EMAIL=you@example.com SSE_CHECK_PASSWORD='...' SMOKE_STREAM_URL=https://your-host sh scripts/release/smoke.sh
 ```
+
+The frontend's `/api/v1` rewrite streams replies as they arrive; its `proxyTimeout` limits idle time, and the backend sends a keep-alive every 15 seconds, so long answers are not cut off. To keep the Next.js rewrite off the streaming path, `deploy/proxy/` has nginx and Caddy examples that send the chat stream routes straight to the backend, unbuffered.
 
 Deployment notes:
 
-- Run a single backend process (the default `python run.py`). Chat generation locks, cancel signals and rate limits are kept in memory.
+- Chat generation claims, cancel requests and the document processing queue are kept in PostgreSQL, so `BACKEND_WORKERS` can be raised above 1, or the backend run as several replicas. Either way rate limits need `REDIS_URL`, since in-memory counters are per process. The backend refuses to start with several workers and no reachable Redis; it cannot tell that it has replicas, so set `REDIS_URL` for those yourself. Several workers also need a fixed `SECRET_KEY`, so every worker accepts the same sign-ins. The chat WebSocket endpoint (not used by the web app) relays only between clients connected to the same process.
 - The Compose network uses the fixed subnet `172.30.0.0/24` so the backend can trust the frontend's forwarded client IP. Recreate the stack with `down` and `up -d` after upgrading from a release without it.
-- If another reverse proxy (nginx, Caddy) sits in front of the frontend, add its address to `FORWARDED_ALLOW_IPS`, or every user shares one rate-limit bucket.
+- If another reverse proxy (nginx, Caddy) sits in front of the frontend or the backend, add its address to `FORWARDED_ALLOW_IPS`, or every user shares one rate-limit bucket.
 - Use `scripts.reindex_embeddings` when changing to an embedding model with a different vector size; the backend refuses to start until the sizes match.
 
 For the bundled local PostgreSQL service, create a compressed backup with a checksum before migrations or upgrades:

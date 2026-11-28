@@ -312,9 +312,18 @@ export interface ChatResponse {
 	messages: ChatMessageResponse[];
 }
 
+/** A listed chat session: its messages are counted, not sent. */
+export interface ChatSessionSummary extends Omit<ChatResponse, "messages"> {
+	message_count: number;
+	// The start of the last non-empty message
+	last_message: { role: string; content: string } | null;
+}
+
 export interface ChatSessionList {
-	data: ChatResponse[];
+	data: ChatSessionSummary[];
 	count: number;
+	page_size: number;
+	has_more: boolean;
 }
 
 export interface SearchFilters {

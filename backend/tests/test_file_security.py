@@ -18,7 +18,7 @@ async def test_streamed_upload_stops_at_size_limit_and_removes_partial_file(
     upload = UploadFile(filename="large.txt", file=BytesIO(b"x" * 64))
 
     with pytest.raises(HTTPException) as exc_info:
-        await _save_upload(upload)
+        _save_upload(upload)
 
     assert exc_info.value.status_code == 413
     assert list(tmp_path.iterdir()) == []

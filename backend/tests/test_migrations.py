@@ -41,7 +41,15 @@ def _alembic_config() -> Config:
 def test_embedding_tables_is_the_migration_head() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_current_head() == "0014_note_client_request_id"
+    assert script.get_current_head() == "0016_multi_process_coordination"
+    assert (
+        script.get_revision("0016_multi_process_coordination").down_revision
+        == "0015_full_text_search_vectors"
+    )
+    assert (
+        script.get_revision("0015_full_text_search_vectors").down_revision
+        == "0014_note_client_request_id"
+    )
     assert script.get_revision("0014_note_client_request_id").down_revision == "0013_note_revision"
     assert script.get_revision("0013_note_revision").down_revision == (
         "0012_document_embedding_status"
@@ -506,3 +514,75 @@ def test_document_embedding_status_backfill_reflects_stored_vectors() -> None:
             "processing": ("pending", 0),
         }
         connection.execute(text("DELETE FROM users"))
+
+
+_UNUSED_FULL_TEXT_INDEXES = {
+    "ix_document_full_text",
+    "ix_document_search",
+    "ix_document_chunks_content_search",
+    "ix_notes_full_search",
+    "ix_notes_search",
+}
+
+
+def _index_names(connection: Connection) -> set[str]:
+    return set(connection.execute(text("SELECT indexname FROM pg_indexes")).scalars())
+
+
+def test_full_text_migration_backfills_vectors_in_each_documents_language() -> None:
+    config = _alembic_config()
+    SQLModel.metadata.drop_all(engine)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    command.upgrade(config, "0014_note_client_request_id")
+    with engine.begin() as connection:
+        _insert_user(connection, "fulltext@example.com")
+        user_id = connection.execute(text("SELECT id FROM users")).scalar_one()
+        document_id = _insert_document(connection, user_id, "Häuser", "completed")
+        connection.execute(text("UPDATE documents SET language = 'de-DE'"))
+        _insert_chunk(connection, document_id)
+        connection.execute(text("UPDATE document_chunks SET content = 'Die Häuser stehen'"))
+
+    command.upgrade(config, "head")
+
+    with engine.begin() as connection:
+        assert not _UNUSED_FULL_TEXT_INDEXES & _index_names(connection)
+        chunk = connection.execute(
+            text(
+                "SELECT search_config::text AS config, "
+                "search_vector @@ to_tsquery('german', 'Haus') AS matches "
+                "FROM document_chunks"
+            )
+        ).one()
+        assert (chunk.config, chunk.matches) == ("german", True)
+        assert connection.execute(
+            text("SELECT title_vector @@ to_tsquery('german', 'Haus') FROM documents")
+        ).scalar_one()
+
+        # The triggers keep a chunk's config on its document's language
+        connection.execute(text("UPDATE documents SET language = 'xx'"))
+        _insert_chunk_at(connection, document_id, 1)
+        assert set(
+            connection.execute(text("SELECT search_config::text FROM document_chunks")).scalars()
+        ) == {"simple"}
+        connection.execute(text("DELETE FROM users"))
+
+    command.downgrade(config, "0014_note_client_request_id")
+    with engine.connect() as connection:
+        assert _UNUSED_FULL_TEXT_INDEXES <= _index_names(connection)
+        assert "search_vector" not in _column_names(connection, "notes")
+        assert "search_config" not in _column_names(connection, "document_chunks")
+    command.upgrade(config, "head")
+
+
+def _insert_chunk_at(connection: Connection, document_id: int, chunk_index: int) -> None:
+    connection.execute(
+        text(
+            """
+            INSERT INTO document_chunks
+                (created_at, updated_at, document_id, chunk_index, content, vector_id)
+            VALUES (NOW(), NOW(), :document_id, :chunk_index, 'text', 'v')
+            """
+        ),
+        {"document_id": document_id, "chunk_index": chunk_index},
+    )

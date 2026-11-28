@@ -10,9 +10,10 @@ from sqlmodel import Session, col, select
 from app.ai.chunking import NoteChunk
 from app.ai.reranking import LexicalQuery
 from app.core.config import settings
-from app.models.chat import ChatMessages, ChatRole, ChatSession
+from app.models.chat import ChatGenerationStatus, ChatMessages, ChatRole, ChatSession
 from app.models.document import Document, DocumentChunks
-from app.models.embedding import EMBEDDING_TABLES
+from app.models.embedding import EMBEDDING_TABLES, chunk_embeddings
+from app.models.text_search import NOTE_CONFIG
 
 # HNSW needs no training data, so unlike ivfflat it has good recall even when it is
 # built on an empty table. ef_search is the candidate list size per query.
@@ -162,12 +163,26 @@ class PgVectorStore:
         )
         return {int(row.chunk_id) for row in rows}
 
-    def active_document_chunks(self, *, user_id: int) -> list[DocumentChunks]:
+    def unindexed_document_chunks(self, *, user_id: int, model: str) -> list[DocumentChunks]:
+        """The user's chunks with no vector for `model`; indexed ones are never loaded."""
+        indexed = (
+            select(chunk_embeddings.c.chunk_id)
+            .where(
+                chunk_embeddings.c.chunk_id == DocumentChunks.id,
+                chunk_embeddings.c.model == model,
+            )
+            .exists()
+        )
         return list(
             self.session.exec(
                 select(DocumentChunks)
                 .join(Document, col(Document.id) == col(DocumentChunks.document_id))
-                .where(Document.user_id == user_id, col(Document.is_deleted).is_(False))
+                .where(
+                    Document.user_id == user_id,
+                    col(Document.is_deleted).is_(False),
+                    ~indexed,
+                )
+                .order_by(col(DocumentChunks.id))
             ).all()
         )
 
@@ -213,6 +228,10 @@ class PgVectorStore:
                 .where(
                     ChatSession.user_id == user_id,
                     col(ChatMessages.role).in_([ChatRole.user, ChatRole.assistant]),
+                    # A reply still streaming changes; it's indexed once it's done
+                    col(ChatMessages.generation_status).is_distinct_from(
+                        ChatGenerationStatus.streaming
+                    ),
                 )
             ).all()
         )
@@ -622,12 +641,95 @@ class PgVectorStore:
             where_clauses.append("d.id = ANY(CAST(:document_ids AS int[]))")
             params["document_ids"] = list(document_ids)
 
+        owner = " AND ".join(where_clauses)
+        connection = self.session.connection()
+        # The text search configs of this user's documents. Each gets its own condition
+        # so the chunk vector index can be used (a per-row query config can't).
+        configs = list(
+            connection.execute(
+                text(
+                    f"SELECT DISTINCT text_search_config(d.language)::text FROM documents d "
+                    f"WHERE {owner}"
+                ),
+                parameters=params,
+            ).scalars()
+        )
+        if not configs:
+            return []
+        chunk_matches: list[str] = []
+        for index, config in enumerate(configs):
+            params[f"config_{index}"] = config
+            query_config = f"CAST(:config_{index} AS regconfig)"
+            chunk_matches.append(
+                f"(dc.search_config = {query_config} AND "
+                f"dc.search_vector @@ websearch_to_tsquery({query_config}, :phrase))"
+            )
+
         rows = (
-            self.session.connection()
-            .execute(
+            connection.execute(
                 text(
                     f"""
-                    WITH lexical_matches AS (
+                    WITH candidates AS (
+                        SELECT dc.id
+                        FROM document_chunks dc
+                        INNER JOIN documents d ON d.id = dc.document_id
+                        WHERE {owner} AND ({" OR ".join(chunk_matches)})
+                        UNION
+                        SELECT dc.id
+                        FROM document_chunks dc
+                        INNER JOIN documents d ON d.id = dc.document_id
+                        WHERE {owner} AND (
+                            lower(dc.content) LIKE :phrase_pattern
+                            OR lower(dc.content) LIKE :compact_pattern
+                        )
+                        UNION
+                        -- A title match brings its document's first chunks; only
+                        -- top_k can be returned, so no more are read
+                        SELECT first_chunks.id
+                        FROM documents d
+                        CROSS JOIN LATERAL (
+                            SELECT dc.id
+                            FROM document_chunks dc
+                            WHERE dc.document_id = d.id
+                            ORDER BY dc.chunk_index
+                            LIMIT :top_k
+                        ) AS first_chunks
+                        -- Through the user's documents: few, with stored title vectors
+                        WHERE {owner} AND (
+                            d.title_vector @@ websearch_to_tsquery(
+                                text_search_config(d.language), :phrase
+                            )
+                            OR lower(d.title) LIKE :phrase_pattern
+                            OR lower(d.title) LIKE :compact_pattern
+                        )
+                        UNION
+                        -- Query words split between the title and the text: chunks
+                        -- with any query word, in documents whose title has one,
+                        -- that match the whole query together with the title
+                        SELECT split_chunks.id
+                        FROM documents d
+                        CROSS JOIN LATERAL (
+                            -- The query's lexemes, quoted so they aren't stemmed again
+                            SELECT CAST(NULLIF(array_to_string(ARRAY(
+                                SELECT quote_literal(lexeme)
+                                FROM unnest(tsvector_to_array(
+                                    to_tsvector(text_search_config(d.language), :phrase)
+                                )) AS lexeme
+                            ), ' | '), '') AS tsquery) AS any_word
+                        ) AS words
+                        CROSS JOIN LATERAL (
+                            SELECT dc.id
+                            FROM document_chunks dc
+                            WHERE dc.document_id = d.id
+                                AND dc.search_vector @@ words.any_word
+                                AND (d.title_vector || dc.search_vector)
+                                    @@ websearch_to_tsquery(dc.search_config, :phrase)
+                            ORDER BY dc.chunk_index
+                            LIMIT :top_k
+                        ) AS split_chunks
+                        WHERE {owner} AND d.title_vector @@ words.any_word
+                    ),
+                    lexical_matches AS (
                         SELECT
                             dc.id AS chunk_id,
                             dc.document_id,
@@ -636,16 +738,16 @@ class PgVectorStore:
                             (
                                 lower(dc.content) LIKE :phrase_pattern
                                 OR lower(dc.content) LIKE :compact_pattern
-                                OR lower(d.title) LIKE :phrase_pattern
-                                OR lower(d.title) LIKE :compact_pattern
+                                OR coalesce(lower(d.title), '') LIKE :phrase_pattern
+                                OR coalesce(lower(d.title), '') LIKE :compact_pattern
                             ) AS exact_match,
                             ts_rank_cd(
-                                to_tsvector('english', d.title || ' ' || dc.content),
-                                websearch_to_tsquery('english', :phrase)
+                                d.title_vector || dc.search_vector,
+                                websearch_to_tsquery(dc.search_config, :phrase)
                             ) AS text_rank
-                        FROM document_chunks dc
+                        FROM candidates c
+                        INNER JOIN document_chunks dc ON dc.id = c.id
                         INNER JOIN documents d ON d.id = dc.document_id
-                        WHERE {" AND ".join(where_clauses)}
                     )
                     SELECT
                         chunk_id,
@@ -713,17 +815,24 @@ class PgVectorStore:
                             n.title,
                             n.content,
                             (
-                                lower(n.title) LIKE :phrase_pattern
-                                OR lower(n.title) LIKE :compact_pattern
-                                OR lower(n.content) LIKE :phrase_pattern
-                                OR lower(n.content) LIKE :compact_pattern
+                                coalesce(lower(n.title), '') LIKE :phrase_pattern
+                                OR coalesce(lower(n.title), '') LIKE :compact_pattern
+                                OR coalesce(lower(n.content), '') LIKE :phrase_pattern
+                                OR coalesce(lower(n.content), '') LIKE :compact_pattern
                             ) AS exact_match,
                             ts_rank_cd(
-                                to_tsvector('english', n.title || ' ' || n.content),
-                                websearch_to_tsquery('english', :phrase)
+                                n.search_vector,
+                                websearch_to_tsquery('{NOTE_CONFIG}'::regconfig, :phrase)
                             ) AS text_rank
                         FROM notes n
-                        WHERE {" AND ".join(where_clauses)}
+                        -- Each condition has an index: the stored vector, or a trigram index
+                        WHERE {" AND ".join(where_clauses)} AND (
+                            n.search_vector @@ websearch_to_tsquery('{NOTE_CONFIG}'::regconfig, :phrase)
+                            OR lower(n.title) LIKE :phrase_pattern
+                            OR lower(n.title) LIKE :compact_pattern
+                            OR lower(n.content) LIKE :phrase_pattern
+                            OR lower(n.content) LIKE :compact_pattern
+                        )
                     )
                     SELECT
                         note_id,
@@ -748,7 +857,7 @@ class PgVectorStore:
             LexicalNoteSearchResult(
                 note_id=int(row.note_id),
                 title=str(row.title),
-                content=str(row.content),
+                content=row.content or "",
                 lexical_score=float(row.lexical_score),
                 exact_match=bool(row.exact_match),
             )

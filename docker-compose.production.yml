@@ -38,6 +38,8 @@ services:
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       REDIS_URL: ${REDIS_URL:-}
+      # Above 1 requires REDIS_URL, for rate limits shared across workers
+      BACKEND_WORKERS: ${BACKEND_WORKERS:-1}
       # Only the frontend's rewrite proxy may set X-Forwarded-For (client IP for rate limits).
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.30.0.10}
     volumes:

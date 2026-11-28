@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any
 
 from fastapi import HTTPException
 from sqlmodel import Session
@@ -11,6 +8,7 @@ from sqlmodel import Session
 from app.ai.llm import LLMService, build_chat_messages
 from app.models.document import Document
 from app.models.note import NoteFolders, Notes
+from app.utils.sync_async import run_coroutine_sync
 from app.utils.text_processing import create_content_preview
 
 
@@ -161,7 +159,7 @@ def _generate_markdown(*, session: Session, user_id: int, prompt: str, content: 
         system_prompt="You are an expert note-making assistant. Output concise, clean markdown.",
     )
     llm_service = LLMService(session=session, user_id=user_id)
-    generated = _run_async(llm_service.generate_response(messages=messages))
+    generated = run_coroutine_sync(llm_service.generate_response(messages=messages))
     return generated.strip()
 
 
@@ -195,14 +193,3 @@ def _extract_bullet_items(*, markdown: str, section_header: str) -> list[str]:
                 items.append(cleaned)
 
     return items
-
-
-def _run_async(coro: Any) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(lambda: asyncio.run(coro))
-        return future.result()

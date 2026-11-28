@@ -8,7 +8,6 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlmodel import col, select
 
 from app.ai.embeddings import generate_embedding
-from app.ai.rag import ensure_workspace_embeddings
 from app.ai.reranking import build_lexical_query
 from app.ai.vectorstore import ChatVectorSearchResult, PgVectorStore
 from app.api.deps import CurrentUser, SessionDep
@@ -124,16 +123,7 @@ def unified_search(
         )
         vector_store = PgVectorStore(session=session)
         vector_store.ensure_schema(embedding_dimensions=len(query_embedding))
-        ensure_workspace_embeddings(
-            session=session,
-            vector_store=vector_store,
-            user_id=current_user.id,
-            embedding_model=embedding_model,
-            include_documents="document" in enabled_types,
-            include_notes="note" in enabled_types,
-            include_chats="chat" in enabled_types,
-        )
-        session.commit()
+        # Read-only: the workspace indexer embeds new and changed content in the background
 
         results: list[SearchResultItem] = []
         lexical_query = build_lexical_query(query)

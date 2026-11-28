@@ -528,11 +528,9 @@ class TestChatSessionPerformance:
 
     def test_chat_session_messages_eager_loading(self, session: Session, test_user: User) -> None:
         """
-        Verify that list_chat_sessions uses joinedload for messages.
+        Verify that list_chat_sessions summarises each session without its messages.
 
-        This prevents N+1 queries when accessing chat_session.messages.
-        Without eager loading: 1 query for sessions + N queries for messages = 1+N queries
-        With eager loading: 1 query with JOIN to fetch all sessions and messages
+        The count and the last message come from subqueries in the listing query.
         """
         from app.models.chat import ChatMessages, ChatSession
 
@@ -561,10 +559,10 @@ class TestChatSessionPerformance:
         assert len(sessions) == 1
         assert total == 1
 
-        # Verify messages are loaded (this should NOT trigger a query)
-        assert len(sessions[0].messages) == 5
-        for i, msg in enumerate(sessions[0].messages):
-            assert msg.content == f"Message {i}"
+        # Counted and previewed in the listing query, not loaded
+        assert sessions[0].message_count == 5
+        assert sessions[0].last_message is not None
+        assert sessions[0].last_message.content == "Message 4"
 
     def test_chat_session_multiple_sessions_eager_loading(
         self, session: Session, test_user: User
@@ -615,8 +613,8 @@ class TestChatSessionPerformance:
         # Verify all sessions have messages loaded
         total_messages = 0
         for chat_sess in sessions_retrieved:
-            assert len(chat_sess.messages) == 5
-            total_messages += len(chat_sess.messages)
+            assert chat_sess.message_count == 5
+            total_messages += chat_sess.message_count
 
         assert total_messages == 50
 
@@ -657,7 +655,7 @@ class TestChatSessionPerformance:
 
         # Verify all messages on first page are loaded
         for chat_sess in page1:
-            assert len(chat_sess.messages) == 3
+            assert chat_sess.message_count == 3
 
         # Get second page
         page2, total2 = list_chat_sessions(
@@ -694,7 +692,7 @@ class TestChatSessionPerformance:
 
         # All sessions should have empty messages list
         for chat_sess in sessions:
-            assert len(chat_sess.messages) == 0
+            assert chat_sess.message_count == 0
 
     def test_chat_session_mixed_messages(self, session: Session, test_user: User) -> None:
         """
@@ -738,9 +736,9 @@ class TestChatSessionPerformance:
             assert chat_sess.title is not None
             session_number = int(chat_sess.title.rsplit(" ", maxsplit=1)[1])
             if session_number < 3:
-                assert len(chat_sess.messages) == 4
+                assert chat_sess.message_count == 4
             else:
-                assert len(chat_sess.messages) == 0
+                assert chat_sess.message_count == 0
 
     def test_chat_session_message_content_integrity(
         self, session: Session, test_user: User
@@ -779,10 +777,10 @@ class TestChatSessionPerformance:
         sessions, _ = list_chat_sessions(session=session, current_user=test_user, limit=10)
         retrieved_session = sessions[0]
 
-        assert len(retrieved_session.messages) == 4
-        for i, msg in enumerate(retrieved_session.messages):
-            assert msg.role == test_data[i][0]
-            assert msg.content == test_data[i][1]
+        assert retrieved_session.message_count == 4
+        assert retrieved_session.last_message is not None
+        assert retrieved_session.last_message.role == ChatRole.assistant
+        assert retrieved_session.last_message.content == "I'm doing great!"
 
 
 # Fixtures for tests
